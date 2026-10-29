@@ -62,7 +62,7 @@ def stage1_dependencies():
     events=queue.Queue()
     state={"ok":False}
     required=[("pandas","pandas",True),("baostock","baostock",True),
-              ("akshare","akshare",False),("PySide6","PySide6",True)]
+              ("akshare","akshare",False),("PySide6","PySide6-Essentials",True)]
     def install():
         failed=[]
         for n,(mod,package,critical) in enumerate(required,1):
