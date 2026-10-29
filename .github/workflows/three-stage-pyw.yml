@@ -25,7 +25,29 @@ jobs:
       - name: Install Tk and Qt system libraries
         run: sudo apt-get update && sudo apt-get install -y xvfb python3-tk libegl1 libopengl0 libxkbcommon-x11-0 libxcb-cursor0
       - name: Install actual Python dependencies
-        run: python -m pip install pandas baostock akshare 'PySide6>=6.7,<7'
+        run: python -m pip install pandas baostock akshare 'PySide6-Essentials>=6.7,<7'
+      - name: Verify lean Qt runtime has Widgets but not Addons
+        run: |
+          python - <<'PY'
+          import importlib.metadata as md
+          import importlib.util
+          from PySide6.QtCore import Qt
+          from PySide6.QtGui import QPainter
+          from PySide6.QtWidgets import QMainWindow, QSplitter
+          print("PySide6-Essentials:", md.version("PySide6-Essentials"))
+          assert importlib.util.find_spec("PySide6.QtWidgets")
+          try:
+              md.version("PySide6-Addons")
+              raise AssertionError("Unexpected Qt Addons installed")
+          except md.PackageNotFoundError:
+              pass
+          try:
+              md.version("PySide6-WebEngine")
+              raise AssertionError("Unexpected Qt WebEngine installed")
+          except md.PackageNotFoundError:
+              pass
+          print("Essentials-only Qt GUI supported")
+          PY
       - name: Generate standalone Pythonw source
         run: python tools/build_three_stage.py
       - name: Static syntax compilation
