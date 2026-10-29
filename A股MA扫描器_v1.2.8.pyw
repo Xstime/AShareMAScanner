@@ -3353,7 +3353,7 @@ def run_tk_data_phase(backend=None, *, autostart=True):
     后台线程只向 Queue 发送状态，所有 Tk 组件操作只在主线程完成。
     """
     import tkinter as _tk
-    from tkinter import ttk as _ttk
+    from tkinter import ttk as _ttk, messagebox as _messagebox
     engine_backend = backend or BaoStockBackend(DB_PATH)
     root = _tk.Tk()
     root.title("A股 MA 扫描器 · 2/3 行情数据抓取")
@@ -3415,6 +3415,12 @@ def run_tk_data_phase(backend=None, *, autostart=True):
         if lines>140:log.delete("1.0","45.0")
         log.configure(state="disabled")
     def abort():
+        if state["running"]:
+            _messagebox.showinfo(
+                "数据更新尚未完成",
+                "为避免中断 SQLite 数据库写入，请等待当前抓取结束后退出。",
+                parent=root)
+            return
         state["aborted"]=True
         root.quit()
     root.protocol("WM_DELETE_WINDOW",abort)
@@ -4355,8 +4361,30 @@ class ScannerWindow(QMainWindow):
             layout = QVBoxLayout(dlg)
             layout.addWidget(self._text(f"{sector} · {self.strategy_title.text()} · {status}", "brand"))
             layout.addWidget(self._text("行业成分股后复权价格归一化后的等权指数；板块信号按当前策略计算", "small"))
+            history = []
+            if "trade_date" in data.columns:
+                for date in data["trade_date"].astype(str):
+                    if date == self.update_result.scan_date:
+                        continue
+                    if self.backend._sector_strategy_triggered(
+                            data, self.current_key, date,
+                            self.current_filters if self.current_key == "volume_turnover" else None):
+                        history.append(date)
+            layout.addWidget(self._text(
+                "历史触发：" + "、".join(history[-5:][::-1])
+                if history else "本地走势图范围内无其他历史触发", "small"))
+            if self.current_key.startswith("breakout_ma"):
+                fields = ["close", "MA" + self.current_key.replace("breakout_ma", "")]
+            elif self.current_key in ("ma5_turn_up",):
+                fields = ["close", "MA5"]
+            elif self.current_key == "ma5_cross_ma10":
+                fields = ["close", "MA5", "MA10"]
+            elif self.current_key == "volume_turnover":
+                fields = ["close"]
+            else:
+                fields = ["close", "MA5", "MA10", "MA20"]
             chart = PriceChart()
-            chart.set_frame(data, signal_date=self.update_result.scan_date)
+            chart.set_frame(data, series=fields, signal_date=self.update_result.scan_date)
             layout.addWidget(chart, 3)
             if self.current_key == "volume_turnover":
                 for field, title in (("放量倍数", "板块放量倍数"), ("turnover", "板块等权换手率%")):
