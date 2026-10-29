@@ -7,7 +7,7 @@ from pathlib import Path
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-from PySide6.QtWidgets import QApplication, QSplitter
+from PySide6.QtWidgets import QApplication, QSplitter, QLabel
 
 source=Path(__file__).resolve().parents[1]/"A股MA扫描器_PySide6_预览.pyw"
 loader=SourceFileLoader("pyside6_preview_test",str(source))
@@ -45,15 +45,15 @@ class QtPreviewTests(unittest.TestCase):
         self.assertEqual(split[0].count(),3)
         self.assertIn("演示",self.window.header_status.text())
 
-    def test_strategy_and_fund_filter_are_interactive(self):
-        first_count=self.window.table.rowCount()
-        self.window._on_fund_clicked(0)
-        self.assertEqual(self.window.selected_fund,1)
-        self.assertLess(self.window.table.rowCount(),first_count)
+    def test_strategies_still_work_but_fund_cards_are_display_only(self):
+        count=self.window.table.rowCount()
+        self.assertTrue(all(isinstance(card,QLabel) for card in self.window.fund_cards))
+        self.assertIn("亿",self.window.fund_cards[0].text())
+        self.assertFalse(hasattr(self.window,"selected_fund"))
+        self.window._render_funds()
+        self.assertEqual(self.window.table.rowCount(),count)
         self.window._select_strategy("volume_turnover")
         self.assertFalse(self.window.volume_options.isHidden())
-        self.window._on_fund_clicked(0)
-        self.assertIsNone(self.window.selected_fund)
         self.window._select_strategy("ma5_turn_up")
         self.assertTrue(self.window.volume_options.isHidden())
 
