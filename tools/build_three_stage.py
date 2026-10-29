@@ -29,7 +29,7 @@ def remove_method(s,name):
 HEADER=r'''# -*- coding: utf-8 -*-
 """A股 MA 扫描器 1.2.8 · Tkinter 环境准备 → Tkinter 行情抓取 → PySide6 4:3 工作台。
 单文件 .pyw 便携源码；七种策略；同花顺近5日行业资金 TOP5 仅展示板块。
-仅使用 pandas、baostock、PySide6 三项第三方库。TOP5 直接由标准库 HTTP/HTML 解析，不依赖 AKShare。
+第三方 Python 库缺失时自动尝试安装，不内置大型二进制库。
 """
 from __future__ import annotations
 import argparse, importlib, importlib.util, math, json, os, stat, tempfile, queue, re
@@ -55,25 +55,25 @@ def stage1_dependencies():
     ttk.Label(container,text="1 / 3 · Python 运行环境",font=("Segoe UI",15,"bold")).pack(anchor="w",pady=(4,12))
     status=tk.StringVar(value="检查必要 Python 库…")
     ttk.Label(container,textvariable=status,wraplength=450).pack(anchor="w",pady=(0,15))
-    bar=ttk.Progressbar(container,maximum=3,length=455)
+    bar=ttk.Progressbar(container,maximum=4,length=455)
     bar.pack(fill="x")
     detail=tk.StringVar(value="缺少的库将从清华镜像自动安装，失败后切换官方 PyPI。")
     ttk.Label(container,textvariable=detail,wraplength=450).pack(anchor="w",pady=16)
     events=queue.Queue()
     state={"ok":False}
     required=[("pandas","pandas",True),("baostock","baostock",True),
-              ("PySide6","PySide6",True)]
+              ("akshare","akshare",False),("PySide6","PySide6",True)]
     def install():
         failed=[]
         for n,(mod,package,critical) in enumerate(required,1):
-            events.put(("status",f"正在检查 {mod}（{n}/3）"))
+            events.put(("status",f"正在检查 {mod}（{n}/4）"))
             try:found=importlib.util.find_spec(mod) is not None
             except (ValueError,ImportError):found=False
             if not found:
                 details=[]
                 for label,url in (("清华镜像","https://pypi.tuna.tsinghua.edu.cn/simple"),
                                   ("官方 PyPI","https://pypi.org/simple")):
-                    events.put(("status",f"正在用{label}安装 {package}（{n}/3）"))
+                    events.put(("status",f"正在用{label}安装 {package}（{n}/4）"))
                     try:
                         cp=subprocess.run([sys.executable,"-m","pip","install",
                             "--disable-pip-version-check","--no-input","--timeout","20",
@@ -98,14 +98,14 @@ def stage1_dependencies():
             if kind=="status":status.set(value)
             elif kind=="step":
                 bar["value"]=value
-                detail.set(f"环境检查 {value}/3")
+                detail.set(f"环境检查 {value}/4")
             elif kind=="done":
                 important=[f for f in value if f[1]]
                 state["ok"]=not important
                 if value:
                     msg="\n\n".join(f"{name}: {detail[-650:]}" for name,_,detail in value)
                     if important:messagebox.showerror("依赖安装失败",msg,parent=root)
-                    else:messagebox.showwarning("依赖检查提示",msg,parent=root)
+                    else:messagebox.showwarning("TOP5 暂不可用","AKShare 未安装，七种策略仍可使用。\n\n"+msg,parent=root)
                 root.destroy()
                 return
         root.after(90,poll)
@@ -294,8 +294,6 @@ if __name__=="__main__":
     raise SystemExit(main())
 '''
 
-FUND_CHILD_SNIPPET = "    FUND_CHILD=r\"\"\"\n# 仅用 Python 标准库获取同花顺公开的 5 日行业资金页，\n# 无需 AKShare、BeautifulSoup、lxml、requests 或 JS 引擎。\nimport json\nimport re\nimport sys\nimport urllib.request\nfrom html.parser import HTMLParser\n\nclass FundPage(HTMLParser):\n    def __init__(self):\n        super().__init__()\n        self.rows = []\n        self.row = None\n        self.cell = None\n        self.pager = None\n        self.in_pager = False\n        self.pager_text = []\n    def handle_starttag(self, tag, attrs):\n        if tag == \"span\" and \"page_info\" in dict(attrs).get(\"class\", \"\").split():\n            self.in_pager = True\n            self.pager_text = []\n        if tag == \"tr\":\n            self.row = []\n        elif tag in (\"td\", \"th\") and self.row is not None:\n            self.cell = []\n    def handle_data(self, data):\n        if self.in_pager:\n            self.pager_text.append(data)\n        if self.cell is not None:\n            self.cell.append(data)\n    def handle_endtag(self, tag):\n        if tag in (\"td\", \"th\") and self.cell is not None:\n            self.row.append(\"\".join(self.cell).strip())\n            self.cell = None\n        elif tag == \"tr\" and self.row is not None:\n            if self.row:\n                self.rows.append(self.row)\n            self.row = None\n        if tag == \"span\" and self.in_pager:\n            self.pager = \"\".join(self.pager_text).strip()\n            self.in_pager = False\n\ndef ths_rank_rows(urlopen=None):\n    open_url = urlopen or urllib.request.urlopen\n    url = \"https://data.10jqka.com.cn/funds/hyzjl/board/5/\"\n    header = {\"User-Agent\": \"Mozilla/5.0\", \"Accept\": \"text/html\",\n              \"Referer\": \"https://data.10jqka.com.cn/funds/hyzjl/\"}\n    values = []\n    pages = None\n    for number in range(1, 11):\n        page_url = url if number == 1 else url + \"page/\" + str(number) + \"/\"\n        with open_url(urllib.request.Request(page_url, headers=header), timeout=12) as response:\n            raw = response.read(2_000_000)\n        if len(raw) >= 2_000_000:\n            raise RuntimeError(\"同花顺排名页面过大\")\n        # 同花顺 HTML 使用 GBK；gb18030 兼容 GBK/GB2312，严格拒绝不合法文本。\n        page = FundPage()\n        page.feed(raw.decode(\"gb18030\"))\n        match = re.fullmatch(r\"(\\d+)/(\\d+)\", page.pager or \"\")\n        if not match:\n            raise RuntimeError(\"同花顺排名缺少有效页码，拒绝不完整结果\")\n        current, total = map(int, match.groups())\n        if current != number or not 1 <= total <= 10 or (pages is not None and pages != total):\n            raise RuntimeError(\"同花顺排名页码不一致\")\n        pages = total\n        tables = [i for i, row in enumerate(page.rows)\n                  if \"行业\" in row and any(\"净额\" in x for x in row) and \"序号\" in row]\n        if len(tables) != 1:\n            raise RuntimeError(\"同花顺排名字段缺失或存在重复表头\")\n        columns = page.rows[tables[0]]\n        idx_seq = columns.index(\"序号\")\n        idx_name = columns.index(\"行业\")\n        idx_net = next(i for i, x in enumerate(columns) if \"净额\" in x)\n        valid = 0\n        for row in page.rows[tables[0]+1:]:\n            if max(idx_seq, idx_name, idx_net) >= len(row):\n                continue\n            seq = row[idx_seq].strip()\n            name = row[idx_name].strip()\n            if not seq.isdigit():\n                continue\n            net = row[idx_net].strip().replace(\",\", \"\")\n            if not name or not re.fullmatch(r\"[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)\", net):\n                raise RuntimeError(\"同花顺资金净额格式异常：\" + name)\n            values.append((int(seq), name, float(net)))\n            valid += 1\n        if not valid:\n            raise RuntimeError(\"同花顺排名当前页没有有效数据\")\n        if number == total:\n            break\n    if not values or [r[0] for r in values] != list(range(1, len(values) + 1)):\n        raise RuntimeError(\"同花顺行业排名不连续，可能缺页\")\n    if len(values) < 5 or len({r[1] for r in values}) != len(values):\n        raise RuntimeError(\"同花顺行业排名不足5个或名称重复\")\n    return [{\"行业\": name, \"净额\": net} for _, name, net in values]\n\nif __name__ == \"__main__\":\n    if len(sys.argv) < 2 or sys.argv[1] != \"ths_rank\":\n        raise ValueError(\"只支持同花顺近5日行业排名\")\n    print(\"__AShareMA_Fund_JSON__=\" +\n          json.dumps(ths_rank_rows(), ensure_ascii=False), flush=True)\n\"\"\""
-
 def assemble():
     import urllib.parse
     L=get(OLD)
@@ -303,9 +301,8 @@ def assemble():
     if L.count("class StockScannerApp:")!=1:raise RuntimeError("Legacy class not found")
     core=L[L.index("# ============================================================\n# 配置"):L.index("class StockScannerApp:")]
     core=patch_unique(core,'APP_VERSION = "1.2.7"','APP_VERSION = "1.2.8"')
-    child_start=core.index('    FUND_CHILD=r"""')
-    child_end=core.index('"""',child_start+len('    FUND_CHILD=r"""'))
-    core=core[:child_start]+FUND_CHILD_SNIPPET+core[child_end+3:]
+    core=patch_unique(core,"if endpoint=='em_rank':\n    data=ak.stock_sector_fund_flow_rank(indicator='5日',sector_type='行业资金流')\n    fields=['名称','5日主力净流入-净额']\nelif endpoint=='ths_rank':\n    data=ak.stock_fund_flow_industry(symbol='5日排行')\n    fields=['行业','净额']",
+                      "if endpoint=='ths_rank':\n    data=ak.stock_fund_flow_industry(symbol='5日排行')\n    fields=['行业','净额']")
     core=patch_unique(core,"if endpoint not in ('em_rank','ths_rank'):","if endpoint != 'ths_rank':")
     first=core.index("    def _fund_source_order(")
     second=core.index("\n    def ",first+10)
