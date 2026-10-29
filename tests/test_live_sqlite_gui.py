@@ -137,4 +137,19 @@ class ActualBackendGui(unittest.TestCase):
                                                for w in self.win.workers)))
         dialogs[0].close()
 
+    def test_07_morning_top5_without_cache_is_a_normal_status_not_error(self):
+        from datetime import datetime as StdDateTime
+        class TradingMorning(StdDateTime):
+            @classmethod
+            def now(cls,tz=None):
+                return cls(2026,10,30,10,0,tzinfo=tz)
+        self.assertTrue(self.pump(lambda:not any(isinstance(w,mod.FundWorker) and w.isRunning()
+                                               for w in self.win.workers)))
+        self.win.funds=[]
+        before=self.b.refresh_fund_top5.call_count
+        with patch.object(mod,"datetime",TradingMorning):
+            self.win.start_fund_refresh()
+        self.assertIn("18:00",self.win.fund_source_label.text())
+        self.assertEqual(self.b.refresh_fund_top5.call_count,before)
+
 if __name__=="__main__":unittest.main(verbosity=2)
