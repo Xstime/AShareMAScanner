@@ -31,6 +31,8 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: python -m unittest discover -s tests -p 'test_pyside6_preview.py' -v
+      - name: Check ranking-only fallback safety
+        run: python -m unittest discover -s tests -p 'test_fund_diagnostics.py' -v
       - name: Capture screenshot from actual Qt widgets
         env:
           QT_QPA_PLATFORM: offscreen
