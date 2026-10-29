@@ -1707,7 +1707,11 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
     @staticmethod
     def _fund_stock_symbol(value) -> Optional[str]:
         """东财返回可能是 int 或 000001/交易所.000001，统一为6位代码。"""
-        value = str(value or "").strip().split(".")[-1]
+        value = str(value or "").strip()
+        if value.endswith(".0") and value[:-2].isdigit():
+            value = value[:-2]
+        if "." in value and value.split(".")[-1].isdigit():
+            value = value.split(".")[-1]
         if not value.isdigit() or len(value) > 6:
             return None
         value = value.zfill(6)
@@ -1750,6 +1754,13 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
         stamp=now.strftime('%Y-%m-%d %H:%M:%S')
         rows=[(i,str(item[name_col]),float(item[amount_col])*multiplier,stamp,source)
               for i,(_,item) in enumerate(ranked.iterrows(),1)]
+        # A valid ranking can still be displayed while constituent membership is missing.
+        # This is NOT a complete snapshot and MUST NOT replace the persisted filter cache.
+        self._last_rank_only = [
+            dict(rank=rank,name=name,net_yuan=amount,fetched_at=stamp,
+                 source=src,ranking_only=True)
+            for rank,name,amount,stamp,src in rows
+        ]
         members=[]
         errors=[]
         with ThreadPoolExecutor(max_workers=self.FUND_MEMBER_WORKERS,thread_name_prefix='fund-members') as pool:
@@ -1771,6 +1782,8 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
 
     def refresh_fund_top5(self,force=False,progress=None):
         notify=progress or (lambda _:None)
+        self._last_rank_only=[]
+        self._fund_last_errors=[]
         previous,previous_members=self.load_fund_top5()
         now=datetime.now(CST)
         if (not force and len(previous)==5 and all(previous_members.get(i) for i in range(1,6))
@@ -1796,8 +1809,10 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
             except (RuntimeError,TimeoutError,ValueError,sqlite3.Error) as exc:
                 self._fund_note_health(source,False,time.monotonic()-began)
                 errors.append(f'{source}: {exc}')
+                self._fund_last_errors.append(dict(source=source,error=str(exc)))
                 notify(f'{source}暂不可用，自动切换备用来源…')
-        raise RuntimeError('两个来源均未获取完整榜单，已保留旧缓存：'+'；'.join(errors)[:400])
+        raise RuntimeError('两个来源均未获取完整榜单，旧缓存未被覆盖。\n'
+                           + '\n'.join(errors)[:2600])
 
     def persist_day_universe(
         self,
