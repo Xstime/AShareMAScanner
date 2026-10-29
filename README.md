@@ -1,58 +1,64 @@
-# AShareMAScanner · A股 MA 扫描器
+# AShareMAScanner · A股 MA 扫描器 v1.2.8
 
-免费、无付费 Token 的沪深 A 股均线策略扫描器（Python / Tkinter）。
+**单个 Python `.pyw` 文件**，保留三个依次运行的桌面界面。无需制作、安装大型 EXE，但需要系统 Python 3.10+ 和 Tkinter。
 
-## 版本
+## 三阶段启动流程
 
-- **最新正式版：v1.2.6**，Windows 入口为 `A股MA扫描器_v1.2.6.pyw`。
-- **旧版源码：v1.2.5**，仅作为历史基线保留。
-- 正式版文件及更新说明请从 [GitHub Releases](https://github.com/Xstime/AShareMAScanner/releases) 获取。应用内「检查更新」只读取正式 Release，不把开发分支当成更新。
+1. **Python 环境检查与补库（Tkinter）**：检测 pandas、BaoStock、AKShare、PySide6。缺少的库通过清华镜像优先、官方 PyPI 备用的方式安装；已有库时短暂显示“环境检查通过”。
+2. **行情抓取与更新（Tkinter）**：八阶段完整进度、逐股处理消息和已用时；异常可重试。数据准备成功后，关闭 Tkinter 窗口。
+3. **4:3 主工作台（PySide6）**：默认 **1120×840**，左侧七种策略、中间资金 TOP5/搜索/股票列表、右侧选中股票的价格与 MA5/MA10/MA20 走势图。主窗口直接使用前一阶段的更新结果，**不重复全市场抓取**。
 
-## 七种扫描策略
+Windows 配置好 Python `.pyw` 文件关联后可直接双击；通常不出现黑色控制台。
 
-1. 放量突破 MA5
-2. 放量突破 MA10
-3. 放量突破 MA20
-4. MA5 上穿 MA10
-5. 放量与换手率区间筛选
-6. MA5 首次拐头向上
-7. MA5 / MA10 / MA20 均线粘合后首次向上发散
+## 下载与运行
 
-个股仅展示最近交易日触发的信号；支持行业板块联动、历史信号查询与走势图。数据来源：**BaoStock**（后复权日线）；资金 TOP5 通过 AKShare 自动选择东方财富或同花顺，来源单独标注。
+从 [GitHub Releases](https://github.com/Xstime/AShareMAScanner/releases) 下载：
 
-## 运行
+- `AShareMAScanner_v1.2.8.pyw`：完整的单文件源程序（可重命名为中文）。
+- `AShareMAScanner_v1.2.8.zip`：包含中文脚本、`requirements.txt` 和说明。
 
-需要 Python 3.10+，Windows / macOS（需 Tkinter）。
+如果自动补库失败，可手动运行：
 
 ```bash
 python -m pip install -r requirements.txt
-python A股MA扫描器_v1.2.6.pyw
+python A股MA扫描器_v1.2.8.pyw
 ```
 
-当前源码也会尝试自动安装缺少的依赖；如自动安装失败，按上述命令手动安装即可。
+**离线体验主界面：**
 
-## v1.2.6 正式版启动
+```bash
+python A股MA扫描器_v1.2.8.pyw --demo
+```
 
-Windows：从 GitHub Releases 下载 `A股MA扫描器_v1.2.6.pyw` 和 `requirements.txt` 到同一文件夹，安装依赖后可双击 `.pyw` 启动（Python 的文件关联需要正确配置）。`.pyw` 在 Windows 下通常通过 `pythonw.exe` 启动，因此不会弹出命令行窗口；启动时独立显示八阶段行情加载窗口，更新过程展示阶段进度、已处理/总股票数、当前股票代码和实际用时。行情检查成功后才显示主界面，失败可重试或退出。流程百分比不是时间预计。
+`--demo` 仅使用明确标记的虚构股票和资金数据，不联网更新行情，主要用于查看 PySide6 的外观。
 
-macOS / Linux：可以运行 `python A股MA扫描器_v1.2.6.pyw`（需要系统 Tkinter 支持）。更新前保留原来的 data 文件夹及数据库，不需要重新初始化缓存。
+## 保留的七种选股策略
+
+- 放量突破 MA5、放量突破 MA10、放量突破 MA20
+- MA5 上穿 MA10
+- 放量倍数与换手率区间筛选
+- MA5 首次拐头向上
+- MA5 / MA10 / MA20 均线粘合后向上发散
+
+主要行情来自 BaoStock 的后复权日线；保留原数据库、历史数据、行业板块分类以及策略信号。主界面支持按名称/代码搜索股票、市场与行业筛选、点击表格选择股票、走势图和信号历史查看。
+
+## TOP5 资金行业（只展示）
+
+- **仅同花顺**：`ak.stock_fund_flow_industry(symbol="5日排行")`
+- 显示最近五日主力资金净流入最高的五个**行业板块**、金额（亿元）和实际抓取时间。
+- **不抓成分股，不使用 TOP5 筛选个股，也不再连接东方财富接口。**
+- 抓取失败最多重试一次，仍失败保留先前成功的榜单，不影响七种策略。
 
 ## 数据保存
 
-行情与历史记录固定保存在程序文件同级的 `data/a_share_baostock_hfq.db`，**不会迁移到用户配置目录**。首次启动需下载约 45 个交易日的数据，耗时可能较长。
+仍固定保存在脚本同级：
 
-`data/`、数据库、WAL、日志、缓存等不进入 Git 提交。升级源码时保留原 `data/` 即可延续缓存。不要在更新前删除数据库。
+`data/a_share_baostock_hfq.db`
 
-## 正式版本与检查更新
+**升级时原样保留 `data/` 文件夹，勿删除或移动。** 新版本不会清空历史行情。
 
-正式发布使用 GitHub **Releases**，版本标签为 `v1.2.6`；应用内通过固定仓库 `Xstime/AShareMAScanner` 的 Releases API 检查新版本，**仅提供前往下载，不自动执行远程代码**。
+## 测试说明
 
-[查看 Releases](https://github.com/Xstime/AShareMAScanner/releases)
+GitHub Actions 自动校验 Python 语法、Tkinter 数据窗口、PySide6 真实 4:3 界面、七种策略相关回归、TOP5 同花顺排名/重试/缓存兼容，并生成真实 Qt 截图。曾在 GitHub 云端测通同花顺五日行业资金排名，但第三方接口可用性随网络环境变化；Windows 实机/全面全市场联网测试仍需实际环境确认。
 
-## 免责声明
-
-本项目用于技术研究和行情分析，不构成投资建议。第三方行情与资金流接口可能出现延迟、口径差异、限流或不可用。
-
-## 许可
-
-MIT License，详见 [LICENSE](LICENSE)。
+MIT License。内容仅用于技术研究和行情分析，不构成投资建议。
