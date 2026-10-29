@@ -386,7 +386,7 @@ def _release_version(value: str):
 def fetch_latest_release():
     """只读取本项目正式 GitHub Release，不执行远程程序。"""
     request = urllib.request.Request(RELEASE_API, headers={
-        "User-Agent": "AShareMAScanner-update-checker/1.2.6",
+        "User-Agent": "AShareMAScanner-update-checker/1.2.8",
         "Accept": "application/vnd.github+json",
     })
     try:
@@ -1671,7 +1671,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
         with sqlite3.connect(self.db_path, timeout=30) as conn:
             rows = conn.execute("""
                 SELECT rank,industry,net_yuan,fetched_at,source
-                FROM fund_top5_snapshot ORDER BY rank
+                FROM fund_top5_snapshot WHERE source='同花顺' ORDER BY rank
             """).fetchall()
         return ([dict(rank=int(rank),name=name,net_yuan=float(amount),
                       fetched_at=fetched_at,source=source)
@@ -2392,7 +2392,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                                     conn, params=(code, end_date))
         if not raw.empty:
             g = self._prepare_group(raw)
-            results = {k: [] for k in StockScannerApp.STRATEGIES.values()}
+            results = {key: [] for key, _, _ in STRATEGIES}
             for pos in range(1, len(g)):
                 row, prev = g.iloc[pos], g.iloc[pos-1]
                 name_on_day = str(row.get("name", "") or "").strip().upper()
@@ -3752,6 +3752,13 @@ class ScannerWindow(QMainWindow):
         self.workers = []
         self.scan_token = 0
         self.chart_token = 0
+        self._restart_requested = False
+        self._scan_cancel_event = None
+        self.selected_stock = None
+        self.sector_filter = None
+        self.current_filters = RangeFilter()
+        self._latest_release_url = None
+        self._version_worker = None
         self.setWindowTitle("A股 MA 扫描器 v1.2.8 · PySide6 4:3 工作台")
         self.resize(1120, 840)
         self.setMinimumSize(980, 735)
@@ -4022,7 +4029,7 @@ class ScannerWindow(QMainWindow):
         self.page.addWidget(page)
 
         footer = self.statusBar()
-        footer.showMessage("开发预览 · 独立 PySide6 前端 · 不修改原有数据库路径")
+        footer.showMessage("本地 SQLite / BaoStock · v1.2.8 开发修复版")
 
     def _load_demo(self):
         self.demo = True
@@ -4056,16 +4063,13 @@ class ScannerWindow(QMainWindow):
         return self._restart_pipeline()
 
     def _restart_pipeline(self):
-        """重新运行三阶段启动流程，不在 Qt 运行时混用 Tk 主循环。"""
+        """Exit Qt, release SQLite lock, then restart in main()."""
         confirm=QMessageBox.question(
             self,"重新更新行情",
             "将关闭当前 PySide6 主界面，然后重新显示 Tkinter 行情更新窗口。继续吗？")
         if confirm!=QMessageBox.StandardButton.Yes:return
-        flags=(subprocess.CREATE_NO_WINDOW if os.name=="nt" else 0)
-        subprocess.Popen([sys.executable,str(Path(__file__).resolve())],
-                         stdin=subprocess.DEVNULL,creationflags=flags,
-                         cwd=str(Path(__file__).resolve().parent))
-        QApplication.quit()
+        self._restart_requested = True
+        QApplication.instance().quit()
 
 
     def _on_update_progress(self, percent, task):
@@ -4301,11 +4305,11 @@ class ScannerWindow(QMainWindow):
         self._render_funds()
         self.fund_source_label.setText(
             f"{self.fund_source} · 更新失败，显示旧缓存" if rows
-            else "两个资金排名来源均失败 · 查看原因"
+            else "同花顺资金排名失败 · 查看原因"
         )
         self._show_error(
             "TOP5 排名刷新失败",
-            "两家数据源的资金排名获取失败；原有榜单缓存未被覆盖。\n\n"
+            "同花顺资金排名获取失败；原有同花顺榜单缓存未被覆盖。\n\n"
             + self.fund_error_details,
         )
 
@@ -4458,7 +4462,21 @@ def main():
             win.grab().save(args.screenshot)
             app.quit()
         QTimer.singleShot(900,save_and_quit)
-    return app.exec()
+    code = app.exec()
+    if win._restart_requested:
+        # The next Tkinter stage must not race the old process's database lock.
+        for worker in list(win.workers):
+            if worker.isRunning():
+                worker.wait(10000)
+        if backend is not None and backend._instance_lock_file is not None:
+            backend._instance_lock_file.close()
+            backend._instance_lock_file = None
+        win.close()
+        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        subprocess.Popen([sys.executable, str(Path(__file__).resolve())],
+                         stdin=subprocess.DEVNULL, creationflags=flags,
+                         cwd=str(Path(__file__).resolve().parent))
+    return code
 
 
 if __name__=="__main__":
