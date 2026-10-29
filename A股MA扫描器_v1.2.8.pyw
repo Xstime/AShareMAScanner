@@ -1,373 +1,100 @@
 # -*- coding: utf-8 -*-
+"""A股 MA 扫描器 1.2.8 · Tkinter 环境准备 → Tkinter 行情抓取 → PySide6 4:3 工作台。
+单文件 .pyw 便携源码；七种策略；同花顺近5日行业资金 TOP5 仅展示板块。
+第三方 Python 库缺失时自动尝试安装，不内置大型二进制库。
 """
-A股 MA 扫描器（单文件 Tkinter .pyw · BaoStock + 同花顺资金 TOP5 · v1.2.8）
-=====================================
-
-功能
-----
-- Tkinter 依赖检测与行情更新，PySide6 4:3 三栏主界面。
-- 每次启动先显示独立加载窗口，检查并增量更新 BaoStock 行情完成后才打开选股界面。
-- 更新过程中显示“当前任务 + 百分比进度”，策略按钮与参数输入框保持禁用。
-- 七个策略：
-    1) 放量突破 MA5
-    2) 放量突破 MA10
-    3) 放量突破 MA20
-    4) MA5 上穿 MA10
-    5) 放量 + 换手率筛选（可输入上下限，最大值留空为无上限）
-    6) MA5 拐头向上：今天MA5>昨日MA5，昨日MA5<=前日MA5
-    7) 均线粘合向上：昨日MA5/10/20偏离度≤2%，今日全线上升、MA5>MA10>MA20并向上发散，且仅首次触发
-- 个股结果仅显示最新市场交易日触发，所有策略均显示放量倍数与换手率。
-- MA5拐头策略不以价格上穿MA5、放量或换手率作为附加门槛。
-- 新策略支持行业板块同规则判断、单击板块筛选、双击板块看MA5走势、信号历史回算。
-- 七个策略按钮采用两行四列的紧凑布局。
-- 第5策略修改参数后，重新点击筛选策略按钮生效。
-- 策略扫描期间可直接切换其他策略；旧扫描自动取消，以最后一次点击为准。
-- 切换策略时立即清空旧板块过滤和旧个股结果，避免新策略标题配上旧策略数据。
-- 结果直接显示在 GUI 表格中，点击表头可排序。
-- 七个策略都提供行业板块结果，并判断板块本身是否触发当前策略。
-- GUI 采用更简洁的浅色极简排版，接近 Apple 风格。
-- 第5策略板块图增加放量倍数和等权换手率曲线。
-- 双击板块只显示当前所选策略需要的均线：突破MA5/10/20分别显示对应均线，MA5上穿MA10显示MA5与MA10。
-- 双击股票弹出最近 30 个有效交易日的收盘价、MA5、MA10、MA20 走势图。
-- 信号历史追踪（含本地回算与参数记录）。
-- 个股与板块走势图支持悬停读数；板块名称支持悬停完整提示。
-- 个股图增加成交量、放量倍数、换手率与触发日标记。
-- 结果支持代码/名称、市场、行业、涨幅范围快捷过滤。
-- 新增近5交易日主力净流入TOP5横向卡片；可一键限定五大资金流入行业的成分股。
-- 行业资金流来自东方财富（AKShare）；按成分股代码严格匹配，不依赖BaoStock行业名称。
-- 资金接口故障不影响七个选股策略，禁止用未验证的板块名称猜测股票。
-- 启动时自动检测并安装缺失的 pandas、baostock、akshare；优先清华镜像，失败改用官方 PyPI。
-- 无 Excel 导出，无数据库位置按钮。
-- 数据库始终固定在程序同级 data/a_share_baostock_hfq.db，不迁移、不清空数据。
-- 启动时自动检查原目录写入权限并尝试移除数据库只读属性。
-- 增强完整率、失败队列清理、数据合法性检验、资金榜单缓存回退、板块查询效率和异常后重试。
-- 同一data数据库只允许一个扫描器进程写入；启动时使用只读快检检查已有SQLite数据库。
-
-
-数据与计算口径
---------------
-- 数据源：BaoStock，无 Token。
-- 价格：后复权（adjustflag=1），适合长期增量缓存与均线计算。
-- 停牌日不计入个股均线和成交量均线。
-- ST / *ST 股票不进入扫描结果。
-- 放量突破 MA(N)：
-      Close_t > MA(N)_t
-      Close_(t-1) <= MA(N)_(t-1)
-      Volume_t >= 前5个有效交易日平均成交量 × 1.5
-- 放量 + 换手率筛选：当日放量倍数和换手率均落在输入的闭区间内。
-  最大值留空为无上限；板块使用成交量总和与换手率等权平均。
-- MA5 上穿 MA10：
-      MA5_t > MA10_t
-      MA5_(t-1) <= MA10_(t-1)
-- MA5 拐头向上（仅首次转折，不要求放量、不要求换手率门槛）：
-      MA5_t > MA5_(t-1)
-      MA5_(t-1) <= MA5_(t-2)
-  三个MA值均以该股票实际有效交易K线计算，至少需要7根有效K线。
-- 均线粘合向上（使用最近实际有效交易日的MA5、MA10、MA20）：
-      昨日粘合度=(昨日三均线最大值-最小值)/昨日三均线平均值≤2%；
-      今日三均线均较昨日上升；今日MA5>MA10>MA20；
-      今日发散度>昨日发散度（同一归一化计算方式）；
-      昨日没有满足完整的粘合向上形态（首次触发）；
-      不强制放量和换手率，至少保留23根有效K线以确认首次信号。
-
-首次运行
---------
-- 为当前沪深 A 股建立最近约 45 个市场交易日的历史缓存。
-- 首次运行需要逐股请求，耗时明显长于日常更新。
-- 之后每个新交易日只获取当天缺失的数据；失败项会在下次启动继续补抓。
-
-安装
-----
-正常直接运行：python A股MA扫描器_v1.2.8.pyw
-首次运行自动补装缺少的第三方库（需要联网，不需要任何付费API）。
-若安装失败，可手动运行：python -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple baostock pandas akshare
-
-macOS 若使用 Homebrew Python 且缺少 Tkinter，可安装对应版本的 python-tk。
-"""
-
 from __future__ import annotations
-
-import math
-import json
-import os
-import stat
-import tempfile
-import queue
-import re
-import sqlite3
-import threading
-import time
-import traceback
-import urllib.request
-import urllib.error
-import webbrowser
-import subprocess
-import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import argparse, importlib, importlib.util, math, json, os, stat, tempfile, queue, re
+import sqlite3, threading, time, traceback, urllib.request, urllib.error, webbrowser
+import subprocess, sys
+from concurrent.futures import ThreadPoolExecutor,as_completed
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime,timedelta,timezone
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable,Optional
 
-# ============================================================
-# 启动依赖自检：只在直接运行 .py / .pyw 时执行
-# ============================================================
-
-def _bootstrap_dependencies():
-    """自动安装缺失依赖；AKShare失败时不影响核心选股功能。"""
-    import importlib
-    import importlib.util
-    import os
-    import site
-    import subprocess
-    import sys
-
-    # '模块名': ('pip包名', 是否为启动必需)
-    packages = {
-        "pandas": ("pandas", True),
-        "baostock": ("baostock", True),
-        "akshare": ("akshare", False),
-        "PySide6": ("PySide6", True),
-    }
-    missing = [(module, pip_name, required)
-               for module, (pip_name, required) in packages.items()
-               if importlib.util.find_spec(module) is None]
-    if not missing:
-        # 阶段1：环境检查成功也短暂显示独立的 Tkinter 窗口。
-        # 无桌面 DISPLAY 的 CI 环境自动跳过，不阻断非 GUI 测试。
-        try:
-            import tkinter as _tk
-            root = _tk.Tk()
-            root.title("A股 MA 扫描器 · 1/3 环境检查")
-            root.geometry("500x165")
-            root.configure(bg="#f5f6fa")
-            _tk.Label(root,text="运行环境检查",font=("Segoe UI",15,"bold"),
-                      bg="#f5f6fa",fg="#24334a").pack(anchor="w",padx=25,pady=(24,10))
-            _tk.Label(root,text="Python / Tkinter / PySide6 / 行情依赖已就绪",
-                      font=("Segoe UI",10),bg="#f5f6fa",fg="#3f785b"
-                      ).pack(anchor="w",padx=25)
-            root.after(700,root.destroy)
-            root.mainloop()
-        except Exception:
-            pass
-        return
-
-    # PyInstaller等独立打包程序不能向其内置Python环境使用pip动态补库。
-    frozen = bool(getattr(sys, "frozen", False))
-    events = queue.Queue()
-    failed = []
-
-    # 显式指定镜像；不依赖用户电脑当前 pip 配置。
-    sources = (
-        ("清华 PyPI 镜像", "https://pypi.tuna.tsinghua.edu.cn/simple"),
-        ("官方 PyPI", "https://pypi.org/simple"),
-    )
-
-    def install_all():
-        windows_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-
-        def run_pip(command):
-            try:
-                cp = subprocess.run(
-                    command,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    errors="replace",
-                    timeout=600,
-                    creationflags=windows_flags,
-                )
-                return cp.returncode == 0, (cp.stdout or "")[-3500:]
-            except subprocess.TimeoutExpired:
-                return False, "安装超过10分钟，已停止等待。"
-            except OSError as exc:
-                return False, str(exc)
-
-        for index, (module, pip_name, required) in enumerate(missing, 1):
-            if frozen:
-                failed.append((
-                    pip_name, required,
-                    "独立打包程序不支持运行时补装依赖，请重新打包。",
-                ))
-                continue
-
-            succeeded = False
-            errors_by_source = []
-            for source_name, source_url in sources:
-                events.put((
-                    "status",
-                    f"正在用{source_name}安装 {pip_name}（{index}/{len(missing)}）…",
-                ))
-
-                args = [
-                    sys.executable, "-m", "pip", "install",
-                    "--disable-pip-version-check", "--no-input",
-                    "--timeout", "20", "--retries", "2",
-                    "--index-url", source_url, pip_name,
-                ]
-                ok, details = run_pip(args)
-
-                # 只有权限相关错误才额外尝试 --user，避免网络失败时重复等待。
-                permission_errors = (
-                    "permission denied", "access is denied", "winerror 5",
-                    "not writable", "write permission", "没有权限", "拒绝访问",
-                )
-                if (not ok and sys.prefix == sys.base_prefix
-                        and site.ENABLE_USER_SITE
-                        and any(term in details.lower() for term in permission_errors)):
-                    events.put((
-                        "status",
-                        f"{source_name}：尝试在当前用户目录安装 {pip_name}…",
-                    ))
-                    ok, details = run_pip(args[:-1] + ["--user", pip_name])
-
-                importlib.invalidate_caches()
-                if ok and importlib.util.find_spec(module) is None:
-                    ok = False
-                    details = "pip报告成功，但当前Python仍然找不到该模块。"
-
-                if ok:
-                    succeeded = True
-                    break
-
-                errors_by_source.append(f"[{source_name}] {details}")
-                if source_name == "清华 PyPI 镜像":
-                    events.put((
-                        "status",
-                        f"清华镜像安装失败，正在切换官方 PyPI：{pip_name}…",
-                    ))
-
-            if not succeeded:
-                failed.append((pip_name, required, "\n".join(errors_by_source)))
-
-        events.put(("done", None))
-
-    def finish():
-        critical = [x for x in failed if x[1]]
-        optional = [x for x in failed if not x[1]]
-        message = "\n\n".join(
-            f"{name} 安装失败：\n{log[-950:]}"
-            for name, _, log in failed
-        )
-        if critical:
-            return False, ("运行所需依赖安装失败。请检查网络及pip，然后重试。\n\n"
-                           + message + "\n\n手动命令：\npython -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple pandas baostock akshare")
-        if optional:
-            return True, ("AKShare自动安装失败；原有七个选股策略仍可使用，"
-                          "但资金 TOP5 暂不可用。\n\n" + message
-                          + "\n\n可稍后重试：python -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple akshare")
-        return True, ""
-
-    # Windows .pyw 无控制台，使用轻量Tk窗口明确显示首次安装过程。
-    root = None
-    try:
-        import tkinter as _tk
-        from tkinter import ttk as _ttk, messagebox as _messagebox
-        root = _tk.Tk()
-    except Exception:
-        root = None
-
-    if root is None:
-        # 无图形显示环境时仍可自动补装；错误输出到终端。
-        install_all()
-        ok, notice = finish()
-        if notice:
-            print(notice, file=sys.stderr)
-        if not ok:
-            raise SystemExit(1)
-        return
-
-    root.title("A股 MA 扫描器 · 1/3 库补齐")
-    root.geometry("560x185")
-    root.resizable(False, False)
-    root.configure(bg="#f5f5f7")
-    root.protocol("WM_DELETE_WINDOW", lambda: None)
-    _ttk.Label(root, text="1/3 · 自动补齐运行环境（含 PySide6）", font=("Segoe UI", 14, "bold"),
-               background="#f5f5f7").pack(anchor="w", padx=24, pady=(22, 8))
-    status = _tk.StringVar(value="检测到缺少依赖，首次安装可能需要几分钟…")
-    _ttk.Label(root, textvariable=status, background="#f5f5f7",
-               font=("Segoe UI", 10)).pack(anchor="w", padx=24, pady=(0, 10))
-    bar = _ttk.Progressbar(root, mode="indeterminate", length=442)
-    bar.pack(padx=24, fill="x")
-    bar.start(14)
-    _ttk.Label(root, text="仅安装缺失的库；主界面采用 PySide6，数据更新采用 Tkinter。",
-               background="#f5f5f7", foreground="#6e6e73",
-               font=("Segoe UI", 9)).pack(anchor="w", padx=24, pady=(13, 0))
-
-    state = {"ok": True, "notice": ""}
+def stage1_dependencies():
+    """1/3：Tkinter 显示库检查及缺失自动安装。"""
+    import tkinter as tk
+    from tkinter import ttk,messagebox
+    root=tk.Tk()
+    root.title("A股 MA 扫描器 · 1/3 Python库检查")
+    root.geometry("520x255")
+    root.resizable(False,False)
+    root.protocol("WM_DELETE_WINDOW",lambda:None)
+    container=ttk.Frame(root,padding=24)
+    container.pack(fill="both",expand=True)
+    ttk.Label(container,text="1 / 3 · Python 运行环境",font=("Segoe UI",15,"bold")).pack(anchor="w",pady=(4,12))
+    status=tk.StringVar(value="检查必要 Python 库…")
+    ttk.Label(container,textvariable=status,wraplength=450).pack(anchor="w",pady=(0,15))
+    bar=ttk.Progressbar(container,maximum=4,length=455)
+    bar.pack(fill="x")
+    detail=tk.StringVar(value="缺少的库将从清华镜像自动安装，失败后切换官方 PyPI。")
+    ttk.Label(container,textvariable=detail,wraplength=450).pack(anchor="w",pady=16)
+    events=queue.Queue()
+    state={"ok":False}
+    required=[("pandas","pandas",True),("baostock","baostock",True),
+              ("akshare","akshare",False),("PySide6","PySide6",True)]
+    def install():
+        failed=[]
+        for n,(mod,package,critical) in enumerate(required,1):
+            events.put(("status",f"正在检查 {mod}（{n}/4）"))
+            try:found=importlib.util.find_spec(mod) is not None
+            except (ValueError,ImportError):found=False
+            if not found:
+                details=[]
+                for label,url in (("清华镜像","https://pypi.tuna.tsinghua.edu.cn/simple"),
+                                  ("官方 PyPI","https://pypi.org/simple")):
+                    events.put(("status",f"正在用{label}安装 {package}（{n}/4）"))
+                    try:
+                        cp=subprocess.run([sys.executable,"-m","pip","install",
+                            "--disable-pip-version-check","--no-input","--timeout","20",
+                            "--retries","1","-i",url,package],
+                            stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,
+                            encoding="utf-8",errors="replace",check=False,timeout=600,
+                            creationflags=subprocess.CREATE_NO_WINDOW if os.name=="nt" else 0)
+                        importlib.invalidate_caches()
+                        found=(cp.returncode==0 and importlib.util.find_spec(mod) is not None)
+                        if found:break
+                        details.append(f"{label}: {(cp.stdout or '')[-650:]}")
+                    except (OSError,subprocess.TimeoutExpired) as exc:
+                        details.append(f"{label}: {exc}")
+                if not found:failed.append((package,critical,"\n".join(details)))
+            events.put(("step",n))
+        events.put(("done",failed))
 
     def poll():
         while True:
-            try:
-                kind, value = events.get_nowait()
-            except queue.Empty:
-                break
-            if kind == "status":
-                status.set(value)
-            elif kind == "done":
-                bar.stop()
-                state["ok"], state["notice"] = finish()
-                if state["notice"]:
-                    if state["ok"]:
-                        _messagebox.showwarning("部分依赖未安装", state["notice"], parent=root)
-                    else:
-                        _messagebox.showerror("依赖安装失败", state["notice"], parent=root)
+            try:kind,value=events.get_nowait()
+            except queue.Empty:break
+            if kind=="status":status.set(value)
+            elif kind=="step":
+                bar["value"]=value
+                detail.set(f"环境检查 {value}/4")
+            elif kind=="done":
+                important=[f for f in value if f[1]]
+                state["ok"]=not important
+                if value:
+                    msg="\n\n".join(f"{name}: {detail[-650:]}" for name,_,detail in value)
+                    if important:messagebox.showerror("依赖安装失败",msg,parent=root)
+                    else:messagebox.showwarning("TOP5 暂不可用","AKShare 未安装，七种策略仍可使用。\n\n"+msg,parent=root)
                 root.destroy()
                 return
-        root.after(150, poll)
-
-    threading.Thread(target=install_all, daemon=True).start()
-    root.after(150, poll)
+        root.after(90,poll)
+    threading.Thread(target=install,daemon=True).start()
+    root.after(90,poll)
     root.mainloop()
-    if not state["ok"]:
-        raise SystemExit(1)
+    if not state["ok"]:raise SystemExit(1)
 
-
-if __name__ == "__main__":
-    _bootstrap_dependencies()
-
-def _dependency_import_error(name: str, exc: Exception):
-    """依赖虽然存在但导入失败时，.pyw 也必须能显示明确错误。"""
-    import sys
-    message = (
-        f"启动失败：{name} 无法正常导入。\n"
-        f"错误类型：{type(exc).__name__}\n错误详情：{exc}\n\n"
-        "请检查 Python 环境，必要时使用 pip 重新安装该模块。"
-    )
-    try:
-        import tkinter as _tk
-        from tkinter import messagebox as _messagebox
-        root = _tk.Tk()
-        root.withdraw()
-        try:
-            _messagebox.showerror("A股 MA 扫描器 · 启动失败", message, parent=root)
-        finally:
-            root.destroy()
-    except Exception:
-        print(message, file=sys.stderr)
-    raise SystemExit(1) from exc
-
-
+if __name__=="__main__" and not any(a in sys.argv for a in ("-h","--help")):
+    stage1_dependencies()
 try:
     import pandas as pd
-except Exception as exc:
-    _dependency_import_error("pandas", exc)
-
-try:
     import baostock as bs
 except Exception as exc:
-    _dependency_import_error("baostock", exc)
-
-try:
-    import tkinter as tk
-    from tkinter import ttk, messagebox
-except ImportError as exc:
-    raise SystemExit(
-        "当前 Python 缺少 Tkinter。\n"
-        "macOS Homebrew Python 请安装对应版本的 python-tk。"
-    ) from exc
-
+    raise SystemExit("pandas / BaoStock 无法导入: "+str(exc)) from exc
+import tkinter as tk
+from tkinter import ttk,messagebox
 
 # ============================================================
 # 配置
@@ -1621,14 +1348,15 @@ class BaoStockBackend:
     FUND_RANK_TIMEOUT=25
     FUND_JSON_PREFIX='__AShareMA_Fund_JSON__='
     FUND_CHILD=r"""
-import sys
-import akshare as ak
-if len(sys.argv)!=2 or sys.argv[1]!='ths_rank':
-    raise ValueError('only ths_rank is supported')
-data=ak.stock_fund_flow_industry(symbol='5日排行')
-fields=['行业','净额']
+import sys,akshare as ak
+endpoint=sys.argv[1]
+if endpoint=='ths_rank':
+    data=ak.stock_fund_flow_industry(symbol='5日排行')
+    fields=['行业','净额']
+else:
+    raise ValueError('unknown endpoint')
 if data is None or data.empty or any(x not in data.columns for x in fields):
-    raise RuntimeError('同花顺五日行业资金排名为空或缺少字段')
+    raise RuntimeError('empty response or missing columns')
 print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_ascii=False),flush=True)
 """
 
@@ -1660,8 +1388,35 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
         return pd.DataFrame(records)
 
 
+    def _fund_source_order(self):
+        return ['同花顺']
 
+    def _fund_note_health(self,source,ok,elapsed):
+        stamp=datetime.now(CST).isoformat(timespec='seconds')
+        try:
+            with sqlite3.connect(self.db_path,timeout=8) as conn:
+                conn.execute('INSERT OR IGNORE INTO fund_source_health(source) VALUES(?)',(source,))
+                if ok:
+                    conn.execute('UPDATE fund_source_health SET successes=successes+1,consecutive_failures=0,last_latency=?,last_success=? WHERE source=?',(elapsed,stamp,source))
+                else:
+                    conn.execute('UPDATE fund_source_health SET consecutive_failures=consecutive_failures+1,last_failure=? WHERE source=?',(stamp,source))
+        except sqlite3.Error:
+            pass
 
+    @staticmethod
+    def _fund_stock_symbol(value) -> Optional[str]:
+        """东财返回可能是 int 或 000001/交易所.000001，统一为6位代码。"""
+        value = str(value or "").strip()
+        if value.endswith(".0") and value[:-2].isdigit():
+            value = value[:-2]
+        if "." in value and value.split(".")[-1].isdigit():
+            value = value.split(".")[-1]
+        if not value.isdigit() or len(value) > 6:
+            return None
+        value = value.zfill(6)
+        if value.startswith(SH_PREFIXES + SZ_PREFIXES):
+            return value
+        return None
 
     def load_fund_top5(self) -> tuple[list[dict], dict[int, set[str]]]:
         """仅查询五日资金净流入 TOP5 行业榜单。
@@ -1671,70 +1426,73 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
         with sqlite3.connect(self.db_path, timeout=30) as conn:
             rows = conn.execute("""
                 SELECT rank,industry,net_yuan,fetched_at,source
-                FROM fund_top5_snapshot ORDER BY rank
+                FROM fund_top5_snapshot WHERE source='同花顺' ORDER BY rank
             """).fetchall()
         return ([dict(rank=int(rank),name=name,net_yuan=float(amount),
                       fetched_at=fetched_at,source=source)
                  for rank,name,amount,fetched_at,source in rows], {})
 
 
-    def _fund_complete_snapshot(self,notify,now):
-        """仅使用同花顺五日行业资金净流入排名，不访问任何成分股接口。"""
-        notify('同花顺 · 正在获取近5日行业主力资金净流入排名…')
+    def _fund_complete_snapshot(self,source,notify,now):
+        """只请求行业资金排名；任何情况下都不请求行业成分股。"""
+        if source != '同花顺':
+            raise ValueError('仅支持同花顺资金排名')
+        notify('正在读取同花顺近5日行业资金净流入排名…')
         ranked=self._fund_request('ths_rank',timeout=self.FUND_RANK_TIMEOUT)
-        if ranked.empty or not {'行业','净额'}.issubset(ranked.columns):
-            raise RuntimeError('同花顺五日行业资金榜单缺少必要字段')
-        ranked=ranked[['行业','净额']].copy()
-        ranked['净额']=pd.to_numeric(ranked['净额'],errors='coerce')
-        ranked=ranked.dropna(subset=['行业','净额'])
-        ranked=ranked.loc[ranked['净额'].map(math.isfinite)]
-        ranked['行业']=ranked['行业'].astype(str).str.strip()
-        ranked=ranked[ranked['行业'].ne('')].drop_duplicates('行业')
-        ranked=ranked.sort_values('净额',ascending=False).head(5)
+        name_col,amount_col='行业','净额'
+        if ranked.empty or not {name_col,amount_col}.issubset(ranked.columns):
+            raise RuntimeError(f'{source}榜单为空或缺少必要字段')
+        ranked=ranked[[name_col,amount_col]].copy()
+        ranked[amount_col]=pd.to_numeric(ranked[amount_col],errors='coerce')
+        ranked=ranked.dropna(subset=[name_col,amount_col])
+        ranked=ranked.loc[ranked[amount_col].map(math.isfinite)]
+        ranked[name_col]=ranked[name_col].astype(str).str.strip()
+        ranked=ranked[ranked[name_col].ne('')].drop_duplicates(name_col)
+        ranked=ranked.sort_values(amount_col,ascending=False).head(5)
         if len(ranked)!=5:
-            raise RuntimeError(f'同花顺有效行业只有{len(ranked)}个，不足5个')
+            raise RuntimeError(f'{source}有效行业少于5个')
+        multiplier=100000000
         stamp=now.strftime('%Y-%m-%d %H:%M:%S')
-        # AKShare 同花顺该接口的资金单位为亿元，数据库仍保存元。
-        rows=[(i,str(item['行业']),float(item['净额'])*100000000,stamp,'同花顺')
+        rows=[(i,str(item[name_col]),float(item[amount_col])*multiplier,stamp,source)
               for i,(_,item) in enumerate(ranked.iterrows(),1)]
-        notify('同花顺 · 近5日行业资金TOP5排名获取完成（5/5）')
+        notify(f'{source} · 近5日行业资金 TOP5 排名获取成功（5/5）')
         return rows
 
 
     def refresh_fund_top5(self,force=False,progress=None):
-        """单数据源：失败保留旧榜单，不影响独立的七种选股策略。"""
         notify=progress or (lambda _:None)
+        self._fund_last_errors=[]
         previous,_=self.load_fund_top5()
         now=datetime.now(CST)
         if (not force and len(previous)==5
             and previous[0]['fetched_at'][:10]==now.strftime('%Y-%m-%d')
             and (now.hour<18 or previous[0]['fetched_at'][11:13]>='18')):
-            return '已使用今日同花顺近5日资金TOP5缓存'
+            return '已使用今日近5日资金TOP5行业榜单缓存'
         if now.weekday()<5 and now.hour<18:
             if previous:
-                return '今日行情未结算，沿用缓存；18:00后可刷新'
-            raise RuntimeError('交易日18:00后可获取完整的近5日资金榜单')
+                return '今日行情未结算，沿用本地TOP5行业榜单；18:00后可刷新'
+            raise RuntimeError('交易日18:00后可获取完整的近5日行业资金榜单')
         errors=[]
-        # 对短暂网络故障进行一次重试，彻底失败时不删除旧快照。
-        for attempt in (1,2):
+        for source in self._fund_source_order():
+            began=time.monotonic()
             try:
-                if attempt>1:
-                    notify('同花顺 · 首次请求失败，正在重试（2/2）…')
-                rows=self._fund_complete_snapshot(notify,now)
+                rows=self._fund_complete_snapshot(source,notify,now)
+                # 同一个事务替换榜单并清空历史遗留成分股；榜单失败不修改缓存。
                 with sqlite3.connect(self.db_path,timeout=20) as conn:
                     conn.execute('DELETE FROM fund_top5_snapshot')
-                    # 清理早期程序遗留的成分股缓存，新版本不再使用。
                     conn.execute('DELETE FROM fund_top5_member')
                     conn.executemany(
                         'INSERT INTO fund_top5_snapshot(rank,industry,net_yuan,fetched_at,source) VALUES(?,?,?,?,?)',
                         rows)
-                return '同花顺 · 近5日行业资金TOP5排名已更新'
+                self._fund_note_health(source,True,time.monotonic()-began)
+                return f'{source} · 近5日行业资金 TOP5 排名已更新'
             except (RuntimeError,TimeoutError,ValueError,sqlite3.Error) as exc:
-                errors.append(f'第{attempt}次：{exc}')
-                if attempt==1:
-                    time.sleep(0.8)
-        raise RuntimeError('同花顺五日资金TOP5排名刷新失败，保留旧缓存。\n'
-                           +'\n'.join(errors)[:2500])
+                self._fund_note_health(source,False,time.monotonic()-began)
+                errors.append(f'{source}: {exc}')
+                self._fund_last_errors.append(dict(source=source,error=str(exc)))
+                notify(f'{source}排名接口失败，切换备用来源…')
+        raise RuntimeError('同花顺行业资金排名获取失败，原有同花顺榜单缓存已保留。\n'
+                           + '\n'.join(errors)[:2600])
 
 
     def persist_day_universe(
@@ -3344,166 +3102,156 @@ def attach_chart_hover(canvas):
 
 
 
-# ============================================================
-# 阶段 2/3：Tkinter 每日行情抓取，Tk 完全关闭后才创建 QApplication
-# ============================================================
+# 旧策略的历史信号回算仅使用此常量；不构造旧版 Tk 主窗口。
+class StockScannerApp:
+    STRATEGIES={
+        "放量突破 MA5":"breakout_ma5",
+        "放量突破 MA10":"breakout_ma10",
+        "放量突破 MA20":"breakout_ma20",
+        "MA5 上穿 MA10":"ma5_cross_ma10",
+        "放量 + 换手率筛选":"volume_turnover",
+        "MA5 拐头向上":"ma5_turn_up",
+        "均线粘合向上":"ma_convergence_up",
+    }
 
-def run_tk_data_phase(backend=None, *, autostart=True):
-    """运行 8 阶段数据检查。成功返回 (backend, UpdateResult)，失败可重试。
-    后台线程只向 Queue 发送状态，所有 Tk 组件操作只在主线程完成。
-    """
-    import tkinter as _tk
-    from tkinter import ttk as _ttk
-    engine_backend = backend or BaoStockBackend(DB_PATH)
-    root = _tk.Tk()
-    root.title("A股 MA 扫描器 · 2/3 行情数据抓取")
-    root.geometry("610x540")
-    root.minsize(560,500)
-    root.configure(bg="#f5f6fa")
-    card = _tk.Frame(root,bg="#ffffff",highlightbackground="#e1e5eb",highlightthickness=1)
-    card.pack(fill="both",expand=True,padx=16,pady=16)
-    heading = _tk.Frame(card,bg="#ffffff")
-    heading.pack(fill="x",padx=24,pady=(20,4))
-    _tk.Label(heading,text="2/3  ·  行情更新与完整性检查",
-              font=("Segoe UI",16,"bold"),bg="#ffffff",fg="#223049").pack(anchor="w")
-    _tk.Label(heading,text="八阶段准备完成后，自动进入 PySide6 4:3 主界面",
-              font=("Segoe UI",10),bg="#ffffff",fg="#788699").pack(anchor="w",pady=(5,0))
-    stage_var=_tk.StringVar(value="准备开始")
-    task_var=_tk.StringVar(value="正在读取本地数据库")
-    counter_var=_tk.StringVar(value="等待运行")
-    time_var=_tk.StringVar(value="已用时 00:00")
-    pct_var=_tk.StringVar(value="0%")
-    progress=_tk.DoubleVar(value=0)
-    _tk.Label(card,textvariable=stage_var,font=("Segoe UI",13,"bold"),
-              bg="#ffffff",fg="#263a54").pack(anchor="w",padx=24,pady=(23,8))
-    _tk.Label(card,textvariable=task_var,wraplength=530,justify="left",
-              font=("Segoe UI",10),bg="#ffffff",fg="#6c7889").pack(anchor="w",padx=24)
-    _tk.Label(card,textvariable=counter_var,font=("Segoe UI",10,"bold"),
-              bg="#ffffff",fg="#334155").pack(anchor="w",padx=24,pady=(12,8))
-    _ttk.Progressbar(card,variable=progress,maximum=100,mode="determinate").pack(
-        fill="x",padx=24)
-    info=_tk.Frame(card,bg="#ffffff")
-    info.pack(fill="x",padx=24,pady=(8,4))
-    _tk.Label(info,text="流程进度（按步骤权重，非剩余时间）",
-              bg="#ffffff",fg="#7a8799",font=("Segoe UI",9)).pack(side="left")
-    _tk.Label(info,textvariable=pct_var,bg="#ffffff",fg="#2776d6",
-              font=("Segoe UI",11,"bold")).pack(side="right")
-    _tk.Frame(card,height=1,bg="#e7ebf1").pack(fill="x",padx=24,pady=(18,12))
-    _tk.Label(card,text="实时任务记录",font=("Segoe UI",10,"bold"),
-              bg="#ffffff",fg="#334155").pack(anchor="w",padx=24)
-    log=_tk.Text(card,height=8,wrap="word",font=("Segoe UI",9),
-                 borderwidth=0,background="#fbfcff",foreground="#66758c")
-    log.pack(fill="both",expand=True,padx=24,pady=(6,10))
-    log.configure(state="disabled")
-    footer=_tk.Frame(card,bg="#ffffff")
-    footer.pack(fill="x",padx=24,pady=(0,16))
-    _tk.Label(footer,textvariable=time_var,fg="#8590a0",bg="#ffffff").pack(side="left")
-    controls=_tk.Frame(footer,bg="#ffffff")
-    controls.pack(side="right")
-    messages=queue.Queue()
-    state={"running":False,"success":None,"start":time.monotonic(),"aborted":False}
-    stages=[
-        ("检查环境与交易日",0,12),("失败数据补抓",12,20),
-        ("历史行情缓存",20,66),("缺失交易日补齐",66,80),
-        ("最新行情更新",80,94),("换手率修复",94,96),
-        ("行业板块资料",96,98),("数据完整性校验",98,100)]
-    def append(message):
+def stage2_update_market(*,demo=False):
+    """2/3：真实八阶段 BaoStock 抓取和本地 SQLite 维护。"""
+    from tkinter.scrolledtext import ScrolledText
+    root=tk.Tk()
+    root.title("A股 MA 扫描器 · 2/3 行情抓取")
+    root.geometry("620x495")
+    root.minsize(620,495)
+    root.protocol("WM_DELETE_WINDOW",lambda:None)
+    wrap=ttk.Frame(root,padding=22)
+    wrap.pack(fill="both",expand=True)
+    ttk.Label(wrap,text="2 / 3 · 数据抓取与校验",font=("Segoe UI",15,"bold")).pack(anchor="w",pady=(0,10))
+    label=tk.StringVar(value="正在准备数据源")
+    status=tk.StringVar(value="等待数据库初始化")
+    elapsed=tk.StringVar(value="已用时 00:00")
+    percent=tk.StringVar(value="0%")
+    ttk.Label(wrap,textvariable=label,font=("Segoe UI",11,"bold")).pack(anchor="w")
+    ttk.Label(wrap,textvariable=status,wraplength=560).pack(anchor="w",pady=(6,10))
+    bar=ttk.Progressbar(wrap,maximum=100)
+    bar.pack(fill="x")
+    info=ttk.Frame(wrap)
+    info.pack(fill="x",pady=(5,8))
+    ttk.Label(info,textvariable=elapsed).pack(side="left")
+    ttk.Label(info,textvariable=percent).pack(side="right")
+    ttk.Label(wrap,text="按实际任务阶段更新，不代表剩余时间",foreground="#777777").pack(anchor="w")
+    stages=ttk.Frame(wrap)
+    stages.pack(fill="x",pady=10)
+    names=[]
+    for i,(name,_,_) in enumerate(UPDATE_PHASES):
+        w=ttk.Label(stages,text="○ "+name)
+        w.grid(row=i%4,column=i//4,sticky="w",padx=(0,25),pady=4)
+        names.append(w)
+    ttk.Separator(wrap).pack(fill="x",pady=6)
+    log=ScrolledText(wrap,height=7,state="disabled",wrap="word")
+    log.pack(fill="both",expand=True,pady=(10,5))
+    actions=ttk.Frame(wrap)
+    actions.pack(fill="x")
+    retry=ttk.Button(actions,text="重试",state="disabled")
+    retry.pack(side="right")
+    leave=ttk.Button(actions,text="退出")
+    leave.pack(side="right",padx=10)
+    state={"result":None,"busy":False}
+    events=queue.Queue()
+    backend=None if demo else BaoStockBackend(DB_PATH)
+    started=time.monotonic()
+
+    def add(text):
         log.configure(state="normal")
-        log.insert("end",str(message)+"\n")
+        log.insert("end",text+"\n")
         log.see("end")
-        lines=int(log.index("end-1c").split(".")[0])
-        if lines>140:log.delete("1.0","45.0")
         log.configure(state="disabled")
-    def abort():
-        state["aborted"]=True
-        root.quit()
-    root.protocol("WM_DELETE_WINDOW",abort)
-    _ttk.Button(controls,text="退出",command=abort).pack(side="right")
-    retry=_ttk.Button(controls,text="重新抓取",command=lambda:start())
-    retry.pack(side="right",padx=(0,10))
-    def start():
-        if state["running"]:return
-        state["running"]=True
-        state["start"]=time.monotonic()
+
+    def run():
+        try:
+            def progress(p,text):
+                events.put(("progress",(float(p),str(text))))
+            if demo:
+                for name,low,high in UPDATE_PHASES:
+                    progress(low,"演示 · "+name)
+                    time.sleep(.09)
+                    progress(high,"演示 · "+name+" 已完成")
+                result=UpdateResult("2026-10-29","2026-10-28",100.,5000,5000,0,False,"")
+            else:
+                result=backend.update_all(progress)
+            events.put(("done",result))
+        except Exception:
+            events.put(("error",traceback.format_exc()))
+
+    def launch():
+        if state["busy"]:return
+        state["busy"]=True
         retry.configure(state="disabled")
-        progress.set(0)
-        pct_var.set("0%")
-        task_var.set("准备重新抓取…")
-        append("开始读取和更新本地历史行情")
-        def work():
-            try:
-                result=engine_backend.update_all(
-                    lambda value,message: messages.put(("progress",float(value),str(message))))
-                messages.put(("success",result))
-            except Exception:
-                messages.put(("failure",traceback.format_exc()))
-        threading.Thread(target=work,daemon=True,name="tk-market-update").start()
+        add("开始数据更新"+("（演示）" if demo else ""))
+        threading.Thread(target=run,daemon=True).start()
+
+    def close():
+        if state["busy"]:
+            messagebox.showinfo("数据更新中","为避免中断数据库写入，请等待当前更新结束。",parent=root)
+        else:
+            root.destroy()
+
     def poll():
-        if state["aborted"]:return
-        elapsed=int(time.monotonic()-state["start"])
-        mins,seconds=divmod(max(0,elapsed),60)
-        time_var.set(f"已用时 {mins:02d}:{seconds:02d}")
-        for _ in range(80):
-            try:event=messages.get_nowait()
+        while True:
+            try:kind,value=events.get_nowait()
             except queue.Empty:break
-            kind=event[0]
             if kind=="progress":
-                value,message=event[1:]
-                progress.set(min(100,max(0,value)))
-                pct_var.set(f"{value:.1f}%")
-                active=next((i for i,(_,lo,hi) in enumerate(stages)
-                             if lo<=value<hi),len(stages)-1)
-                stage_var.set(f"阶段 {active+1}/8 · {stages[active][0]}")
-                task_var.set(message)
-                counter_var.set(message[:84])
-                append(message)
-            elif kind=="success":
-                state["running"]=False
-                state["success"]=event[1]
-                stage_var.set("完成 · 行情检查通过")
-                pct_var.set("100%")
-                progress.set(100)
-                append("准备关闭 Tkinter 并进入 PySide6 主工作台")
-                root.after(160,root.quit)
-                return
-            elif kind=="failure":
-                state["running"]=False
-                stage_var.set("更新失败 · 可重试")
-                task_var.set(event[1].splitlines()[-1][:180])
-                counter_var.set("未进入主界面；旧数据仍保留")
-                append("错误详情：\n"+event[1][-2300:])
+                p,task=value
+                bar["value"]=max(0,min(100,p))
+                percent.set(f"{p:.0f}%")
+                parsed=describe_update_progress(p,task)
+                phase=parsed["phase"]
+                label.set(f"第 {phase+1}/8 阶段 · {parsed['title']}")
+                status.set(task)
+                for idx,widget in enumerate(names):
+                    prefix="✓ " if idx<phase else "● " if idx==phase else "○ "
+                    widget.configure(text=prefix+UPDATE_PHASES[idx][0])
+                add(f"{p:.1f}%  {task}")
+            elif kind=="error":
+                state["busy"]=False
                 retry.configure(state="normal")
-        root.after(150,poll)
-    root.after(100,poll)
-    if autostart:root.after(190,start)
-    try:
-        root.mainloop()
-    finally:
-        root.destroy()
-    if state["aborted"] or state["success"] is None:
-        return None
-    return engine_backend,state["success"]
+                add(value)
+                label.set("抓取失败，可重试")
+                messagebox.showerror("行情更新失败",value[-2400:],parent=root)
+            elif kind=="done":
+                state["busy"]=False
+                state["result"]=value
+                bar["value"]=100
+                percent.set("100%")
+                add("已完成 · 准备切换 PySide6 主界面")
+                root.after(130,root.destroy)
+                return
+        if root.winfo_exists():
+            secs=int(time.monotonic()-started)
+            elapsed.set(f"已用时 {secs//60:02d}:{secs%60:02d}")
+            root.after(100,poll)
+    retry.configure(command=launch)
+    leave.configure(command=close)
+    root.after(120,launch)
+    root.after(120,poll)
+    root.mainloop()
+    if state["result"] is None:raise SystemExit(1)
+    return backend,state["result"]
+
+_backend_prepared=None
+_result_prepared=None
+if __name__=="__main__" and not any(a in sys.argv for a in ("-h","--help")):
+    _backend_prepared,_result_prepared=stage2_update_market(demo="--demo" in sys.argv)
 
 
-# ============================================================
-# 阶段 3/3：真正的 PySide6 4:3 三栏工作台
-# ============================================================
-import argparse
-try:
-    from PySide6.QtCore import Qt, QThread, QTimer, Signal
-    from PySide6.QtGui import QColor, QFont, QPainter, QPen
-    from PySide6.QtWidgets import (
-        QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QFrame,
-        QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
-        QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
-        QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QTableWidget,
-        QTableWidgetItem, QVBoxLayout, QWidget,
-    )
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtWidgets import (
+    QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QFrame,
+    QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+    QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
+    QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QTableWidget,
+    QTableWidgetItem, QVBoxLayout, QWidget,
+)
 
-except Exception as exc:
-    _dependency_import_error('PySide6 / Qt',exc)
-
-BEIJING = timezone(timedelta(hours=8))
 STRATEGIES = [
     ("breakout_ma5", "突破 MA5", "均线突破"),
     ("breakout_ma10", "突破 MA10", "均线突破"),
@@ -3513,17 +3261,6 @@ STRATEGIES = [
     ("ma_convergence_up", "均线粘合向上", "趋势信号"),
     ("volume_turnover", "放量 + 换手率", "量价分析"),
 ]
-PHASES = [
-    ("环境检查", 0, 12), ("失败补抓", 12, 20),
-    ("历史缓存", 20, 66), ("交易日修复", 66, 80),
-    ("每日行情", 80, 94), ("换手率", 94, 96),
-    ("行业分类", 96, 98), ("完整性校验", 98, 100),
-]
-
-
-def load_engine():
-    return sys.modules[__name__]
-
 class ScanWorker(QThread):
     success = Signal(int, object)
     failed = Signal(int, str)
@@ -3737,12 +3474,13 @@ QCheckBox { spacing: 5px; }
 
 
 class ScannerWindow(QMainWindow):
-    def __init__(self, demo=False, prepared_backend=None, prepared_result=None):
+    def __init__(self, demo=False, backend=None, update_result=None):
         super().__init__()
         self.demo = demo
-        self.engine = load_engine()
-        self.backend = prepared_backend
+        self.engine = sys.modules[__name__]
+        self.backend = backend
         self.update_result = None
+        self._restart_requested = False
         self.frame = pd.DataFrame()
         self.filtered = pd.DataFrame()
         self.funds = []
@@ -3752,7 +3490,7 @@ class ScannerWindow(QMainWindow):
         self.workers = []
         self.scan_token = 0
         self.chart_token = 0
-        self.setWindowTitle("A股 MA 扫描器 v1.2.8 · PySide6 4:3 工作台")
+        self.setWindowTitle("A股 MA 扫描器 v1.2.8 · PySide6")
         self.resize(1120, 840)
         self.setMinimumSize(980, 735)
         self.setStyleSheet(STYLE)
@@ -3764,70 +3502,19 @@ class ScannerWindow(QMainWindow):
         root.setSpacing(0)
         self.page = QStackedWidget()
         root.addWidget(self.page)
-        self._make_splash()
         self._make_workspace()
         if demo:
             self._load_demo()
-        elif prepared_backend is not None and prepared_result is not None:
-            self._on_update_ready(prepared_result)
+        elif backend is not None and update_result is not None:
+            QTimer.singleShot(40,lambda:self._on_update_ready(update_result))
         else:
-            raise RuntimeError("主界面必须等待 Tkinter 行情抓取成功后才能启动")
+            raise RuntimeError('行情抓取阶段尚未完成')
 
     def _text(self, value, role=None, parent=None):
         label = QLabel(value, parent)
         if role:
             label.setObjectName(role)
         return label
-
-    def _make_splash(self):
-        page = QWidget()
-        lay = QVBoxLayout(page)
-        lay.setContentsMargins(130, 100, 130, 100)
-        lay.addStretch(1)
-        card = QFrame()
-        card.setObjectName("card")
-        cl = QVBoxLayout(card)
-        cl.setContentsMargins(35, 30, 35, 35)
-        cl.setSpacing(15)
-        cl.addWidget(self._text("A股 MA 扫描器", "brand"))
-        cl.addWidget(self._text("正在准备今日行情 · 完成后自动打开工作台", "small"))
-        self.loading_phase = self._text("检查数据存储", "section")
-        cl.addWidget(self.loading_phase)
-        self.loading_task = self._text("正在初始化本地数据…", "small")
-        self.loading_task.setWordWrap(True)
-        cl.addWidget(self.loading_task)
-        self.loading_fraction = QProgressBar()
-        self.loading_fraction.setRange(0, 100)
-        self.loading_fraction.setValue(0)
-        self.loading_fraction.setTextVisible(False)
-        cl.addWidget(self.loading_fraction)
-        self.loading_total = self._text("总体流程：0% · 按阶段计数", "small")
-        cl.addWidget(self.loading_total)
-        self.loading_stages = self._text("○ 环境检查    ○ 历史修复    ○ 每日行情    ○ 完整性校验", "small")
-        self.loading_stages.setWordWrap(True)
-        cl.addWidget(self.loading_stages)
-        self.loading_elapsed = self._text("已用时 00:00", "small")
-        cl.addWidget(self.loading_elapsed)
-        buttons = QHBoxLayout()
-        self.retry = QPushButton("重试")
-        self.retry.clicked.connect(self.start_update)
-        self.retry.hide()
-        demo_button = QPushButton("先预览界面（模拟数据）")
-        demo_button.clicked.connect(self._load_demo)
-        buttons.addWidget(demo_button)
-        buttons.addStretch(1)
-        buttons.addWidget(self.retry)
-        exit_button = QPushButton("退出")
-        exit_button.clicked.connect(self.close)
-        buttons.addWidget(exit_button)
-        cl.addLayout(buttons)
-        lay.addWidget(card)
-        lay.addStretch(1)
-        self.page.addWidget(page)
-        self.loading_started = datetime.now()
-        self._clock = QTimer(self)
-        self._clock.timeout.connect(self._update_clock)
-        self._clock.start(1000)
 
     def _make_workspace(self):
         page = QWidget()
@@ -3842,12 +3529,12 @@ class ScannerWindow(QMainWindow):
         brand = QVBoxLayout()
         brand.setSpacing(2)
         brand.addWidget(self._text("A股 MA 扫描器", "brand"))
-        self.header_status = self._text("PySide6 · 4:3 工作台", "small")
+        self.header_status = self._text("v1.2.8 · PySide6 · 4:3 工作台", "small")
         brand.addWidget(self.header_status)
         line.addLayout(brand)
         line.addStretch(1)
         self.refresh_market = QPushButton("更新行情")
-        self.refresh_market.clicked.connect(self._restart_pipeline)
+        self.refresh_market.clicked.connect(self.restart_pipeline)
         self.refresh_market.setEnabled(not self.demo)
         line.addWidget(self.refresh_market)
         release = QPushButton("检查更新")
@@ -4022,7 +3709,7 @@ class ScannerWindow(QMainWindow):
         self.page.addWidget(page)
 
         footer = self.statusBar()
-        footer.showMessage("开发预览 · 独立 PySide6 前端 · 不修改原有数据库路径")
+        footer.showMessage("三阶段启动完成 · PySide6 4:3 工作台 · SQLite 数据原位保留")
 
     def _load_demo(self):
         self.demo = True
@@ -4041,62 +3728,26 @@ class ScannerWindow(QMainWindow):
         self.refresh_market.setEnabled(False)
         self.fund_refresh.setEnabled(False)
         self._render_funds()
-        self.page.setCurrentIndex(1)
+        self.page.setCurrentIndex(0)
         self._select_strategy(self.current_key)
 
-    def _update_clock(self):
-        if self.page.currentIndex() != 0:
-            return
-        elapsed = int((datetime.now() - self.loading_started).total_seconds())
-        mm, ss = divmod(max(0, elapsed), 60)
-        self.loading_elapsed.setText(f"已用时 {mm:02d}:{ss:02d}")
-
-    def start_update(self):
-        # 保留 Qt 旧加载页按钮的回调兼容；实际更新始终由 Tkinter 启动阶段执行。
-        return self._restart_pipeline()
-
-    def _restart_pipeline(self):
-        """重新运行三阶段启动流程，不在 Qt 运行时混用 Tk 主循环。"""
-        confirm=QMessageBox.question(
-            self,"重新更新行情",
-            "将关闭当前 PySide6 主界面，然后重新显示 Tkinter 行情更新窗口。继续吗？")
-        if confirm!=QMessageBox.StandardButton.Yes:return
-        flags=(subprocess.CREATE_NO_WINDOW if os.name=="nt" else 0)
-        subprocess.Popen([sys.executable,str(Path(__file__).resolve())],
-                         stdin=subprocess.DEVNULL,creationflags=flags,
-                         cwd=str(Path(__file__).resolve().parent))
-        QApplication.quit()
-
-
-    def _on_update_progress(self, percent, task):
-        self.loading_fraction.setValue(min(100, max(0, round(percent))))
-        index = next((i for i, (_, a, b) in enumerate(PHASES) if a <= percent < b), 7)
-        self.loading_phase.setText(f"第 {index + 1} / 8 阶段 · {PHASES[index][0]}")
-        self.loading_task.setText(task)
-        self.loading_total.setText(f"总体流程 {percent:.0f}% · 按步骤权重计算")
-        self.loading_stages.setText("   ".join(
-            ("✓ " if i < index else "● " if i == index else "○ ") + title
-            for i, (title, _, _) in enumerate(PHASES)
-        ))
+    def restart_pipeline(self):
+        """Exit Qt first, then restart the full three-stage .pyw."""
+        self._restart_requested = True
+        QApplication.instance().quit()
 
     def _on_update_ready(self, result):
         self.update_result = result
         self.header_status.setText(
             f"行情日期 {result.scan_date} · 完整率 {result.completeness:.2f}%"
         )
-        self.page.setCurrentIndex(1)
+        self.page.setCurrentIndex(0)
         self.statusBar().showMessage(
             result.warning or f"{result.scan_date} 本地日线已就绪"
         )
         self._select_strategy(self.current_key)
         self._load_funds_from_cache()
         self.start_fund_refresh()
-
-    def _on_update_failed(self, detail):
-        self.loading_task.setText(detail.splitlines()[-1][:220])
-        self.loading_phase.setText("行情更新失败")
-        self.retry.show()
-        self._show_error("更新行情失败", detail)
 
     def _remember(self, worker):
         self.workers.append(worker)
@@ -4301,11 +3952,11 @@ class ScannerWindow(QMainWindow):
         self._render_funds()
         self.fund_source_label.setText(
             f"{self.fund_source} · 更新失败，显示旧缓存" if rows
-            else "两个资金排名来源均失败 · 查看原因"
+            else "同花顺资金排名失败 · 查看原因"
         )
         self._show_error(
             "TOP5 排名刷新失败",
-            "两家数据源的资金排名获取失败；原有榜单缓存未被覆盖。\n\n"
+            "同花顺资金排名获取失败；原有同花顺榜单缓存未被覆盖。\n\n"
             + self.fund_error_details,
         )
 
@@ -4408,7 +4059,7 @@ class ScannerWindow(QMainWindow):
     def _show_release_info(self):
         QMessageBox.information(
             self, "检查更新",
-            "这是独立 PySide6 开发预览，不会覆盖 v1.2.6 正式版。\n"
+            "当前为三阶段 .pyw 开发版，尚未发布正式 Release。\n"
             "请到 github.com/Xstime/AShareMAScanner/releases 查看正式版本。"
         )
 
@@ -4429,37 +4080,28 @@ class ScannerWindow(QMainWindow):
         dialog.exec()
 
 
-
 def main():
-    parser=argparse.ArgumentParser()
-    parser.add_argument("--demo",action="store_true",
-                        help="直接进入 PySide6 虚构数据界面，不访问行情")
-    parser.add_argument("--screenshot",default="",
-                        help="CI 渲染 4:3 主窗口并保存 PNG 后退出")
+    parser=argparse.ArgumentParser(description="A股 MA 扫描器三阶段 PySide6 单文件 .pyw")
+    parser.add_argument("--demo",action="store_true",help="依次演示三个界面；不用真实网络行情")
+    parser.add_argument("--screenshot",default="",help="在第三界面保存 Qt 实际截图")
     args=parser.parse_args()
-    if args.demo or args.screenshot:
-        backend=None
-        result=None
-    else:
-        phase=run_tk_data_phase()
-        if phase is None:
-            return 1
-        backend,result=phase
-    # 阶段2 的 Tk root 已销毁，Qt 独占 GUI 事件循环。
-    os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR","1")
     app=QApplication(sys.argv[:1])
     app.setFont(QFont("Segoe UI",10))
-    win=ScannerWindow(
-        demo=args.demo or bool(args.screenshot),
-        prepared_backend=backend,prepared_result=result)
+    win=ScannerWindow(demo=args.demo,backend=_backend_prepared,update_result=_result_prepared)
     win.show()
     if args.screenshot:
-        def save_and_quit():
-            win.grab().save(args.screenshot)
+        def capture():
+            if not win.grab().save(args.screenshot):
+                print("Qt截图保存失败",file=sys.stderr)
             app.quit()
-        QTimer.singleShot(900,save_and_quit)
-    return app.exec()
-
+        QTimer.singleShot(1000,capture)
+    exitcode=app.exec()
+    if win._restart_requested:
+        # Restart after Qt's event loop has ended; Tk and Qt must not coexist.
+        subprocess.Popen([sys.executable,str(Path(__file__).resolve())],
+                         cwd=str(BASE_DIR),
+                         creationflags=subprocess.CREATE_NO_WINDOW if os.name=="nt" else 0)
+    return exitcode
 
 if __name__=="__main__":
     raise SystemExit(main())
