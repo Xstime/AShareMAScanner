@@ -3183,7 +3183,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
             return "今日触发"
 
         if (
-            (include_previous or strategy == "volume_turnover")
+            include_previous
             and previous_trade_date
             and self._sector_strategy_triggered(
                 data,
@@ -3735,9 +3735,7 @@ class StockScannerApp:
         sector_head.grid(row=0, column=0, sticky="ew")
         sector_head.columnconfigure(0, weight=1)
 
-        self.sector_title_var = tk.StringVar(
-            value="板块共振"
-        )
+        self.sector_title_var = tk.StringVar(value="板块信号 · 今日")
 
         ttk.Label(
             sector_head,
@@ -3750,9 +3748,9 @@ class StockScannerApp:
             text="单击过滤，双击看走势",
             style="Subtle.TLabel",
         ).grid(row=0, column=1, sticky="e")
-        self.sector_expanded = True
+        self.sector_expanded = False
         self.sector_toggle_button = ttk.Button(
-            sector_head, text="收起板块表", command=self._toggle_sector_table)
+            sector_head, text="展开板块", command=self._toggle_sector_table)
         self.sector_toggle_button.grid(row=0, column=2, sticky="e", padx=(8, 0))
 
         self.sector_tree = ttk.Treeview(
@@ -3760,10 +3758,7 @@ class StockScannerApp:
             columns=(
                 "板块",
                 "今日触发",
-                "昨日触发",
-                "总触发",
                 "板块信号",
-                "最早触发",
             ),
             show="headings",
             height=3,
@@ -3775,14 +3770,12 @@ class StockScannerApp:
             sticky="ew",
             pady=(5, 0),
         )
+        self.sector_tree.grid_remove()
 
         sector_widths = {
             "板块": 220,
-            "今日触发": 88,
-            "昨日触发": 88,
-            "总触发": 88,
-            "板块信号": 110,
-            "最早触发": 110,
+            "今日触发": 105,
+            "板块信号": 140,
         }
 
         for col in self.sector_tree["columns"]:
@@ -4272,9 +4265,7 @@ class StockScannerApp:
 
         self.current_sector_filter = None
 
-        self.sector_title_var.set(
-            f"当前策略：{strategy_label} · 板块结果"
-        )
+        self.sector_title_var.set(f"板块信号 · 今日 · {strategy_label}")
         self._populate_sector_tree(self._limit_to_fund_top5(df))
         self.sector_box.grid()
 
@@ -4494,12 +4485,6 @@ class StockScannerApp:
             if self.update_result
             else ""
         )
-        previous_date = (
-            self.update_result.previous_trade_date
-            if self.update_result
-            else None
-        )
-
         rows = []
 
         for sector, g in df.groupby("板块", dropna=False):
@@ -4512,25 +4497,6 @@ class StockScannerApp:
                 ).sum()
             )
 
-            yesterday_count = (
-                int(
-                    (
-                        g["触发日"].astype(str)
-                        == str(previous_date)
-                    ).sum()
-                )
-                if previous_date
-                else 0
-            )
-
-            unique_codes = int(
-                g["代码"].astype(str).nunique()
-            )
-
-            earliest = str(
-                g["触发日"].astype(str).min()
-            )
-
             sector_signal = (
                 str(g["板块信号"].iloc[0])
                 if "板块信号" in g.columns
@@ -4541,18 +4507,13 @@ class StockScannerApp:
             rows.append({
                 "板块": sector,
                 "今日触发": today_count,
-                "昨日触发": yesterday_count,
-                "总触发": unique_codes,
                 "板块信号": sector_signal,
-                "最早触发": earliest,
             })
 
         rows.sort(
             key=lambda r: (
                 r["板块信号"] == "今日触发",
-                r["板块信号"] == "昨日触发",
                 r["今日触发"],
-                r["总触发"],
                 r["板块"],
             ),
             reverse=True,
@@ -4564,10 +4525,7 @@ class StockScannerApp:
             iid="__ALL__",
             values=(
                 "全部板块",
-                "",
-                "",
                 len(df),
-                "",
                 "",
             ),
             tags=("signal_neutral",),
@@ -4590,15 +4548,18 @@ class StockScannerApp:
                 values=(
                     row["板块"],
                     row["今日触发"],
-                    row["昨日触发"],
-                    row["总触发"],
                     row["板块信号"],
-                    row["最早触发"],
                 ),
                 tags=(tag,),
             )
 
-        self.sector_tree.selection_set("__ALL__")
+        if self.current_sector_filter:
+            for iid in self.sector_tree.get_children(''):
+                if str(self.sector_tree.set(iid,'板块'))==self.current_sector_filter:
+                    self.sector_tree.selection_set(iid)
+                    break
+        else:
+            self.sector_tree.selection_set('__ALL__')
 
     def _on_sector_select(self, _event=None):
         if not self.current_strategy_key:
@@ -4980,10 +4941,10 @@ class StockScannerApp:
         if sector == "全部板块":
             return
 
-        # 板块信号列固定在第5列。
+        # 板块信号在精简摘要第3列。
         sector_signal = (
-            str(values[4])
-            if len(values) > 4
+            str(values[2])
+            if len(values) > 2
             else ""
         )
 
