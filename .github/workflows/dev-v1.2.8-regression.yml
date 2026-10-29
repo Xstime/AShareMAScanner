@@ -5,7 +5,7 @@ on:
     paths:
       - 'tests/test_v128_full_audit.py'
       - 'A股MA扫描器_v1.2.8.pyw'
-      - '.github/workflows/audit-v1.2.8.yml'
+      - '.github/workflows/dev-v1.2.8-regression.yml'
   workflow_dispatch:
 permissions:
   contents: read
