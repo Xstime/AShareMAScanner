@@ -1,5 +1,6 @@
 """Tests for source selection without network calls or real market data."""
 import importlib.util
+from importlib.machinery import SourceFileLoader
 import sqlite3
 import sys
 import tempfile
@@ -11,8 +12,8 @@ from pathlib import Path
 import pandas as pd
 
 sys.modules["baostock"] = types.ModuleType("baostock")
-source_path = Path(__file__).resolve().parents[1] / "A股MA扫描器_v1.2.6.py"
-spec = importlib.util.spec_from_file_location("scanner_under_test", source_path)
+source_path = Path(__file__).resolve().parents[1] / "A股MA扫描器_v1.2.6.pyw"
+spec = importlib.util.spec_from_loader("scanner_under_test", SourceFileLoader("scanner_under_test", str(source_path)))
 app = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = app
 spec.loader.exec_module(app)
