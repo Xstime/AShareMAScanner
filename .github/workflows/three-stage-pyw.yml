@@ -1,0 +1,61 @@
+name: Three-stage Tkinter/Tkinter/PySide6 standalone .pyw
+
+on:
+  push:
+    branches:
+      - dev/v1.2.8-three-stage-pyw
+    paths:
+      - 'tools/build_three_stage.py'
+      - 'tests/test_three_stage_pyw.py'
+      - '.github/workflows/three-stage-pyw.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Tk and Qt system libraries
+        run: sudo apt-get update && sudo apt-get install -y xvfb python3-tk libegl1 libopengl0 libxkbcommon-x11-0 libxcb-cursor0
+      - name: Install actual Python dependencies
+        run: python -m pip install pandas baostock akshare 'PySide6>=6.7,<7'
+      - name: Generate standalone Pythonw source
+        run: python tools/build_three_stage.py
+      - name: Static syntax compilation
+        run: python -m py_compile A股MA扫描器_v1.2.8.pyw
+      - name: Run Qt and THS-only backend unit tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: xvfb-run -a python -m unittest discover -s tests -p 'test_three_stage_pyw.py' -v
+      - name: Run the REAL three-stage GUI and capture Qt main window
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          mkdir -p docs
+          timeout 90s xvfb-run -a python -u A股MA扫描器_v1.2.8.pyw --demo --screenshot docs/three-stage-qt-43.png
+          test -s docs/three-stage-qt-43.png
+          file docs/three-stage-qt-43.png
+      - uses: actions/upload-artifact@v4
+        with:
+          name: three-stage-pyw-and-screenshot
+          path: |
+            A股MA扫描器_v1.2.8.pyw
+            docs/three-stage-qt-43.png
+      - name: Commit verified .pyw to development branch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add A股MA扫描器_v1.2.8.pyw docs/three-stage-qt-43.png
+          if ! git diff --cached --quiet; then
+            git commit -m 'Deliver tested standalone Tk/Tk/Qt A-share scanner v1.2.8.pyw'
+            git fetch origin dev/v1.2.8-three-stage-pyw
+            git rebase origin/dev/v1.2.8-three-stage-pyw
+            git push origin HEAD:dev/v1.2.8-three-stage-pyw
+          fi
