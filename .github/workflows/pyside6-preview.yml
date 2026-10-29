@@ -1,0 +1,53 @@
+name: PySide6 real preview and GUI tests
+
+on:
+  push:
+    branches:
+      - dev/v1.2.7-pyside6
+    paths:
+      - 'A股MA扫描器_PySide6_预览.pyw'
+      - 'tests/test_pyside6_preview.py'
+      - '.github/workflows/pyside6-preview.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-preview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Qt and test dependencies
+        run: python -m pip install pandas 'PySide6>=6.7,<7'
+      - name: Compile Python
+        run: python -m py_compile A股MA扫描器_PySide6_预览.pyw
+      - name: Run offscreen PySide6 widget tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest discover -s tests -p 'test_pyside6_preview.py' -v
+      - name: Capture screenshot from actual Qt widgets
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          mkdir -p docs
+          python A股MA扫描器_PySide6_预览.pyw --demo --screenshot docs/pyside6-preview.png
+          test -s docs/pyside6-preview.png
+          file docs/pyside6-preview.png
+      - name: Upload actual preview screenshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: pyside6-preview
+          path: docs/pyside6-preview.png
+      - name: Commit preview screenshot to dev branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/pyside6-preview.png
+          if ! git diff --cached --quiet; then
+            git commit -m "Update PySide6 screenshot from real offscreen Qt renderer"
+            git push origin HEAD:dev/v1.2.7-pyside6
+          fi
