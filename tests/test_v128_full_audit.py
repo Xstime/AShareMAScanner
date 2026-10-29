@@ -45,7 +45,10 @@ class BackendAudit(unittest.TestCase):
         x=self.b.scan_strategy("volume_turnover",self.days[-1],False,self.days[-2],m.RangeFilter(1.5,3,3,5))
         self.assertEqual(len(x),1)
     def test_nonempty_stock_history_must_not_crash(self):
-        self.assertIsInstance(self.b.get_signal_history("sh.600000",self.days[-1]),pd.DataFrame)
+        history = self.b.get_signal_history("sh.600000",self.days[-1])
+        self.assertIsInstance(history, pd.DataFrame)
+        self.assertTrue({"streak","filter_key","signal_date","strategy","payload"}.issubset(history.columns))
+        self.assertGreater(len(history),0)
     def test_legacy_eastmoney_snapshot_not_shown(self):
         with sqlite3.connect(self.b.db_path) as c:
             c.executemany("INSERT INTO fund_top5_snapshot(rank,industry,net_yuan,fetched_at,source) VALUES(?,?,?,?,?)",
@@ -92,6 +95,45 @@ class GuiParityAudit(unittest.TestCase):
         s=inspect.getsource(m.ScannerWindow._full_chart_dialog)
         self.assertIn("volume",s)
         self.assertIn("turnover",s)
+    def test_price_range_is_applied_to_visible_rows(self):
+        self.w.change_min.setText("5")
+        self.w.apply_filters()
+        self.assertTrue(self.w.filtered.empty or (self.w.filtered["当日涨幅%"] >= 5).all())
+        self.w.change_max.setText("6")
+        self.w.apply_filters()
+        self.assertTrue(self.w.filtered.empty or (self.w.filtered["当日涨幅%"] <= 6).all())
+        self.w.clear_filters()
+        self.assertEqual(self.w.change_min.text(),"")
+        self.assertEqual(self.w.change_max.text(),"")
+
+    def test_sector_selection_actually_filters_stock_rows(self):
+        self.assertGreater(self.w.sector_table.rowCount(),0)
+        self.w.sector_table.selectRow(0)
+        self.w._on_sector_selected()
+        sector=self.w.sector_table.item(0,0).text()
+        self.assertTrue(self.w.filtered.empty or self.w.filtered["板块"].eq(sector).all())
+        self.w._reset_sector_filter()
+        self.assertIsNone(self.w.sector_filter)
+
+    def test_numeric_sort_and_chart_metrics_render(self):
+        for key, expected in (("breakout_ma5","突破MA5幅度%"),
+                              ("ma5_cross_ma10","MA5高于MA10%"),
+                              ("ma5_turn_up","MA5上拐幅度%"),
+                              ("ma_convergence_up","今日发散度%")):
+            self.w._select_strategy(key)
+            columns=[self.w.table.horizontalHeaderItem(i).text()
+                     for i in range(self.w.table.columnCount())]
+            self.assertIn(expected,columns)
+        self.w.chart.grab()
+        import pandas as pd
+        frame=pd.DataFrame({"trade_date":["2026-10-28","2026-10-29"],
+                            "volume":[10000,20000],"turnover":[3,5],
+                            "放量倍数":[1,2]})
+        view=m.PriceChart()
+        view.set_frame(frame,series=["volume","turnover"])
+        view.resize(700,300)
+        self.assertFalse(view.grab().isNull())
+
     def test_scan_cancel_signal(self):
         self.assertIn("cancel_event",inspect.getsource(m.ScanWorker))
     def test_clear_stock_clears_selection_state(self):
