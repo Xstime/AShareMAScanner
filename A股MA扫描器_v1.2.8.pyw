@@ -409,8 +409,13 @@ def fetch_latest_release():
         current = _release_version(APP_VERSION)
         if latest is None or current is None:
             raise ValueError("无效版本号")
-        if latest <= current:
-            return "当前已是最新版本", None
+        if latest < current:
+            # A higher local version than the latest published release is not
+            # equivalent to being the newest stable version (e.g. recalled 1.2.8).
+            return (f"当前运行 v{'.'.join(map(str, current))} 开发/未发布版本；"
+                    f"GitHub 最新正式版为 v{'.'.join(map(str, latest))}", RELEASES_PAGE)
+        if latest == current:
+            return "当前已是最新正式版本", None
         url = str(item.get("html_url", ""))
         if not url.startswith(RELEASES_PAGE + "/tag/"):
             url = RELEASES_PAGE
@@ -4808,10 +4813,12 @@ class ScannerWindow(QMainWindow):
         def ready(status, url):
             if url:
                 box = QMessageBox(self)
-                box.setWindowTitle("发现新版本")
+                newer_stable = "开发/未发布版本" in status
+                box.setWindowTitle("正式版本信息" if newer_stable else "发现新版本")
                 box.setText(status)
                 box.setInformativeText("只打开 GitHub Releases；不会覆盖程序或本地数据库。")
-                button = box.addButton("前往下载", QMessageBox.ButtonRole.AcceptRole)
+                button = box.addButton("查看正式版" if newer_stable else "前往下载",
+                                       QMessageBox.ButtonRole.AcceptRole)
                 box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
                 box.exec()
                 if box.clickedButton() == button:
