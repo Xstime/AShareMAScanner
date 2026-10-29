@@ -1,11 +1,14 @@
-# v1.2.8 · 纯 Tkinter 单文件版
+# v1.2.8 · Tkinter × PySide6 三阶段单文件版
 
-- 最终交付 **`A股MA扫描器_v1.2.8.pyw`**：不用 PySide6，不打包巨型 EXE，主界面采用 4:3 三栏桌面布局。
-- 保留 Python 依赖补齐窗口、八阶段真实行情抓取进度窗口、完整主界面；主界面继续使用 Tkinter。
-- **资金 TOP5 简化为同花顺单来源**：只显示最近五日行业主力资金净流入前五个板块（行业名、金额、抓取时间）。
-- 移除东方财富榜单调用、行业成分股接口、TOP5 与个股结果的关联过滤；单独刷新时仍失败会重试一次并保留上次榜单。
-- 七种策略、板块信号、走势图、历史信号和本地 SQLite 数据兼容保留。
-- 同目录 `data/a_share_baostock_hfq.db` 原位使用，不删除、重建或迁移。
-- CI 通过后生成 ASCII 名称的 `AShareMAScanner_v1.2.8.pyw`（相同文件内容），以及保留中文源码文件名和 `requirements.txt` 的 ZIP 便捷包。
+- **单 `.pyw`，不打包 EXE。** 所需 Python 包运行时检测并尝试补装。
+- 启动界面 1：Tkinter 库检查/补齐，包含 PySide6 依赖。
+- 启动界面 2：Tkinter 八阶段 BaoStock 行情抓取，实时任务与进度、失败重试。
+- 启动界面 3：真正的 PySide6 **1120×840（4:3）** 三栏主界面。Tk 数据窗口销毁后才创建 Qt GUI，**不会重复抓取**。
+- 资金 TOP5 只使用同花顺 `5日排行`，**仅展示五个行业板块及净流入金额**，无成分股、无股票联动筛选。
+- 保留七种策略、股票列表、右侧 MA5/MA10/MA20 图、股票详情和信号历史。
+- 保留原有 SQLite `data/a_share_baostock_hfq.db`，失败更新不覆盖原资金快照。
+- 清理 v1.2.7 的 PySide6 双文件预览/旧 Tk 主窗口实验，正式入口是唯一的 `A股MA扫描器_v1.2.8.pyw`。
 
-此版本仍是 Python 源码，需要系统安装 Python/Tkinter；可以自动尝试补装第三方依赖，但不是完全免 Python 的 EXE。
+Windows 需安装 Python 3.10+ 及 Tkinter；这是可编辑的 Python 源程序，**不是免 Python 的可执行文件**。系统配置正确后双击 `.pyw` 即可启动。
+
+验证包含 Github Actions Qt GUI 截图和 Tk/Qt 测试，但不等于 Windows 全市场联网实机验证。
