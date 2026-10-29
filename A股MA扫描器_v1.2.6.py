@@ -101,6 +101,9 @@ import traceback
 import urllib.request
 import urllib.error
 import webbrowser
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -841,6 +844,14 @@ class BaoStockBackend:
                 PRIMARY KEY(rank, stock_code)
             )
             """)
+            existing={r[1] for r in conn.execute("PRAGMA table_info(fund_top5_snapshot)")}
+            if "source" not in existing:
+                conn.execute("ALTER TABLE fund_top5_snapshot ADD COLUMN source TEXT NOT NULL DEFAULT '东方财富'")
+            conn.execute("""CREATE TABLE IF NOT EXISTS fund_source_health(
+                source TEXT PRIMARY KEY, successes INTEGER NOT NULL DEFAULT 0,
+                consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                last_latency REAL, last_success TEXT, last_failure TEXT
+            )""")
 
             conn.executescript("""
             CREATE TABLE IF NOT EXISTS signal_history (
@@ -1526,7 +1537,111 @@ class BaoStockBackend:
                 "板块分类暂不可用，个股扫描继续",
             )
 
-    # -------------------- 近5日行业主力资金TOP5 --------------------
+    # -------------------- 近5日行业资金TOP5（来源自动选择） --------------------
+
+    FUND_RANK_TIMEOUT=25
+    FUND_MEMBER_TIMEOUT=17
+    FUND_MEMBER_FALLBACK_TIMEOUT=12
+    FUND_MEMBER_WORKERS=3
+    FUND_JSON_PREFIX='__AShareMA_Fund_JSON__='
+    FUND_CHILD=r"""
+import sys,akshare as ak
+endpoint=sys.argv[1]
+sector=sys.argv[2] if len(sys.argv)>2 else ''
+if endpoint=='em_rank':
+    data=ak.stock_sector_fund_flow_rank(indicator='5日',sector_type='行业资金流')
+    fields=['名称','5日主力净流入-净额']
+elif endpoint=='ths_rank':
+    data=ak.stock_fund_flow_industry(symbol='5日排行')
+    fields=['行业','净额']
+elif endpoint=='em_summary':
+    data=ak.stock_sector_fund_flow_summary(symbol=sector,indicator='5日')
+    fields=['代码']
+elif endpoint=='em_members':
+    data=ak.stock_board_industry_cons_em(symbol=sector)
+    fields=['代码']
+elif endpoint=='ths_members':
+    data=ak.stock_board_industry_cons_ths(symbol=sector)
+    fields=['代码']
+else:
+    raise ValueError('unknown endpoint')
+if data is None or data.empty or any(x not in data.columns for x in fields):
+    raise RuntimeError('empty response or missing columns')
+print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_ascii=False),flush=True)
+"""
+
+    @classmethod
+    def _fund_request(cls,endpoint,sector='',timeout=20):
+        if endpoint not in ('em_rank','ths_rank','em_summary','em_members','ths_members'):
+            raise ValueError('invalid fund endpoint')
+        args=[sys.executable,'-c',cls.FUND_CHILD,endpoint]
+        if sector: args.append(sector)
+        env=os.environ.copy()
+        env['PYTHONIOENCODING']='utf-8'
+        try:
+            done=subprocess.run(args,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
+                                encoding='utf-8',errors='replace',text=True,env=env,timeout=timeout,
+                                creationflags=(subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0),check=False)
+        except subprocess.TimeoutExpired as exc:
+            raise TimeoutError(f'{endpoint} 请求超过{timeout}秒') from exc
+        except OSError as exc:
+            raise RuntimeError(f'资金接口子进程启动失败：{exc}') from exc
+        if done.returncode:
+            raise RuntimeError((done.stderr or done.stdout or '子进程错误')[-500:])
+        if cls.FUND_JSON_PREFIX not in done.stdout:
+            raise RuntimeError('资金接口未返回可解析数据')
+        raw=done.stdout.rsplit(cls.FUND_JSON_PREFIX,1)[-1].splitlines()[0]
+        try: records=json.loads(raw)
+        except (ValueError,TypeError) as exc: raise RuntimeError('资金解析失败') from exc
+        if not isinstance(records,list):
+            raise RuntimeError('资金结果格式错误')
+        return pd.DataFrame(records)
+
+    def _fetch_same_source_members(self,source,rank,industry):
+        endpoints=(('em_summary',self.FUND_MEMBER_TIMEOUT),
+                   ('em_members',self.FUND_MEMBER_FALLBACK_TIMEOUT)) if source=='东方财富' else (
+                   ('ths_members',self.FUND_MEMBER_TIMEOUT),)
+        errors=[]
+        for endpoint,limit in endpoints:
+            try:
+                frame=self._fund_request(endpoint,industry,limit)
+                if frame.empty or '代码' not in frame.columns:
+                    raise RuntimeError('无成分股')
+                symbols={code for value in frame['代码']
+                         if (code:=self._fund_stock_symbol(value)) is not None}
+                if symbols:return rank,symbols
+                raise RuntimeError('无有效A股成分股')
+            except (RuntimeError,TimeoutError,ValueError,KeyError) as exc:
+                errors.append(str(exc))
+        raise RuntimeError(f'{industry}: '+str(errors[:2]))
+
+    def _fund_source_order(self):
+        now=datetime.now(CST)
+        with sqlite3.connect(self.db_path,timeout=10) as conn:
+            history=conn.execute('SELECT source,successes,consecutive_failures,last_latency,last_success,last_failure FROM fund_source_health').fetchall()
+        stats={row[0]:row[1:] for row in history}
+        def score(src):
+            successes,failures,latency,good,bad=stats.get(src,(0,0,None,None,None))
+            cooldown=False
+            if bad and failures>=2:
+                try:
+                    cooldown=(now-datetime.fromisoformat(bad).replace(tzinfo=CST)).total_seconds()<900
+                except ValueError: pass
+            return (cooldown,not bool(good),int(failures or 0),float(latency) if latency else 20.0,
+                    0 if src=='东方财富' else 1)
+        return sorted(('东方财富','同花顺'),key=score)
+
+    def _fund_note_health(self,source,ok,elapsed):
+        stamp=datetime.now(CST).isoformat(timespec='seconds')
+        try:
+            with sqlite3.connect(self.db_path,timeout=8) as conn:
+                conn.execute('INSERT OR IGNORE INTO fund_source_health(source) VALUES(?)',(source,))
+                if ok:
+                    conn.execute('UPDATE fund_source_health SET successes=successes+1,consecutive_failures=0,last_latency=?,last_success=? WHERE source=?',(elapsed,stamp,source))
+                else:
+                    conn.execute('UPDATE fund_source_health SET consecutive_failures=consecutive_failures+1,last_failure=? WHERE source=?',(stamp,source))
+        except sqlite3.Error:
+            pass
 
     @staticmethod
     def _fund_stock_symbol(value) -> Optional[str]:
@@ -1542,7 +1657,7 @@ class BaoStockBackend:
     def load_fund_top5(self) -> tuple[list[dict], dict[int, set[str]]]:
         with sqlite3.connect(self.db_path, timeout=30) as conn:
             rows = conn.execute("""
-                SELECT rank,industry,net_yuan,fetched_at
+                SELECT rank,industry,net_yuan,fetched_at,source
                 FROM fund_top5_snapshot ORDER BY rank
             """).fetchall()
             members = conn.execute("""
@@ -1551,91 +1666,77 @@ class BaoStockBackend:
         mapping: dict[int, set[str]] = {}
         for rank, code in members:
             mapping.setdefault(int(rank), set()).add(str(code))
-        return ([dict(rank=int(rank), name=name, net_yuan=float(amount), fetched_at=fetched_at)
-                 for rank, name, amount, fetched_at in rows], mapping)
+        return ([dict(rank=int(rank),name=name,net_yuan=float(amount),fetched_at=fetched_at,source=source)
+                 for rank,name,amount,fetched_at,source in rows], mapping)
 
-    def refresh_fund_top5(self, force: bool = False) -> str:
-        """仅做完整的原子快照。资金接口错误时已有行情与旧缓存不受影响。"""
-        prior, prior_members = self.load_fund_top5()
-        local_now = datetime.now(CST)
-        # 同一个北京时间自然日只请求一次；用户可手动强制刷新。
-        if (not force and len(prior) == 5 and all(prior_members.get(i) for i in range(1,6))
-                and prior[0]['fetched_at'][:10] == local_now.strftime('%Y-%m-%d')
-                and (local_now.hour < 18 or prior[0]['fetched_at'][11:13] >= '18')):
-            return "已使用今日资金榜单缓存"
-
-        # 交易日上午/下午尚未收盘，避免东财5日滚动榜单混入未完成的当日资金流。
-        if local_now.weekday() < 5 and local_now.hour < 18:
-            if prior:
-                return "今日行情未结算，沿用本地资金榜单，18:00后可刷新"
-            raise RuntimeError("交易日18:00后再获取完整的近5日资金榜单")
-
-        try:
-            import akshare as ak
-        except ImportError as exc:
-            raise RuntimeError("资金榜单需要 AKShare，请安装：pip install akshare") from exc
-
-        ranked = ak.stock_sector_fund_flow_rank(indicator='5日', sector_type='行业资金流')
-        if ranked is None or ranked.empty:
-            raise RuntimeError('资金流排名接口返回空数据')
-        name_col = '名称'
-        amount_col = '5日主力净流入-净额'
-        if name_col not in ranked.columns or amount_col not in ranked.columns:
-            raise RuntimeError(f'资金排名字段已变化：{list(ranked.columns)}')
-        ranked = ranked[[name_col,amount_col]].copy()
-        ranked[amount_col] = pd.to_numeric(ranked[amount_col], errors='coerce')
-        ranked = ranked.dropna(subset=[name_col,amount_col])
-        ranked = ranked.loc[ranked[amount_col].map(math.isfinite)]
-        ranked[name_col] = ranked[name_col].astype(str).str.strip()
-        ranked = ranked[ranked[name_col].ne('')].drop_duplicates(name_col)
-        ranked = ranked.sort_values(amount_col, ascending=False).head(5)
-        if len(ranked) != 5:
-            raise RuntimeError('资金流排名未能获取5个有效行业')
-
-        new_rows = []
-        new_members = []
-        failures = []
-        now_text = local_now.strftime('%Y-%m-%d %H:%M:%S')
-        for rank, (_, item) in enumerate(ranked.iterrows(), 1):
-            sector = str(item[name_col]); amount = float(item[amount_col])
-            new_rows.append((rank, sector, amount, now_text))
-            codes = set()
-            last_error = None
-            # 优先使用同一个东方财富资金板块接口的成分股；
-            # 出错时再尝试东方财富行业板块成分股接口（严格同名）。
-            for getter in (
-                lambda s=sector: ak.stock_sector_fund_flow_summary(symbol=s, indicator='5日'),
-                lambda s=sector: ak.stock_board_industry_cons_em(symbol=s),
-            ):
+    def _fund_complete_snapshot(self,source,notify,now):
+        endpoint='em_rank' if source=='东方财富' else 'ths_rank'
+        notify(f'正在读取{source}近5日资金榜单…')
+        ranked=self._fund_request(endpoint,timeout=self.FUND_RANK_TIMEOUT)
+        name_col,amount_col=('名称','5日主力净流入-净额') if source=='东方财富' else ('行业','净额')
+        if ranked.empty or not {name_col,amount_col}.issubset(ranked.columns):
+            raise RuntimeError('资金榜单缺失字段')
+        ranked=ranked[[name_col,amount_col]].copy()
+        ranked[amount_col]=pd.to_numeric(ranked[amount_col],errors='coerce')
+        ranked=ranked.dropna(subset=[name_col,amount_col])
+        ranked=ranked.loc[ranked[amount_col].map(math.isfinite)]
+        ranked[name_col]=ranked[name_col].astype(str).str.strip()
+        ranked=ranked[ranked[name_col].ne('')].drop_duplicates(name_col)
+        ranked=ranked.sort_values(amount_col,ascending=False).head(5)
+        if len(ranked)!=5:
+            raise RuntimeError('有效行业不足5个')
+        multiplier=1 if source=='东方财富' else 100000000
+        stamp=now.strftime('%Y-%m-%d %H:%M:%S')
+        rows=[(i,str(item[name_col]),float(item[amount_col])*multiplier,stamp,source)
+              for i,(_,item) in enumerate(ranked.iterrows(),1)]
+        members=[]
+        errors=[]
+        with ThreadPoolExecutor(max_workers=self.FUND_MEMBER_WORKERS,thread_name_prefix='fund-members') as pool:
+            jobs={pool.submit(self._fetch_same_source_members,source,rank,industry):(rank,industry)
+                  for rank,industry,_net,_stamp,_src in rows}
+            for count,job in enumerate(as_completed(jobs),1):
+                rank,industry=jobs[job]
                 try:
-                    frame = getter()
-                    if frame is None or frame.empty or '代码' not in frame.columns:
-                        raise RuntimeError('行业成分股列表为空或缺少代码')
-                    codes = {symbol for value in frame['代码']
-                             if (symbol := self._fund_stock_symbol(value)) is not None}
-                    if not codes:
-                        raise RuntimeError('行业成分股未返回有效沪深A股代码')
-                    break
+                    _,codes=job.result()
+                    members.extend((rank,code) for code in sorted(codes))
+                    notify(f'{source} · 成分股 {count}/5 · {industry}')
                 except Exception as exc:
-                    last_error = exc
-            if not codes:
-                failures.append(f'{sector}：{last_error}')
-            new_members.extend((rank, code) for code in sorted(codes))
+                    errors.append(f'{industry}: {exc}')
+                    notify(f'{source} · 成分股 {count}/5 失败')
+        if errors: raise RuntimeError('；'.join(errors[:2]))
+        if not all(any(r==i for r,_ in members) for i in range(1,6)):
+            raise RuntimeError('五个行业成分股不完整')
+        return rows,members
 
-        # 任一行业成分股名单缺失，取消本次提交；旧榜单/代码仍保留。
-        # 不能把完整缓存替换为仅含部分成分股的新快照。
-        if failures:
-            raise RuntimeError(
-                '本轮资金榜单成分股获取不完整，旧缓存已保留：'
-                + '；'.join(failures[:3])
-            )
-        # 新榜单和成分股在同一事务里原子替换。
-        with sqlite3.connect(self.db_path, timeout=20) as conn:
-            conn.execute('DELETE FROM fund_top5_snapshot')
-            conn.execute('DELETE FROM fund_top5_member')
-            conn.executemany('INSERT INTO fund_top5_snapshot VALUES(?,?,?,?)', new_rows)
-            conn.executemany('INSERT INTO fund_top5_member VALUES(?,?)', new_members)
-        return '资金TOP5及五大行业成分股已更新'
+    def refresh_fund_top5(self,force=False,progress=None):
+        notify=progress or (lambda _:None)
+        previous,previous_members=self.load_fund_top5()
+        now=datetime.now(CST)
+        if (not force and len(previous)==5 and all(previous_members.get(i) for i in range(1,6))
+            and previous[0]['fetched_at'][:10]==now.strftime('%Y-%m-%d')
+            and (now.hour<18 or previous[0]['fetched_at'][11:13]>='18')):
+            return '已使用今日资金榜单缓存'
+        if now.weekday()<5 and now.hour<18:
+            if previous:
+                return '今日行情未结算，沿用本地榜单，18:00后可刷新'
+            raise RuntimeError('交易日18:00后可获取完整的近5日资金榜单')
+        errors=[]
+        for source in self._fund_source_order():
+            began=time.monotonic()
+            try:
+                rows,members=self._fund_complete_snapshot(source,notify,now)
+                with sqlite3.connect(self.db_path,timeout=20) as conn:
+                    conn.execute('DELETE FROM fund_top5_snapshot')
+                    conn.execute('DELETE FROM fund_top5_member')
+                    conn.executemany('INSERT INTO fund_top5_snapshot(rank,industry,net_yuan,fetched_at,source) VALUES(?,?,?,?,?)',rows)
+                    conn.executemany('INSERT INTO fund_top5_member VALUES(?,?)',members)
+                self._fund_note_health(source,True,time.monotonic()-began)
+                return f'{source} · TOP5资金榜单已更新'
+            except (RuntimeError,TimeoutError,ValueError,sqlite3.Error) as exc:
+                self._fund_note_health(source,False,time.monotonic()-began)
+                errors.append(f'{source}: {exc}')
+                notify(f'{source}暂不可用，自动切换备用来源…')
+        raise RuntimeError('两个来源均未获取完整榜单，已保留旧缓存：'+'；'.join(errors)[:400])
 
     def persist_day_universe(
         self,
