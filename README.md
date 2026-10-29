@@ -1,6 +1,10 @@
-# 发布状态警告：v1.2.8 已要求撤回
+# AShareMAScanner v1.2.8 修复版
 
-**请暂勿使用或下载 v1.2.8。** 2026-10-30 源码审计发现 PySide6 前端存在从 v1.2.6 遗漏的功能和信号历史运行错误，完整功能回归尚未通过。修复前请使用[上一稳定发布 v1.2.6](https://github.com/Xstime/AShareMAScanner/releases/tag/v1.2.6)。本仓库暂保留 v1.2.8 源码供审计修复，不代表其可安全发布。
+2026-10-30 已修复此前撤回版中发现的功能缺失和鲁棒性问题，并完成 Linux、Windows 回归与 BaoStock / 同花顺接口探测。正式下载以 [v1.2.8 GitHub Release](https://github.com/Xstime/AShareMAScanner/releases/tag/v1.2.8) 上的最新附件为准；**不要继续使用最初撤回的旧版文件**。
+
+- [完整审计记录](AUDIT_DEV_v1.2.8_2026-10-30.md)
+- [跨平台回归测试](https://github.com/Xstime/AShareMAScanner/actions/runs/40925157690)
+- [真实数据源探测](https://github.com/Xstime/AShareMAScanner/actions/runs/40924344394)
 
 ---
 
