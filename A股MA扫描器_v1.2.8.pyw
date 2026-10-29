@@ -4565,13 +4565,15 @@ class ScannerWindow(QMainWindow):
         worker.start()
 
     def _clear_stock(self):
+        self.selected_stock = None
+        self.chart_token += 1
         self.stock_name.setText("请选择股票")
         self.stock_code.setText("点击列表行查看")
         self.stock_price.setText("—")
         self.stock_change.setText("")
         self.metrics.setText("放量倍数   —\n\n换手率        —\n\n触发日期     —")
         self.chart.set_frame(pd.DataFrame())
-
+        self.chart_status.setText("请选择列表中的股票")
     def _chart_ready(self, token, frame):
         if token == self.chart_token:
             self.chart.set_frame(frame)
@@ -4580,22 +4582,34 @@ class ScannerWindow(QMainWindow):
     def _chart_failed(self, token, detail):
         if token == self.chart_token:
             self.chart_status.setText("走势图读取失败")
-            self.fund_error_details = detail
-
+            self._show_error("走势图读取失败", detail)
     def _full_chart_dialog(self):
         record = getattr(self, "selected_stock", None)
         if record is None:
             return
         dialog = QDialog(self)
-        dialog.setWindowTitle(f'{record.get("名称")} · 30日走势图')
-        dialog.resize(900, 590)
+        dialog.setWindowTitle(f'{record.get("名称")} · 最近30日行情与成交指标')
+        dialog.resize(960, 760)
         layout = QVBoxLayout(dialog)
-        layout.addWidget(self._text(str(record.get("名称")), "brand"))
-        chart = PriceChart()
-        chart.set_frame(self.chart.data)
-        layout.addWidget(chart)
+        layout.addWidget(self._text(
+            f'{record.get("代码")} {record.get("名称")} · 触发日 {record.get("触发日", "—")}', "brand"))
+        tabs = QTabWidget()
+        price = PriceChart()
+        price.set_frame(self.chart.data, signal_date=str(record.get("触发日", "")))
+        tabs.addTab(price, "价格与均线")
+        metrics = QWidget()
+        ml = QVBoxLayout(metrics)
+        for field, label in (("volume", "成交量（股）"),
+                             ("放量倍数", "放量倍数（与前5个交易日比）"),
+                             ("turnover", "换手率%")):
+            ml.addWidget(self._text(label, "section"))
+            chart = PriceChart()
+            chart.set_frame(self.chart.data, series=[field],
+                            signal_date=str(record.get("触发日", "")))
+            ml.addWidget(chart, 1)
+        tabs.addTab(metrics, "成交量 · 放量 · 换手率")
+        layout.addWidget(tabs, 1)
         dialog.exec()
-
     def _history_dialog(self):
         record = getattr(self, "selected_stock", None)
         if record is None:
@@ -4618,19 +4632,41 @@ class ScannerWindow(QMainWindow):
             self._show_error("历史读取失败", traceback.format_exc())
 
     def _show_release_info(self):
-        QMessageBox.information(
-            self, "检查更新",
-            "这是独立 PySide6 开发预览，不会覆盖 v1.2.6 正式版。\n"
-            "请到 github.com/Xstime/AShareMAScanner/releases 查看正式版本。"
-        )
-
+        if self._version_worker is not None and self._version_worker.isRunning():
+            return
+        # VersionWorker calls fetch_latest_release() outside the Qt GUI thread.
+        worker = VersionWorker()
+        self._version_worker = worker
+        def ready(status, url):
+            if url:
+                box = QMessageBox(self)
+                box.setWindowTitle("发现新版本")
+                box.setText(status)
+                box.setInformativeText("只打开 GitHub Releases；不会覆盖程序或本地数据库。")
+                button = box.addButton("前往下载", QMessageBox.ButtonRole.AcceptRole)
+                box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+                box.exec()
+                if box.clickedButton() == button:
+                    webbrowser.open(url)
+            else:
+                QMessageBox.information(self, "检查更新", status)
+        worker.success.connect(ready)
+        worker.failed.connect(lambda msg: QMessageBox.warning(self, "检查更新失败", msg))
+        self._remember(worker)
+        worker.start()
     def _show_error(self, title, details):
+        if not self.demo:
+            try:
+                DATA_DIR.mkdir(parents=True, exist_ok=True)
+                with (DATA_DIR / "scanner_error.log").open("a", encoding="utf-8") as log:
+                    log.write(f"\n[{datetime.now().isoformat(timespec='seconds')}] {title}\n{details}\n")
+            except OSError:
+                pass
         dialog = QDialog(self)
         dialog.setWindowTitle(title)
         dialog.resize(710, 410)
         layout = QVBoxLayout(dialog)
-        summary = QLabel("接口错误详情 / traceback（可复制用于排查）")
-        layout.addWidget(summary)
+        layout.addWidget(QLabel("错误详情 / traceback（可复制用于排查）"))
         txt = QPlainTextEdit()
         txt.setReadOnly(True)
         txt.setPlainText(details)
@@ -4639,7 +4675,6 @@ class ScannerWindow(QMainWindow):
         close.clicked.connect(dialog.accept)
         layout.addWidget(close)
         dialog.exec()
-
 
 
 def main():
