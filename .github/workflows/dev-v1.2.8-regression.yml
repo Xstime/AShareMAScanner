@@ -65,3 +65,25 @@ jobs:
               exit 1
             fi
           done
+
+  windows-robustness:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies on native Windows
+        run: python -m pip install -r requirements.txt
+      - name: Compile both sources
+        run: python -m py_compile "A股MA扫描器_v1.2.6.pyw" "A股MA扫描器_v1.2.8.pyw"
+      - name: Run native Windows headless functional and error-handling tests
+        run: |
+          python -m unittest discover -s tests -p "test_fresh_robustness.py" -v
+          python -m unittest discover -s tests -p "test_v128_full_audit.py" -v
+          python -m unittest discover -s tests -p "test_hybrid_pyside6.py" -v
+          python -m unittest discover -s tests -p "test_ths_top5_only.py" -v
