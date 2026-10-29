@@ -6462,6 +6462,10 @@ class ScannerWindow(QMainWindow):
         mm, ss = divmod(max(0, elapsed), 60)
         self.loading_elapsed.setText(f"已用时 {mm:02d}:{ss:02d}")
 
+    def start_update(self):
+        # 保留 Qt 旧加载页按钮的回调兼容；实际更新始终由 Tkinter 启动阶段执行。
+        return self._restart_pipeline()
+
     def _restart_pipeline(self):
         """重新运行三阶段启动流程，不在 Qt 运行时混用 Tk 主循环。"""
         confirm=QMessageBox.question(
