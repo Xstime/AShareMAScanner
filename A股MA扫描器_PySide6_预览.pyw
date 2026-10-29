@@ -128,11 +128,6 @@ class FundWorker(QThread):
                 rows, members = self.backend.load_fund_top5()
             except Exception:
                 rows, members = [], {}
-            # Show the most recent verified ranking even if constituent resolution
-            # failed, but intentionally pass NO constituents to disable selection.
-            rank_only = getattr(self.backend, "_last_rank_only", [])
-            if len(rank_only) == 5:
-                rows, members = rank_only, {}
             self.failed.emit(error, "\n".join(notices[-35:]), rows, members)
 
 
@@ -282,9 +277,8 @@ QPushButton#navButton { text-align: left; background: transparent; border: none;
                        border-radius: 8px; padding: 11px 12px; }
 QPushButton#navButton:hover { background: #e2eafa; }
 QPushButton#navButton:checked { background: #dceafe; color: #1261be; font-weight: 700; }
-QPushButton#fundCard { text-align: left; background: #ffffff; border: 1px solid #e1e7f0;
-                       border-radius: 11px; padding: 11px 8px; }
-QPushButton#fundCard:checked { background: #e9f3ff; border-color: #2081e9; }
+QLabel#fundCard { text-align: left; background: #ffffff; border: 1px solid #e1e7f0;
+                   border-radius: 11px; padding: 11px 8px; color: #354155; }
 QLineEdit, QComboBox { background: white; border: 1px solid #e0e5ee; border-radius: 8px;
                         padding: 7px 9px; min-height: 18px; color: #293344; }
 QLineEdit:focus, QComboBox:focus { border-color: #4c99e8; }
@@ -310,11 +304,8 @@ class ScannerWindow(QMainWindow):
         self.frame = pd.DataFrame()
         self.filtered = pd.DataFrame()
         self.funds = []
-        self.fund_members = {}
         self.fund_source = ""
         self.fund_error_details = ""
-        self.fund_ready = False
-        self.selected_fund = None
         self.current_key = STRATEGIES[5][0]
         self.workers = []
         self.scan_token = 0
@@ -494,13 +485,12 @@ class ScannerWindow(QMainWindow):
         cards.setSpacing(6)
         self.fund_cards = []
         for i in range(5):
-            button = QPushButton(f"TOP {i + 1:02d}\n等待数据\n—")
-            button.setObjectName("fundCard")
-            button.setCheckable(True)
-            button.setMinimumHeight(67)
-            button.clicked.connect(lambda checked=False, rank=i:self._on_fund_clicked(rank))
-            cards.addWidget(button, 1)
-            self.fund_cards.append(button)
+            card = QLabel(f"TOP {i + 1:02d}\n等待数据\n—")
+            card.setObjectName("fundCard")
+            card.setMinimumHeight(67)
+            card.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            cards.addWidget(card, 1)
+            self.fund_cards.append(card)
         mid.addLayout(cards)
 
         search = QHBoxLayout()
@@ -598,14 +588,12 @@ class ScannerWindow(QMainWindow):
             "warning": "",
         })()
         self.header_status.setText("演示模式 · 全部数据为虚构，仅展示交互")
-        self.fund_source_label.setText("演示数据 · 不可用于真实筛选")
+        self.fund_source_label.setText("演示资金榜单 · 模拟数据")
         self.funds = [
             {"name": name, "net_yuan": net * 1e8, "source": "演示"}
             for name, net in (("电子", 28.6), ("计算机", 22.1),
                               ("通信", 16.8), ("电力设备", 14.4), ("汽车", 11.2))
         ]
-        self.fund_members = {}
-        self.fund_ready = False
         self.refresh_market.setEnabled(False)
         self.fund_refresh.setEnabled(False)
         self._render_funds()
@@ -742,17 +730,11 @@ class ScannerWindow(QMainWindow):
         self.industry.blockSignals(False)
 
     def clear_filters(self):
-        self.selected_fund = None
         self.query.clear()
         self.market.setCurrentIndex(0)
         self.industry.setCurrentIndex(0)
         self._render_funds()
         self.apply_filters()
-
-    def _filter_valid_fund_members(self):
-        if not self.selected_fund or not self.fund_ready:
-            return None
-        return self.fund_members.get(self.selected_fund)
 
     def apply_filters(self):
         if self.frame.empty:
@@ -776,11 +758,6 @@ class ScannerWindow(QMainWindow):
             sector = self.industry.currentText()
             if sector and sector != "全部行业":
                 frame = frame.loc[frame["板块"].astype(str).eq(sector)]
-            members = self._filter_valid_fund_members()
-            if members is not None:
-                frame = frame.loc[frame["代码"].astype(str).str.zfill(6).isin(members)]
-            elif self.selected_fund and self.demo:
-                frame = frame.loc[frame["板块"].eq(self.funds[self.selected_fund - 1]["name"])]
             self.filtered = frame.copy()
         self._draw_table()
         self.hit_count.setText(f"命中 {len(self.filtered)} 只")
@@ -821,64 +798,39 @@ class ScannerWindow(QMainWindow):
         else:
             self._clear_stock()
 
-    def _on_fund_clicked(self, index):
-        if not self.demo and not self.fund_ready:
-            self._show_error(
-                "资金筛选尚不可用",
-                "行业资金 TOP5 必须同时取得完整的五个行业和对应的同源成分股。"
-                "\n目前可以查看缓存榜单，但不会用不完整或旧数据进行筛选。"
-                "\n\n" + self.fund_error_details
-            )
-            self._render_funds()
-            return
-        new_rank = index + 1
-        self.selected_fund = None if self.selected_fund == new_rank else new_rank
-        self._render_funds()
-        self.apply_filters()
-
     def _render_funds(self):
-        for idx, button in enumerate(self.fund_cards):
+        """TOP5 五个板块只展示排名及净流入金额，不支持点击筛选。"""
+        for idx, card in enumerate(self.fund_cards):
             if idx < len(self.funds):
                 record = self.funds[idx]
                 net = float(record["net_yuan"]) / 1e8
-                name = str(record["name"])
-                button.setText(f"TOP {idx + 1:02d}\n{name}\n{net:+.2f} 亿")
+                card.setText(f'TOP {idx + 1:02d}\n{record["name"]}\n{net:+.2f} 亿')
             else:
-                button.setText(f"TOP {idx + 1:02d}\n暂无数据\n—")
-            button.blockSignals(True)
-            button.setChecked(self.selected_fund == idx + 1)
-            button.blockSignals(False)
+                card.setText(f"TOP {idx + 1:02d}\n暂无数据\n—")
+
 
     def _load_funds_from_cache(self):
         try:
-            rows, members = self.backend.load_fund_top5()
-            self.funds, self.fund_members = rows, members
+            rows, _ = self.backend.load_fund_top5()
+            self.funds = rows
             self._check_fund_freshness()
             self._render_funds()
         except Exception as exc:
             self.fund_error_details = str(exc)
 
+
     def _check_fund_freshness(self):
-        rows, members = self.funds, self.fund_members
-        complete = len(rows) == 5 and all(members.get(i) for i in range(1, 6))
-        if complete and self.update_result is not None:
-            try:
-                captured = datetime.strptime(rows[0]["fetched_at"][:10], "%Y-%m-%d").date()
-                scanned = datetime.strptime(self.update_result.scan_date, "%Y-%m-%d").date()
-                lag = 2 if datetime.now(BEIJING).weekday() >= 5 else 0
-                complete = 0 <= (captured - scanned).days <= lag
-            except (ValueError, TypeError, KeyError):
-                complete = False
-        self.fund_ready = bool(complete)
+        """缓存允许查看，但必须显示真实抓取时间，不暗示等同当日实时排名。"""
+        rows = self.funds
         self.fund_source = rows[0].get("source", "未知来源") if rows else ""
         if self.demo:
             return
-        self.fund_source_label.setText(
-            (self.fund_source + (" · 可筛选" if self.fund_ready else " · 仅缓存显示"))
-            if rows else "暂无资金榜单"
-        )
-        if not self.fund_ready:
-            self.selected_fund = None
+        if rows:
+            stamp = str(rows[0].get("fetched_at", "未知时间"))[:16]
+            self.fund_source_label.setText(f"{self.fund_source} · 抓取 {stamp}")
+        else:
+            self.fund_source_label.setText("暂无资金榜单")
+
 
     def start_fund_refresh(self):
         if self.demo:
@@ -887,7 +839,7 @@ class ScannerWindow(QMainWindow):
             return
         self.fund_error_details = ""
         self.fund_refresh.setEnabled(False)
-        self.fund_source_label.setText("获取资金排名和同源成分股中…")
+        self.fund_source_label.setText("正在获取近5日行业资金TOP5排名…")
         worker = FundWorker(self.backend)
         worker.notice.connect(self.fund_source_label.setText)
         worker.success.connect(self._fund_ready)
@@ -897,26 +849,27 @@ class ScannerWindow(QMainWindow):
         worker.start()
 
     def _fund_ready(self, message, rows, members):
-        self.funds, self.fund_members = rows, members
+        self.funds = rows
         self._check_fund_freshness()
         self._render_funds()
         self.statusBar().showMessage(message)
 
+
     def _fund_failed(self, detail, notices, rows, members):
         self.fund_error_details = detail + "\n\n请求步骤：\n" + notices
-        self.funds, self.fund_members = rows, members
+        self.funds = rows
         self._check_fund_freshness()
         self._render_funds()
         self.fund_source_label.setText(
-            (self.fund_source + (" · 排名可看/筛选不可用"
-                                 if rows[0].get("ranking_only") else " · 旧缓存")
-             if rows else "两个来源均失败 · 查看原因")
+            f"{self.fund_source} · 更新失败，显示旧缓存" if rows
+            else "两个资金排名来源均失败 · 查看原因"
         )
         self._show_error(
-            "TOP5 刷新失败",
-            "自动刷新失败；不会丢弃旧缓存，也不会使用缺少成员的榜单筛选。\n\n"
+            "TOP5 排名刷新失败",
+            "两家数据源的资金排名获取失败；原有榜单缓存未被覆盖。\n\n"
             + self.fund_error_details,
         )
+
 
     def _stock_selected(self):
         selected = self.table.selectedItems()
