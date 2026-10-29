@@ -128,6 +128,11 @@ class FundWorker(QThread):
                 rows, members = self.backend.load_fund_top5()
             except Exception:
                 rows, members = [], {}
+            # Show the most recent verified ranking even if constituent resolution
+            # failed, but intentionally pass NO constituents to disable selection.
+            rank_only = getattr(self.backend, "_last_rank_only", [])
+            if len(rank_only) == 5:
+                rows, members = rank_only, {}
             self.failed.emit(error, "\n".join(notices[-35:]), rows, members)
 
 
@@ -900,7 +905,9 @@ class ScannerWindow(QMainWindow):
         self._check_fund_freshness()
         self._render_funds()
         self.fund_source_label.setText(
-            (self.fund_source + " · 旧缓存" if rows else "两个来源均失败 · 查看原因")
+            (self.fund_source + (" · 排名可看/筛选不可用"
+                                 if rows[0].get("ranking_only") else " · 旧缓存")
+             if rows else "两个来源均失败 · 查看原因")
         )
         self._show_error(
             "TOP5 刷新失败",
