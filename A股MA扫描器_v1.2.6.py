@@ -3398,6 +3398,8 @@ class StockScannerApp:
         self.fund_status_var = tk.StringVar(value="等待行情检查完成…")
         self._fund_rows: list[dict] = []
         self._fund_top5_codes: set[str] = set()
+        self._fund_members_by_rank: dict[int,set[str]] = {}
+        self._fund_selected_rank = None
         self._fund_filter_ready = False
         self._fund_fetch_in_progress = False
 
@@ -3687,7 +3689,7 @@ class StockScannerApp:
         fund_heading = ttk.Frame(self.fund_box)
         fund_heading.grid(row=0, column=0, sticky="ew", pady=(0, 4))
         fund_heading.columnconfigure(0, weight=1)
-        ttk.Label(fund_heading, text="近5个交易日 · 主力资金净流入 TOP5",
+        ttk.Label(fund_heading, text="近5日 · 行业资金净流入 TOP5",
                   style="Headline.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(fund_heading, textvariable=self.fund_status_var,
                   style="Subtle.TLabel").grid(row=0, column=1, sticky="e", padx=(8, 10))
@@ -3713,6 +3715,8 @@ class StockScannerApp:
                            font=("Segoe UI", 12, "bold"), text="—")
             val.pack(fill="x", padx=10, pady=(0,5))
             self._fund_card_labels.append((lbl, val))
+            for target in (tile,lbl,val):
+                target.bind('<Button-1>',lambda _event,rank=idx+1:self._on_fund_card_click(rank))
 
         # 五个策略共用：板块与板块自身信号视图。
         # 不是额外下拉框，而是在结果上方直接列出触发板块。
@@ -4156,6 +4160,11 @@ class StockScannerApp:
                             include_previous,
                             df,
                         )
+
+                elif kind == "fund_progress":
+                    _, progress_message = event
+                    if self._fund_fetch_in_progress:
+                        self.fund_status_var.set(progress_message)
 
                 elif kind == "fund_done":
                     _, message = event
@@ -4630,17 +4639,37 @@ class StockScannerApp:
         if not self._fund_filter_ready or '_code_full' not in frame.columns:
             return frame.iloc[0:0].copy()
         symbols = frame['_code_full'].astype(str).str.split('.').str[-1].str.zfill(6)
-        return frame.loc[symbols.isin(self._fund_top5_codes)].copy()
+        allowed = (self._fund_members_by_rank.get(self._fund_selected_rank,set())
+                   if self._fund_selected_rank is not None else self._fund_top5_codes)
+        return frame.loc[symbols.isin(allowed)].copy()
 
     def _on_fund_top5_toggle(self):
         if self.fund_top5_only_var.get() and not self._fund_filter_ready:
             self.fund_top5_only_var.set(False)
             return
-        self.current_sector_filter = None
-        self.industry_var.set('全部行业')
+        if not self.fund_top5_only_var.get():
+            self._fund_selected_rank = None
+        self._render_fund_cards()
         if self.current_strategy_key and not self._scan_in_progress:
             self._populate_sector_tree(self._limit_to_fund_top5(self.current_df))
             self._apply_quick_filters(silent=True)
+
+    def _on_fund_card_click(self,rank:int):
+        if not self._fund_filter_ready:return
+        if self.fund_top5_only_var.get() and self._fund_selected_rank==rank:
+            self.fund_top5_only_var.set(False)
+            self._fund_selected_rank=None
+        else:
+            self.fund_top5_only_var.set(True)
+            self._fund_selected_rank=rank
+        self._on_fund_top5_toggle()
+
+    def _render_fund_cards(self):
+        for i,(label,value) in enumerate(self._fund_card_labels):
+            active=self.fund_top5_only_var.get() and self._fund_selected_rank==i+1
+            color='#eaf3ff' if active else '#ffffff'
+            label.configure(bg=color)
+            value.configure(bg=color)
 
     def _display_fund_top5(self, message: str):
         try:
@@ -4649,6 +4678,7 @@ class StockScannerApp:
             rows, by_rank = [], {}
             message = str(exc)
         self._fund_rows = rows
+        self._fund_members_by_rank = by_rank
         self._fund_top5_codes = set().union(*(by_rank.values())) if by_rank else set()
         complete = len(rows) == 5 and all(by_rank.get(i) for i in range(1,6))
         data_date = self.update_result.scan_date if self.update_result else None
@@ -4678,10 +4708,12 @@ class StockScannerApp:
             else:
                 lbl.configure(text=f"#{i+1}  暂无数据")
                 val.configure(text='—', fg='#6e6e73')
+        self._render_fund_cards()
         if rows:
             stamp = rows[0]['fetched_at'][5:16]
-            suffix = '按东财成分股代码筛选' if fresh else '榜单/行情日期未匹配或成分股不全，暂不可筛选'
-            info = f"东财 · 抓取 {stamp} · {suffix}"
+            source=rows[0].get('source','东方财富')
+            suffix='数据可筛选' if fresh else '榜单与行情日期未匹配，暂不可筛选'
+            info=f'{source} · 抓取 {stamp} · {suffix}'
             if message and ('失败' in message or '异常' in message):
                 info += " · 更新失败，请重试"
             self.fund_status_var.set(info)
@@ -4701,7 +4733,8 @@ class StockScannerApp:
         self._set_actions_enabled(True)
         def worker():
             try:
-                message = self.backend.refresh_fund_top5(force=force)
+                def progress(notice):self.events.put(('fund_progress',notice))
+                message = self.backend.refresh_fund_top5(force=force,progress=progress)
             except Exception as exc:
                 message = f'更新失败：{exc}；不会影响原有策略'
             self.events.put(('fund_done', message))
