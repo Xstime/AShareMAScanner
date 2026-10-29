@@ -36,6 +36,9 @@ class DesktopLayoutTests(unittest.TestCase):
             for item in reversed(self.mocks):item.stop()
 
     def test_real_three_column_workbench(self):
+        # Tk hides the scanner at startup; geometry reports 1x1 until it is mapped.
+        self.app._enter_scanner()
+        self.root.update_idletasks()
         self.assertEqual(self.root.geometry().split('+')[0],'1080x810')
         self.assertEqual(self.app.workspace.winfo_manager(),'grid')
         self.assertIs(self.app.center_panel.master,self.app.workspace)
