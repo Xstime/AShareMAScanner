@@ -1,52 +1,64 @@
-# A股 MA 扫描器 · v1.2.8
+# AShareMAScanner · A股 MA 扫描器 v1.2.8
 
-纯 Python / **Tkinter 单文件 `.pyw`**，不使用 PySide6、Qt，也不需要构建 EXE。
+**单个 Python `.pyw` 文件**，保留三个依次运行的桌面界面。无需制作、安装大型 EXE，但需要系统 Python 3.10+ 和 Tkinter。
 
-## 下载和运行
+## 三阶段启动流程
 
-1. 从 [Releases](https://github.com/Xstime/AShareMAScanner/releases) 下载 `AShareMAScanner_v1.2.8.pyw`，可重命名为 `A股MA扫描器_v1.2.8.pyw`。
-2. Windows 已安装 Python 3.10+ 且正确关联 `.pyw` 后，可直接双击文件。缺少库时先显示 **Tkinter 库补齐窗口**；然后显示独立的 **八阶段行情加载窗口**；行情数据通过校验后进入 **Tkinter 4:3 三栏主界面**。
-3. `pandas`、`baostock` 是核心依赖；`akshare` 用于同花顺 TOP5。启动时尝试自动安装缺少的依赖（清华镜像优先、官方 PyPI 备用）。离线环境如自动补库失败，可在命令行手动执行：
+1. **Python 环境检查与补库（Tkinter）**：检测 pandas、BaoStock、AKShare、PySide6。缺少的库通过清华镜像优先、官方 PyPI 备用的方式安装；已有库时短暂显示“环境检查通过”。
+2. **行情抓取与更新（Tkinter）**：八阶段完整进度、逐股处理消息和已用时；异常可重试。数据准备成功后，关闭 Tkinter 窗口。
+3. **4:3 主工作台（PySide6）**：默认 **1120×840**，左侧七种策略、中间资金 TOP5/搜索/股票列表、右侧选中股票的价格与 MA5/MA10/MA20 走势图。主窗口直接使用前一阶段的更新结果，**不重复全市场抓取**。
+
+Windows 配置好 Python `.pyw` 文件关联后可直接双击；通常不出现黑色控制台。
+
+## 下载与运行
+
+从 [GitHub Releases](https://github.com/Xstime/AShareMAScanner/releases) 下载：
+
+- `AShareMAScanner_v1.2.8.pyw`：完整的单文件源程序（可重命名为中文）。
+- `AShareMAScanner_v1.2.8.zip`：包含中文脚本、`requirements.txt` 和说明。
+
+如果自动补库失败，可手动运行：
 
 ```bash
 python -m pip install -r requirements.txt
 python A股MA扫描器_v1.2.8.pyw
 ```
 
-可从 GitHub ZIP 下载包取得中文文件名的源代码和依赖清单。
+**离线体验主界面：**
 
-## 七种策略（全部保留）
+```bash
+python A股MA扫描器_v1.2.8.pyw --demo
+```
 
-1. 放量突破 MA5
-2. 放量突破 MA10
-3. 放量突破 MA20
-4. MA5 上穿 MA10
-5. 放量倍数 / 换手率区间
-6. MA5 首次拐头向上
-7. MA5/MA10/MA20 均线粘合后首次向上发散
+`--demo` 仅使用明确标记的虚构股票和资金数据，不联网更新行情，主要用于查看 PySide6 的外观。
 
-支持行业板块信号、股票搜索和排序、历史信号、收盘价与均线走势图。
+## 保留的七种选股策略
 
-## 资金 TOP5（仅展示行业）
+- 放量突破 MA5、放量突破 MA10、放量突破 MA20
+- MA5 上穿 MA10
+- 放量倍数与换手率区间筛选
+- MA5 首次拐头向上
+- MA5 / MA10 / MA20 均线粘合后向上发散
 
-- 仅调用 **同花顺** `ak.stock_fund_flow_industry(symbol="5日排行")`，获取过去 5 日资金净流入最高的 **5 个行业**。
-- 展示行业名称、排名、净流入金额（亿元）及缓存抓取时间；**不请求行业成分股，不按 TOP5 筛选股票**。
-- 请求超时或失败时最多重试一次，仍失败则保留最近成功缓存，七种策略不受影响。
-- 更新同花顺榜单成功才清理旧版本历史遗留的成分股记录；不会删除数据库或行情历史。
+主要行情来自 BaoStock 的后复权日线；保留原数据库、历史数据、行业板块分类以及策略信号。主界面支持按名称/代码搜索股票、市场与行业筛选、点击表格选择股票、走势图和信号历史查看。
 
-行情数据来自 **BaoStock**。数据始终保存在脚本所在文件夹下 `data/a_share_baostock_hfq.db`。**升级时原样保留 `data/` 文件夹**。
+## TOP5 资金行业（只展示）
 
-## 发布与版本说明
+- **仅同花顺**：`ak.stock_fund_flow_industry(symbol="5日排行")`
+- 显示最近五日主力资金净流入最高的五个**行业板块**、金额（亿元）和实际抓取时间。
+- **不抓成分股，不使用 TOP5 筛选个股，也不再连接东方财富接口。**
+- 抓取失败最多重试一次，仍失败保留先前成功的榜单，不影响七种策略。
 
-- 最新：**v1.2.8**，单 `.pyw` Tkinter，资金 TOP5 只保留同花顺行业排名。
-- 旧版：v1.2.6，可在 [历史 Release](https://github.com/Xstime/AShareMAScanner/releases/tag/v1.2.6) 下载。
-- v1.2.7 的 PySide6/TOP5 成分股实验**不属于正式版**；此分支不包含其入口和依赖。
-- 应用内检查更新只读取固定仓库的正式 GitHub Release，不远程执行代码。
+## 数据保存
 
-## 已验证范围
+仍固定保存在脚本同级：
 
-自动化验证覆盖 Python 语法、Tkinter Xvfb 图形环境、TOP5 单来源/重试/旧缓存保留、启动与七种策略相关既有回归。曾在 GitHub 云端真实测通同花顺五日资金排名；不保证任何时刻的第三方网站都可用。**尚未完整验证 Windows 实机和 BaoStock 全市场实时逐股更新**。
+`data/a_share_baostock_hfq.db`
 
-项目用于研究和行情分析，不构成投资建议；第三方数据接口可能延迟、改变或限制访问。
+**升级时原样保留 `data/` 文件夹，勿删除或移动。** 新版本不会清空历史行情。
 
-MIT License。
+## 测试说明
+
+GitHub Actions 自动校验 Python 语法、Tkinter 数据窗口、PySide6 真实 4:3 界面、七种策略相关回归、TOP5 同花顺排名/重试/缓存兼容，并生成真实 Qt 截图。曾在 GitHub 云端测通同花顺五日行业资金排名，但第三方接口可用性随网络环境变化；Windows 实机/全面全市场联网测试仍需实际环境确认。
+
+MIT License。内容仅用于技术研究和行情分析，不构成投资建议。
