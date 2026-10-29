@@ -19,7 +19,7 @@ class BackendAudit(unittest.TestCase):
         self.b=m.BaoStockBackend(Path(self.tmp.name)/"market.db")
         self.b.init_db()
         self.days=pd.date_range("2026-08-17",periods=30,freq="B").strftime("%Y-%m-%d").tolist()
-        with sqlite3.connect(self.b.db_path) as c:
+        with m.sqlite_connection(self.b.db_path) as c:
             c.executemany("INSERT INTO daily(code,trade_date,name,close,volume,trade_status,is_st,turnover) VALUES(?,?,?,?,?,?,?,?)",
                 [("sh.600000",d,"测试银行",10+i*.1,25000 if i==29 else 10000,1,0,3.5) for i,d in enumerate(self.days)])
     def tearDown(self):self.tmp.cleanup()
@@ -31,7 +31,7 @@ class BackendAudit(unittest.TestCase):
         self.assertTrue(f.matches({"volume":25000,"VOL5_PREV":10000,"turnover":3.5}))
         self.assertFalse(f.matches({"volume":45000,"VOL5_PREV":10000,"turnover":3.5}))
     def test_seven_real_strategy_calls(self):
-        with sqlite3.connect(self.b.db_path) as c:
+        with m.sqlite_connection(self.b.db_path) as c:
             raw=pd.read_sql_query("SELECT * FROM daily ORDER BY trade_date",c)
         self.b._load_scan_data=lambda date:raw.copy()
         self.b.get_industry_map=lambda:{"sh.600000":"测试行业"}
@@ -50,7 +50,7 @@ class BackendAudit(unittest.TestCase):
         self.assertTrue({"streak","filter_key","signal_date","strategy","payload"}.issubset(history.columns))
         self.assertGreater(len(history),0)
     def test_legacy_eastmoney_snapshot_not_shown(self):
-        with sqlite3.connect(self.b.db_path) as c:
+        with m.sqlite_connection(self.b.db_path) as c:
             c.executemany("INSERT INTO fund_top5_snapshot(rank,industry,net_yuan,fetched_at,source) VALUES(?,?,?,?,?)",
                 [(i,"legacy",1e8,"2026-10-28 18:00:00","东方财富") for i in range(1,6)])
         rows,_=self.b.load_fund_top5()
