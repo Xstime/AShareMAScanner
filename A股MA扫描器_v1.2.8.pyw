@@ -18,8 +18,8 @@ A股 MA 扫描器（单文件 Tkinter .pyw · BaoStock + 同花顺资金 TOP5 ·
     7) 均线粘合向上：昨日MA5/10/20偏离度≤2%，今日全线上升、MA5>MA10>MA20并向上发散，且仅首次触发
 - 个股结果仅显示最新市场交易日触发，所有策略均显示放量倍数与换手率。
 - MA5拐头策略不以价格上穿MA5、放量或换手率作为附加门槛。
-- 新策略支持行业板块同规则判断、单击板块筛选、双击板块看MA5走势、信号历史回算。
-- 七个策略按钮采用两行四列的紧凑布局。
+- 七种策略支持行业板块同规则判断、单击板块筛选、双击查看当前策略的板块走势及历史信号。
+- PySide6 主界面采用左侧七策略、中央筛选与结果、右侧个股详情三栏布局。
 - 第5策略修改参数后，重新点击筛选策略按钮生效。
 - 策略扫描期间可直接切换其他策略；旧扫描自动取消，以最后一次点击为准。
 - 切换策略时立即清空旧板块过滤和旧个股结果，避免新策略标题配上旧策略数据。
@@ -33,8 +33,8 @@ A股 MA 扫描器（单文件 Tkinter .pyw · BaoStock + 同花顺资金 TOP5 ·
 - 个股与板块走势图支持悬停读数；板块名称支持悬停完整提示。
 - 个股图增加成交量、放量倍数、换手率与触发日标记。
 - 结果支持代码/名称、市场、行业、涨幅范围快捷过滤。
-- 新增近5交易日主力净流入TOP5横向卡片；可一键限定五大资金流入行业的成分股。
-- 行业资金流来自东方财富（AKShare）；按成分股代码严格匹配，不依赖BaoStock行业名称。
+- 近5日同花顺行业资金净流入 TOP5 仅展示行业排名与金额，不抓成分股、不按榜单筛选股票。
+- 资金排名仅通过 AKShare 的同花顺五日行业排行获取；保留失败前的同花顺缓存。
 - 资金接口故障不影响七个选股策略，禁止用未验证的板块名称猜测股票。
 - 启动时自动检测并安装缺失的 pandas、baostock、akshare；优先清华镜像，失败改用官方 PyPI。
 - 无 Excel 导出，无数据库位置按钮。
@@ -1642,7 +1642,7 @@ class BaoStockBackend:
                 "板块分类暂不可用，个股扫描继续",
             )
 
-    # -------------------- 近5日行业资金TOP5（来源自动选择） --------------------
+    # -------------------- 近5日行业资金TOP5（仅同花顺） --------------------
 
     FUND_RANK_TIMEOUT=25
     FUND_JSON_PREFIX='__AShareMA_Fund_JSON__='
@@ -4565,6 +4565,16 @@ class ScannerWindow(QMainWindow):
 
     def start_fund_refresh(self):
         if self.demo:
+            return
+        now = datetime.now(CST)
+        if now.weekday() < 5 and now.hour < 18:
+            # Current trading-day ranking is not yet settled. Do not throw an
+            # error dialog on normal morning startup when no cache exists.
+            if not self.funds:
+                self.fund_source_label.setText("交易日 18:00 后可刷新 TOP5")
+            else:
+                self._check_fund_freshness()
+            self.statusBar().showMessage("交易日资金榜单尚未结算，18:00 后可刷新；扫描策略不受影响")
             return
         if self.backend is None or any(isinstance(w, FundWorker) and w.isRunning() for w in self.workers):
             return
