@@ -3839,6 +3839,17 @@ class ScannerWindow(QMainWindow):
         else:
             raise RuntimeError("主界面必须等待 Tkinter 行情抓取成功后才能启动")
 
+    def closeEvent(self, event):
+        # No QThread can be destroyed while it is still running.
+        if self._scan_cancel_event is not None:
+            self._scan_cancel_event.set()
+        if any(worker.isRunning() for worker in self.workers):
+            event.ignore()
+            self.statusBar().showMessage("后台任务尚未结束，完成后自动关闭…")
+            QTimer.singleShot(250, self.close)
+            return
+        super().closeEvent(event)
+
     def _text(self, value, role=None, parent=None):
         label = QLabel(value, parent)
         if role:
@@ -4160,6 +4171,16 @@ class ScannerWindow(QMainWindow):
             self,"重新更新行情",
             "将关闭当前 PySide6 主界面，然后重新显示 Tkinter 行情更新窗口。继续吗？")
         if confirm!=QMessageBox.StandardButton.Yes:return
+        if self._scan_cancel_event is not None:
+            self._scan_cancel_event.set()
+        self.refresh_market.setEnabled(False)
+        self.statusBar().showMessage("正在等待扫描和资金后台任务安全退出…")
+        self._complete_restart()
+
+    def _complete_restart(self):
+        if any(worker.isRunning() for worker in self.workers):
+            QTimer.singleShot(200, self._complete_restart)
+            return
         self._restart_requested = True
         QApplication.instance().quit()
 
