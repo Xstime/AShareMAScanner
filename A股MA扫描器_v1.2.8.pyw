@@ -4381,6 +4381,7 @@ class ScannerWindow(QMainWindow):
                 False, self.update_result.previous_trade_date,
                 self.current_filters if self.current_key == "volume_turnover" else None)
             dlg = QDialog(self)
+            dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
             dlg.setWindowTitle(f"{sector} · {self.strategy_title.text()}")
             dlg.resize(950, 720)
             layout = QVBoxLayout(dlg)
@@ -4680,6 +4681,7 @@ class ScannerWindow(QMainWindow):
         if record is None:
             return
         dialog = QDialog(self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dialog.setWindowTitle(f'{record.get("名称")} · 最近30日行情与成交指标')
         dialog.resize(960, 760)
         layout = QVBoxLayout(dialog)
@@ -4710,6 +4712,10 @@ class ScannerWindow(QMainWindow):
             QMessageBox.information(self, "信号历史", "演示模式不提供真实信号历史。")
             return
         dialog = QDialog(self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        window_closed = [False]
+        dialog.finished.connect(lambda *_: window_closed.__setitem__(0, True))
+        dialog.destroyed.connect(lambda *_: window_closed.__setitem__(0, True))
         dialog.setWindowTitle(f'{record.get("代码")} {record.get("名称")} · 信号历史')
         dialog.resize(1100, 650)
         layout = QVBoxLayout(dialog)
@@ -4726,13 +4732,18 @@ class ScannerWindow(QMainWindow):
         name = str(record.get("名称", ""))
 
         def display(history):
-            if not dialog.isVisible():
+            if window_closed[0] or not dialog.isVisible():
                 return
             notice.setText(f"历史共 {len(history)} 条信号 · 双击记录查看触发日走势图")
             table.setSortingEnabled(False)
             table.setRowCount(len(history))
             for index, rec in enumerate(history.to_dict("records")):
-                payload = json.loads(rec.get("payload") or "{}")
+                try:
+                    payload = json.loads(rec.get("payload") or "{}")
+                    if not isinstance(payload, dict):
+                        payload = {}
+                except (ValueError, TypeError):
+                    payload = {}
                 filter_key = str(rec.get("filter_key", "固定规则"))
                 if filter_key != "固定规则":
                     try:
@@ -4754,7 +4765,7 @@ class ScannerWindow(QMainWindow):
             table.resizeColumnsToContents()
 
         def fail(details):
-            if dialog.isVisible():
+            if not window_closed[0] and dialog.isVisible():
                 notice.setText("历史记录回算失败")
                 self._show_error("历史读取失败", details)
 
@@ -4768,6 +4779,7 @@ class ScannerWindow(QMainWindow):
                 if frame.empty:
                     return
                 plot = QDialog(dialog)
+                plot.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
                 plot.setWindowTitle(f"{name} · {date} 触发日")
                 plot.resize(900, 620)
                 view = QVBoxLayout(plot)
@@ -4819,6 +4831,7 @@ class ScannerWindow(QMainWindow):
             except OSError:
                 pass
         dialog = QDialog(self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dialog.setWindowTitle(title)
         dialog.resize(710, 410)
         layout = QVBoxLayout(dialog)
