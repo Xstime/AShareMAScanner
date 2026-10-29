@@ -3352,9 +3352,12 @@ class StockScannerApp:
         )
         style.configure(
             "TButton",
-            padding=(14, 8),
+            padding=(11, 6),
             font=("Segoe UI", 10),
         )
+        style.configure('SelectedStrategy.TButton', background='#dbeafe', foreground='#074fa0',
+                        padding=(11, 6), font=('Segoe UI',10,'bold'))
+        style.map('SelectedStrategy.TButton', background=[('active','#c8dfff'),('disabled','#dbeafe')])
         style.map(
             "TButton",
             foreground=[
@@ -3498,6 +3501,7 @@ class StockScannerApp:
         for col in range(4):
             button_row.columnconfigure(col, weight=1, uniform="strategy")
         self.strategy_buttons = []
+        self.strategy_button_by_key = {}
 
         for i, (label, strategy_key) in enumerate(self.STRATEGIES.items()):
             btn = ttk.Button(
@@ -3507,17 +3511,22 @@ class StockScannerApp:
             )
             btn.grid(row=i // 4, column=i % 4, sticky="ew", padx=(0, 8), pady=2)
             self.strategy_buttons.append(btn)
+            self.strategy_button_by_key[strategy_key] = btn
 
-        parameter_row = ttk.Frame(action_box)
-        parameter_row.pack(fill="x", pady=(6, 2))
+        self.parameter_row = ttk.Frame(action_box)
+        parameter_row = self.parameter_row
+        parameter_row.pack(fill="x", pady=(4, 2))
         self.filter_entries = []
         for label, variable in zip(("放量最小值", "放量最大值", "换手率最小值%", "换手率最大值%"), self.filter_vars):
             ttk.Label(parameter_row, text=label).pack(side="left", padx=(0, 5))
             entry = ttk.Entry(parameter_row, textvariable=variable, width=7)
             entry.pack(side="left", padx=(0, 12))
             self.filter_entries.append(entry)
-        ttk.Label(action_box, textvariable=self.parameter_status_var,
-                  style="Subtle.TLabel").pack(anchor="w", pady=(2, 0))
+        self.parameter_help = ttk.Label(action_box, textvariable=self.parameter_status_var,
+                                       style="Subtle.TLabel")
+        self.parameter_help.pack(anchor="w", pady=(2, 0))
+        self.parameter_row.pack_forget()
+        self.parameter_help.pack_forget()
 
         info_box = ttk.Frame(
             self.root,
@@ -3559,9 +3568,9 @@ class StockScannerApp:
         ttk.Label(quick_row, text="涨幅%").pack(side="left")
         for variable in (self.change_min_var, self.change_max_var):
             ttk.Entry(quick_row, textvariable=variable, width=6).pack(side="left", padx=4)
-        ttk.Button(quick_row, text="过滤", command=self._apply_quick_filters).pack(side="left", padx=4)
-        ttk.Button(quick_row, text="重置", command=self._reset_quick_filters).pack(side="left")
-        for variable in (self.search_var, self.market_var, self.industry_var):
+        ttk.Button(quick_row, text="重置", command=self._reset_quick_filters).pack(side="left", padx=4)
+        for variable in (self.search_var, self.market_var, self.industry_var,
+                         self.change_min_var, self.change_max_var):
             variable.trace_add("write", self._schedule_quick_filter)
         tools_row = ttk.Frame(quick_box)
         tools_row.pack(fill="x", pady=(5, 0))
@@ -3769,6 +3778,16 @@ class StockScannerApp:
         attach_sector_tip(self.tree)
         attach_sector_tip(self.sector_tree)
 
+    def _refresh_strategy_selection(self):
+        for key, btn in self.strategy_button_by_key.items():
+            btn.configure(style='SelectedStrategy.TButton' if key == self.current_strategy_key else 'TButton')
+        if self.current_strategy_key == 'volume_turnover':
+            self.parameter_row.pack(fill='x', pady=(4,2))
+            self.parameter_help.pack(anchor='w', pady=(2,0))
+        else:
+            self.parameter_row.pack_forget()
+            self.parameter_help.pack_forget()
+
     def _set_actions_enabled(self, enabled: bool):
         state = "normal" if enabled else "disabled"
 
@@ -3892,6 +3911,7 @@ class StockScannerApp:
         # 切换策略时绝不能继续显示上一个策略的板块选择和个股结果。
         self.current_strategy_key = strategy_key
         self.current_strategy_label = strategy_label
+        self._refresh_strategy_selection()
         self.current_sector_filter = None
         self.current_df = pd.DataFrame()
         self.visible_df = pd.DataFrame()
@@ -4694,11 +4714,8 @@ class StockScannerApp:
         self._show_chart_window(self.backend.symbol_only(code), name, trigger_date or "—", data)
 
     def _open_history_window(self, code, name):
-        try:
-            filters = self._read_filters()
-        except ValueError as exc:
-            messagebox.showerror(APP_TITLE, str(exc))
-            return
+        # 不受第5策略输入框尚未应用的内容影响。
+        filters = self.current_filters
         end = self.update_result.scan_date if self.update_result else self.backend.get_latest_daily_date()
         if not end:
             return
