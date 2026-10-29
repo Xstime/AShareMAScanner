@@ -1,0 +1,23 @@
+name: Check lightweight same-source THS ranking URLs
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [dev/v1.2.8-three-stage-pyw]
+    paths:
+      - 'tools/probe_light_ths.py'
+      - '.github/workflows/probe_light_ths.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  try-public-html:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Check unauthenticated public HTML using only the Python standard library
+        run: python -u tools/probe_light_ths.py
