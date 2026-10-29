@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pandas as pd
 
 sys.modules['baostock'] = types.ModuleType('baostock')
-script=Path(__file__).resolve().parents[1]/'A股MA扫描器_v1.2.7.pyw'
+script=Path(__file__).resolve().parents[1]/'A股MA扫描器_v1.2.8.pyw'
 loader=SourceFileLoader('ma43_desktop_test',str(script))
 spec=importlib.util.spec_from_loader(loader.name,loader)
 module=importlib.util.module_from_spec(spec)
