@@ -7,6 +7,8 @@ on:
     paths:
       - 'A股MA扫描器_PySide6_预览.pyw'
       - 'tests/test_pyside6_preview.py'
+      - 'tests/test_fund_diagnostics.py'
+      - 'A股MA扫描器_v1.2.7.pyw'
       - '.github/workflows/pyside6-preview.yml'
   workflow_dispatch:
 
