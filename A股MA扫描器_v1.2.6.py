@@ -3549,6 +3549,7 @@ class StockScannerApp:
             padding=(16, 4, 16, 6),
         )
         progress_box.grid(row=1, column=0, sticky="ew")
+        self.progress_box=progress_box
         progress_box.columnconfigure(0, weight=1)
 
         task_line = ttk.Frame(progress_box)
@@ -3939,6 +3940,7 @@ class StockScannerApp:
         self.retry_button.grid_remove()
         self._busy = True
         self._set_actions_enabled(False)
+        self.progress_box.grid()
         self._set_progress(0, "开始检查数据")
         self.summary_var.set("正在检查并更新数据…")
         self.warning_var.set("")
@@ -4020,6 +4022,7 @@ class StockScannerApp:
         self.sector_box.grid_remove()
         self._populate_tree(strategy_key, pd.DataFrame())
 
+        self.progress_box.grid()
         self._set_progress(
             0,
             f"计算 {strategy_label}",
@@ -4235,6 +4238,7 @@ class StockScannerApp:
             100,
             "数据检查完成",
         )
+        self.progress_box.grid_remove()
 
         if result.warning:
             self.warning_var.set(
@@ -4288,6 +4292,7 @@ class StockScannerApp:
             100,
             f"{strategy_label} 计算完成",
         )
+        self.progress_box.grid_remove()
         self._set_actions_enabled(True)
         industries = sorted(df["板块"].dropna().astype(str).unique()) if not df.empty else []
         self.industry_combo.configure(values=["全部行业"] + industries)
@@ -4312,20 +4317,9 @@ class StockScannerApp:
             self.update_result is not None
         )
 
-        self._set_progress(
-            self.progress_var.get(),
-            "发生错误",
-        )
-
-        self.warning_var.set(message)
-
-        try:
-            messagebox.showerror(
-                APP_TITLE,
-                f"{message}\n\n成功保存的本地行情不会因本次出错而清空。",
-            )
-        except tk.TclError:
-            pass
+        self._set_progress(self.progress_var.get(), "发生错误")
+        self.progress_box.grid_remove()
+        self.warning_var.set("操作失败：" + message[:240])
         # 报错详情保存至data文件夹；权限受限时回退终端，不影响GUI。
         try:
             log_file = DATA_DIR / "scanner_error.log"
@@ -4468,6 +4462,8 @@ class StockScannerApp:
                 values=values,
                 tags=(full_code,),
             )
+        if self.current_sort_column in columns:
+            self._apply_saved_sort()
 
     def _populate_sector_tree(
         self,
@@ -4885,39 +4881,20 @@ class StockScannerApp:
         except Exception:
             return (1, text)
 
-    def _sort_tree(self, column: str):
-        items = []
+    def _apply_saved_sort(self):
+        column=self.current_sort_column
+        if column is None:return
+        items=[(self._sort_value(self.tree.set(iid,column)),iid)
+               for iid in self.tree.get_children('')]
+        items.sort(key=lambda pair:pair[0],reverse=self.current_sort_reverse)
+        for pos,(_,iid) in enumerate(items):
+            self.tree.move(iid,'',pos)
 
-        for iid in self.tree.get_children(""):
-            value = self.tree.set(
-                iid,
-                column,
-            )
-            items.append((
-                self._sort_value(value),
-                iid,
-            ))
-
-        reverse = (
-            not self.current_sort_reverse
-            if self.current_sort_column == column
-            else False
-        )
-
-        items.sort(
-            key=lambda x: x[0],
-            reverse=reverse,
-        )
-
-        for pos, (_, iid) in enumerate(items):
-            self.tree.move(
-                iid,
-                "",
-                pos,
-            )
-
-        self.current_sort_column = column
-        self.current_sort_reverse = reverse
+    def _sort_tree(self,column:str):
+        self.current_sort_reverse=(not self.current_sort_reverse
+                                   if self.current_sort_column==column else False)
+        self.current_sort_column=column
+        self._apply_saved_sort()
 
     def _open_selected_sector_chart(self, _event=None):
         if not self.current_strategy_key:
