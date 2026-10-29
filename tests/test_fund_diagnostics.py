@@ -1,4 +1,4 @@
-"""Tests for ranking-only diagnostics (never mistaken for filter-ready snapshots)."""
+"""TOP5 now ranks sectors only. No constituent requests or stock filtering."""
 from datetime import datetime as RealDateTime
 from importlib.machinery import SourceFileLoader
 import importlib.util
@@ -12,7 +12,7 @@ import pandas as pd
 
 sys.modules["baostock"] = types.ModuleType("baostock")
 source = Path(__file__).resolve().parents[1] / "A股MA扫描器_v1.2.7.pyw"
-loader=SourceFileLoader("qt_backend_diagnostics_test",str(source))
+loader=SourceFileLoader("qt_backend_rank_only_test",str(source))
 spec=importlib.util.spec_from_loader(loader.name,loader)
 engine=importlib.util.module_from_spec(spec)
 sys.modules[spec.name]=engine
@@ -32,71 +32,87 @@ class RankOnlyTests(unittest.TestCase):
         self.path=Path(self.tmp.name)/"prices.db"
         self.backend=engine.BaoStockBackend(self.path)
         self.backend.init_db()
+        self.requests=[]
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_stock_code_parses_decimal_serialization(self):
-        self.assertEqual(self.backend._fund_stock_symbol(600001.0),"600001")
-        self.assertEqual(self.backend._fund_stock_symbol("000001"),"000001")
-        self.assertIsNone(self.backend._fund_stock_symbol("invalid"))
+    def provider(self,endpoint,sector="",timeout=20):
+        self.requests.append((endpoint,sector))
+        if endpoint=="em_rank":
+            return pd.DataFrame([
+                {"名称":f"东方行业{i}","5日主力净流入-净额":(6-i)*100000000}
+                for i in range(1,6)])
+        if endpoint=="ths_rank":
+            return pd.DataFrame([
+                {"行业":f"同花行业{i}","净额":(6-i)*1.5}
+                for i in range(1,6)])
+        raise AssertionError("No constituent endpoint should be requested: "+endpoint)
 
-    def test_rank_only_does_not_overwrite_complete_snapshot(self):
-        def ranking_but_no_constituents(endpoint,sector="",timeout=20):
-            if endpoint == "em_rank":
-                return pd.DataFrame([
-                    {"名称":f"行业{i}","5日主力净流入-净额":(6-i)*100000000}
-                    for i in range(1,6)
-                ])
-            if endpoint == "ths_rank":
-                raise TimeoutError("THS mock timeout")
-            raise RuntimeError("constituent API blocked")
-        self.backend._fund_request=ranking_but_no_constituents
-        notices=[]
-        with self.assertRaisesRegex(RuntimeError,"两个来源均未获取完整榜单"):
-            self.backend.refresh_fund_top5(force=True,progress=notices.append)
-        self.assertTrue(any("排名 5/5 已获取" in msg for msg in notices))
-        self.assertTrue(any("成功0、失败5" in msg for msg in notices))
-        self.assertEqual(len(self.backend._last_rank_only),5)
-        self.assertTrue(self.backend._last_rank_only[0]["ranking_only"])
-        self.assertEqual(self.backend._last_rank_only[0]["source"],"东方财富")
-        self.assertEqual(self.backend.load_fund_top5(),([],{}))
-        self.assertEqual(len(self.backend._fund_last_errors),2)
-        self.assertIn("constituent API blocked",self.backend._fund_last_errors[0]["error"])
-
-    def test_ths_rank_matches_exact_official_industry_codes(self):
-        seen=[]
-        def mock_request(endpoint,sector="",timeout=20):
-            seen.append((endpoint,sector))
-            if endpoint == "em_rank":
-                raise TimeoutError("Eastmoney offline")
-            if endpoint == "ths_rank":
-                return pd.DataFrame([
-                    {"行业":f"行业{i}","净额":6-i} for i in range(1,6)])
-            if endpoint == "ths_names":
-                return pd.DataFrame([
-                    {"name":f"行业{i}","code":f"8811{i:02d}"} for i in range(1,6)])
-            if endpoint == "ths_members":
-                assert str(sector).startswith("8811"),sector
-                return pd.DataFrame({"代码":["600001","000002"]})
-            raise AssertionError(endpoint)
-        self.backend._fund_request=mock_request
-        self.backend.refresh_fund_top5(force=True)
+    def test_rank_only_is_saved_and_never_requests_constituents(self):
+        self.backend._fund_request=self.provider
+        messages=[]
+        result=self.backend.refresh_fund_top5(force=True,progress=messages.append)
         rows,members=self.backend.load_fund_top5()
         self.assertEqual(len(rows),5)
-        self.assertEqual(rows[0]["source"],"同花顺")
-        self.assertEqual(members[1],{"600001","000002"})
-        self.assertEqual(len([x for x in seen if x[0]=="ths_names"]),1)
-        self.assertEqual(len([x for x in seen if x[0]=="ths_members"]),5)
+        self.assertEqual(members,{})
+        self.assertEqual(rows[0]["source"],"东方财富")
+        self.assertEqual(rows[0]["net_yuan"],500000000)
+        self.assertEqual(self.requests,[("em_rank","")])
+        self.assertTrue(any("排名获取成功" in m for m in messages))
+        self.assertIn("TOP5",result)
+        with sqlite3.connect(self.path) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM fund_top5_member").fetchone()[0],0)
 
-    def test_both_rank_sources_blocked_have_no_rank_only(self):
-        def blocked(endpoint,sector="",timeout=20):
-            raise TimeoutError("offline")
-        self.backend._fund_request=blocked
-        with self.assertRaises(RuntimeError):
+    def test_fallback_to_ths_ranking_without_members(self):
+        def request(endpoint,sector="",timeout=20):
+            if endpoint=="em_rank":
+                self.requests.append((endpoint,sector))
+                raise TimeoutError("eastmoney unavailable")
+            return self.provider(endpoint,sector,timeout)
+        self.backend._fund_request=request
+        result=self.backend.refresh_fund_top5(force=True)
+        rows,members=self.backend.load_fund_top5()
+        self.assertEqual(rows[0]["source"],"同花顺")
+        self.assertEqual(rows[0]["net_yuan"],750000000)
+        self.assertEqual(members,{})
+        self.assertEqual(self.requests,[("em_rank",""),("ths_rank","")])
+        self.assertIn("同花顺",result)
+
+    def test_today_cache_needs_no_members(self):
+        self.backend._fund_request=self.provider
+        self.backend.refresh_fund_top5(force=True)
+        self.requests.clear()
+        self.assertIn("缓存",self.backend.refresh_fund_top5(force=False))
+        self.assertEqual(self.requests,[])
+
+    def test_failed_sources_preserve_previous_rankings(self):
+        self.backend._fund_request=self.provider
+        self.backend.refresh_fund_top5(force=True)
+        before=self.backend.load_fund_top5()
+        self.backend._fund_request=lambda *a,**k: (_ for _ in ()).throw(TimeoutError("offline"))
+        with self.assertRaisesRegex(RuntimeError,"两个来源的行业资金排名"):
             self.backend.refresh_fund_top5(force=True)
-        self.assertEqual(self.backend._last_rank_only,[])
+        self.assertEqual(self.backend.load_fund_top5(),before)
         self.assertEqual(len(self.backend._fund_last_errors),2)
+
+    def test_existing_member_rows_are_cleared_on_refresh(self):
+        self.backend._fund_request=self.provider
+        with sqlite3.connect(self.path) as conn:
+            conn.execute("INSERT INTO fund_top5_member VALUES(1,'600001')")
+        self.backend.refresh_fund_top5(force=True)
+        with sqlite3.connect(self.path) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM fund_top5_member").fetchone()[0],0)
+        self.assertEqual(self.backend.load_fund_top5()[1],{})
+
+    def test_bad_field_response_falls_back(self):
+        def request(endpoint,sector="",timeout=20):
+            if endpoint=="em_rank":
+                return pd.DataFrame({"unexpected":[1,2,3,4,5]})
+            return self.provider(endpoint,sector,timeout)
+        self.backend._fund_request=request
+        result=self.backend.refresh_fund_top5(force=True)
+        self.assertIn("同花顺",result)
 
 
 if __name__=="__main__":
