@@ -238,5 +238,18 @@ class Backend(unittest.TestCase):
             json.loads(p)
             self.assertNotIn("NaN",p)
 
+    def test_19_completeness_does_not_count_infinite_legacy_values(self):
+        """Preexisting corrupt-but-readable SQLite values must not imply 100% complete."""
+        d=self.days[-1]
+        with sqlite3.connect(self.b.db_path) as c:
+            c.execute("INSERT INTO day_universe(trade_date,code,name,trade_status) VALUES(?,?,?,?)",
+                      (d,"sh.600000","A",1))
+            c.execute("INSERT INTO daily(code,trade_date,name,close,volume,trade_status,is_st,turnover) VALUES(?,?,?,?,?,?,?,?)",
+                      ("sh.600000",d,"A",math.inf,100,1,0,2.0))
+        state=self.b.update_day_status(d)
+        self.assertEqual(state["saved"],0)
+        self.assertEqual(state["status"],"partial")
+        self.assertNotIn("sh.600000",self.b.get_existing_codes_for_date(d))
+
 if __name__=="__main__":
     unittest.main(verbosity=2)
