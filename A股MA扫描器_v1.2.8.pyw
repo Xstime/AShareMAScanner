@@ -3590,70 +3590,127 @@ class ChartWorker(QThread):
             self.failed.emit(self.token, traceback.format_exc())
 
 
+class VersionWorker(QThread):
+    success = Signal(str, object)
+    failed = Signal(str)
+
+    def run(self):
+        try:
+            status, url = fetch_latest_release()
+            self.success.emit(status, url)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class HistoryWorker(QThread):
+    success = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, backend, code, date, filters):
+        super().__init__()
+        self.backend, self.code, self.date, self.filters = backend, code, date, filters
+
+    def run(self):
+        try:
+            self.success.emit(self.backend.get_signal_history(self.code, self.date, self.filters))
+        except Exception:
+            self.failed.emit(traceback.format_exc())
+
+
 class PriceChart(QWidget):
+    """Render price / MA / volume / turnover using local data only."""
+    COLORS = {"close": "#222938", "MA5": "#347df4", "MA10": "#e6a24b",
+              "MA20": "#a487dc", "volume": "#347df4",
+              "放量倍数": "#a487dc", "turnover": "#db8b30"}
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.data = pd.DataFrame()
-        self.setMinimumHeight(164)
+        self.series = ["close", "MA5", "MA10", "MA20"]
+        self.signal_date = None
+        self.setMinimumHeight(160)
+        self.setMouseTracking(True)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-    def set_frame(self, data):
-        self.data = data if data is not None else pd.DataFrame()
+    def set_frame(self, data, series=None, signal_date=None):
+        self.data = data.copy() if data is not None else pd.DataFrame()
+        self.series = list(series) if series else ["close", "MA5", "MA10", "MA20"]
+        self.signal_date = signal_date
         self.update()
+
+    def mouseMoveEvent(self, event):
+        if not self.data.empty:
+            n = len(self.data)
+            idx = max(0, min(n-1, round((event.position().x() - 55)
+                                        / max(1,self.width()-74) * max(0,n-1))))
+            row = self.data.iloc[idx]
+            info = [str(row.get("trade_date", "—"))]
+            for key in self.series:
+                try:
+                    value = float(row[key])
+                    if math.isfinite(value):
+                        info.append(f"{key}: {value:.3f}")
+                except (ValueError, TypeError, KeyError):
+                    pass
+            self.setToolTip("\n".join(info))
+        super().mouseMoveEvent(event)
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = self.rect()
         painter.fillRect(rect, QColor("#ffffff"))
-        left, top, right, bottom = 28, 14, rect.width() - 10, rect.height() - 25
-        if self.data.empty or bottom - top < 30:
+        left, top, right, bottom = 55, 20, rect.width()-19, rect.height()-34
+        if self.data.empty or right<=left or bottom<=top+15:
             painter.setPen(QColor("#9ca3b0"))
-            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "选择股票后显示本地均线走势图")
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "暂无可用的本地走势图")
+            painter.end()
             return
-        df = self.data
-        curves = [("close", "#222938", 2.3), ("MA5", "#347df4", 1.5),
-                  ("MA10", "#e6a24b", 1.5), ("MA20", "#a487dc", 1.5)]
-        valid = []
-        for field, _, _ in curves:
-            if field in df:
-                valid += pd.to_numeric(df[field], errors="coerce").dropna().tolist()
+        arrays=[(name,pd.to_numeric(self.data[name],errors="coerce"))
+                for name in self.series if name in self.data.columns]
+        valid=[float(v) for _,a in arrays for v in a.dropna() if math.isfinite(float(v))]
         if not valid:
+            painter.setPen(QColor("#9ca3b0"))
+            painter.drawText(rect,Qt.AlignmentFlag.AlignCenter,"所选指标没有可用数值")
+            painter.end()
             return
-        low, high = min(valid), max(valid)
-        if high <= low:
-            high, low = high + 1, low - 1
-        span = high - low
-        low -= span * .08
-        high += span * .08
-        for k in range(4):
-            y = top + (bottom - top) * k / 3
-            painter.setPen(QPen(QColor("#edf0f5"), 1))
-            painter.drawLine(left, int(y), right, int(y))
-        n = len(df)
-        def coordinate(index, val):
-            x = left + ((right - left) * index / max(1, n - 1))
-            y = bottom - ((float(val) - low) / (high - low)) * (bottom - top)
-            return int(x), int(y)
-        for field, color, thickness in curves:
-            if field not in df:
-                continue
-            vals = pd.to_numeric(df[field], errors="coerce")
-            painter.setPen(QPen(QColor(color), thickness))
-            previous = None
-            for i, v in enumerate(vals):
+        low,high=min(valid),max(valid)
+        gap=(high-low) if high>low else max(abs(high)*.02,1)
+        low-=gap*.08
+        high+=gap*.08
+        n=len(self.data)
+        def pt(i,v):
+            return (int(left+(right-left)*i/max(1,n-1)),
+                    int(bottom-(float(v)-low)*(bottom-top)/(high-low)))
+        for i in range(5):
+            y=int(top+(bottom-top)*i/4)
+            painter.setPen(QPen(QColor("#edf0f5"),1))
+            painter.drawLine(left,y,right,y)
+            painter.setPen(QColor("#7a8190"))
+            painter.drawText(2,y+5,f"{high-(high-low)*i/4:.2f}")
+        if self.signal_date and "trade_date" in self.data:
+            for i,date in enumerate(self.data["trade_date"].astype(str)):
+                if date==str(self.signal_date):
+                    x,_=pt(i,low)
+                    painter.setPen(QPen(QColor("#d11a2a"),1))
+                    painter.drawLine(x,top,x,bottom)
+                    painter.drawText(x+2,top+12,"触发")
+        for name,values in arrays:
+            painter.setPen(QPen(QColor(self.COLORS.get(name,"#347df4")),1.8))
+            previous=None
+            for i,v in enumerate(values):
                 if pd.isna(v) or not math.isfinite(float(v)):
-                    previous = None
+                    previous=None
                     continue
-                point = coordinate(i, v)
+                p=pt(i,v)
                 if previous is not None:
-                    painter.drawLine(*previous, *point)
-                previous = point
-        painter.setPen(QColor("#9199a9"))
-        if "trade_date" in df.columns and n:
-            painter.drawText(left, rect.height() - 6, str(df.iloc[0]["trade_date"])[5:])
-            text = str(df.iloc[-1]["trade_date"])[5:]
-            painter.drawText(right - 42, rect.height() - 6, text)
+                    painter.drawLine(*previous,*p)
+                previous=p
+        if "trade_date" in self.data:
+            painter.setPen(QColor("#7a8190"))
+            for i in sorted({round((n-1)*k/5) for k in range(6)}):
+                x,_=pt(i,low)
+                painter.drawText(max(2,x-17),rect.height()-8,str(self.data.iloc[i]["trade_date"])[5:])
         painter.end()
 
 
