@@ -78,7 +78,7 @@ A股 MA 图形化扫描器（BaoStock + AKShare · v1.2.7 4:3 工作台开发版
 
 安装
 ----
-正常直接运行：python A股MA扫描器_v1.2.7.py
+正常直接运行：python A股MA扫描器_v1.2.7.pyw
 首次运行自动补装缺少的第三方库（需要联网，不需要任何付费API）。
 若安装失败，可手动运行：python -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple baostock pandas akshare
 
@@ -3771,17 +3771,13 @@ class StockScannerApp:
 
         status_left = ttk.Frame(top)
         status_left.grid(row=0, column=0, sticky="w")
-
-        ttk.Label(
-            status_left,
-            textvariable=self.date_var,
-            style="Headline.TLabel",
-        ).pack(side="left", padx=(0, 20))
-
-        ttk.Label(
-            status_left,
-            textvariable=self.complete_var,
-        ).pack(side="left")
+        ttk.Label(status_left, text="A股 MA 扫描器",
+                  style="Headline.TLabel",
+                  font=("Segoe UI", 16, "bold")).pack(side="left", padx=(0, 18))
+        ttk.Label(status_left, textvariable=self.date_var,
+                  style="Subtle.TLabel").pack(side="left", padx=(0, 12))
+        ttk.Label(status_left, textvariable=self.complete_var,
+                  style="Subtle.TLabel").pack(side="left")
 
         update_controls = ttk.Frame(top)
         update_controls.grid(row=0, column=1, sticky="e")
@@ -3920,17 +3916,24 @@ class StockScannerApp:
         quick_row = ttk.Frame(quick_box)
         quick_row.pack(fill="x")
         ttk.Label(quick_row, text="搜索").pack(side="left")
-        ttk.Entry(quick_row, textvariable=self.search_var, width=17).pack(side="left", padx=(5, 12))
-        self.market_combo = ttk.Combobox(quick_row, textvariable=self.market_var, width=9, state="readonly",
+        ttk.Entry(quick_row, textvariable=self.search_var, width=15
+                  ).pack(side="left", fill="x", expand=True, padx=(5, 7))
+        self.market_combo = ttk.Combobox(quick_row, textvariable=self.market_var, width=9,
+                                        state="readonly",
                                         values=("全部市场", "主板", "创业板", "科创板"))
-        self.market_combo.pack(side="left", padx=(0, 10))
-        self.industry_combo = ttk.Combobox(quick_row, textvariable=self.industry_var, width=18, state="readonly",
+        self.market_combo.pack(side="left", padx=(0, 6))
+        self.industry_combo = ttk.Combobox(quick_row, textvariable=self.industry_var,
+                                          width=13, state="readonly",
                                           values=("全部行业",))
-        self.industry_combo.pack(side="left", padx=(0, 10))
-        ttk.Label(quick_row, text="涨幅%").pack(side="left")
+        self.industry_combo.pack(side="left")
+        range_row = ttk.Frame(quick_box)
+        range_row.pack(fill="x", pady=(4, 0))
+        ttk.Label(range_row, text="涨幅范围%").pack(side="left")
         for variable in (self.change_min_var, self.change_max_var):
-            ttk.Entry(quick_row, textvariable=variable, width=6).pack(side="left", padx=4)
-        ttk.Button(quick_row, text="重置", command=self._reset_quick_filters).pack(side="left", padx=4)
+            ttk.Entry(range_row, textvariable=variable, width=7
+                      ).pack(side="left", padx=(6, 3))
+        ttk.Button(range_row, text="重置筛选",
+                   command=self._reset_quick_filters).pack(side="right")
         for variable in (self.search_var, self.market_var, self.industry_var,
                          self.change_min_var, self.change_max_var):
             variable.trace_add("write", self._schedule_quick_filter)
@@ -3938,8 +3941,8 @@ class StockScannerApp:
         tools_row.pack(fill="x", pady=(5, 0))
         self.history_button = ttk.Button(tools_row, text="信号历史", command=self._open_selected_history)
         self.history_button.pack(side="left")
-        ttk.Label(tools_row, text="  选择个股后查看历史；右键可打开操作菜单",
-                  style="Subtle.TLabel").pack(side="left")
+        ttk.Label(tools_row, text="双击查看走势 · 右键查看操作",
+                  style="Subtle.TLabel").pack(side="left", padx=(8, 0))
 
         # 资金榜单是高度固定的小模块，不影响个股表的自适应高度。
         self.fund_box = ttk.Frame(self.center_panel, padding=(12, 7, 12, 5))
