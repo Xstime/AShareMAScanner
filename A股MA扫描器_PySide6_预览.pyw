@@ -815,6 +815,9 @@ class ScannerWindow(QMainWindow):
         self.table.blockSignals(False)
         if self.table.rowCount():
             self.table.selectRow(0)
+            # Populating the table temporarily blocks Qt signals; explicitly
+            # synchronize the inspector with the newly selected first row.
+            self._stock_selected()
         else:
             self._clear_stock()
 
