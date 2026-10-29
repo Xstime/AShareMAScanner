@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Cloud validation after replacing THS industry membership with public HTML pagination.
 """Live, read-only probe for production TOP5 endpoints; explicitly opt-in only.
 
 Runs the actual backend methods and does not mutate the user's SQLite database.
