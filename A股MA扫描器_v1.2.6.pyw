@@ -480,6 +480,67 @@ SZ_PREFIXES = ("000", "001", "002", "003", "300", "301")
 
 ProgressCallback = Callable[[float, str], None]
 
+# 这些权重是更新器已有的步骤百分比，并非剩余时间预测。
+UPDATE_PHASES = (
+    ("环境与交易日", 0, 12),
+    ("历史失败补抓", 12, 20),
+    ("历史缓存准备", 20, 66),
+    ("缺失交易日补齐", 66, 80),
+    ("每日行情更新", 80, 94),
+    ("换手率补齐", 94, 96),
+    ("行业板块资料", 96, 98),
+    ("完整性检查", 98, 100),
+)
+
+
+def describe_update_progress(percent: float, task: str) -> dict:
+    """将后端原有真实任务事件转换为分阶段 GUI 数据，不额外访问数据库。"""
+    value = min(100., max(0., float(percent)))
+    task = str(task)
+    # 优先根据明确的任务词识别阶段，避免范围端点落在下一阶段的误判。
+    explicit = (
+        (r"^(补历史失败|历史失败补抓|没有历史失败项)", 1),
+        (r"^(初始化历史|历史缓存)", 2),
+        (r"^没有未完整交易日", 3),
+        (r"^没有新的交易日", 4),
+        (r"^(补换手率|近期换手率)", 5),
+        (r"^(更新行业|行业板块|板块分类)", 6),
+        (r"^(校验最新交易日|数据检查完成)", 7),
+    )
+    index = next((idx for pattern, idx in explicit if re.search(pattern, task)), None)
+    if index is None:
+        # 更新 YYYY-MM-DD 可能是缺失交易日回补，也可能是增量交易日。
+        if task.startswith("更新 ") or re.match(r"^\d{4}-\d\d-\d\d (更新完成|已完整)", task):
+            index = 3 if value < 80 else 4
+        else:
+            index = next((i for i, (_, start, end) in enumerate(UPDATE_PHASES)
+                          if start <= value < end), 7)
+    title, start, end = UPDATE_PHASES[index]
+    fraction = min(1.0, max(0.0, (value - start) / max(1, end - start)))
+    match = re.search(r"\b(\d+)\s*/\s*(\d+)\b", task)
+    current = total = completed = None
+    stock = None
+    if match:
+        current = int(match.group(1))
+        total = int(match.group(2))
+        if total > 0 and 1 <= current <= total:
+            # 后端在每只股票开始处理前报告，不能将当前股票当成已完成。
+            completed = current - 1
+            fraction = completed / total
+            if " · " in task:
+                stock = task.rsplit(" · ", 1)[-1]
+        else:
+            current = total = completed = None
+    if task in ("没有历史失败项", "历史缓存已就绪", "没有未完整交易日",
+                "没有新的交易日", "近期换手率检查完成", "板块分类缓存已就绪",
+                "数据检查完成") or task.endswith(("更新完成", "补抓完成", "初始化完成")):
+        fraction = 1.0
+    return {
+        "phase": index, "title": title, "fraction": fraction,
+        "completed": completed, "current": current, "total": total,
+        "stock": stock, "task": task, "overall": value,
+    }
+
 
 # ============================================================
 # 数据结构
@@ -3360,6 +3421,7 @@ class StockScannerApp:
         # 启动期间隐藏主界面；所有行情加载步骤在独立进度窗口显示。
         self.root.withdraw()
         self._startup_loading = True
+        self._startup_started_at = time.monotonic()
         self.splash_window = None
         self.root.title(APP_TITLE)
         self.root.geometry("1200x860")
@@ -3516,55 +3578,143 @@ class StockScannerApp:
         )
 
     def _build_startup_splash(self):
-        """独立的启动进度界面，完成行情检查前不显示选股工作台。"""
+        """启动流程独立可视化；主界面仅在行情完成后显示。"""
         splash = tk.Toplevel(self.root)
         self.splash_window = splash
-        splash.title(f"{APP_TITLE} · 正在准备")
+        splash.title(f"{APP_TITLE} · 行情加载")
         splash.configure(bg="#f5f5f7")
         splash.resizable(False, False)
-        width, height = 500, 290
+        width, height = 580, 490
         x = max(0, (splash.winfo_screenwidth() - width) // 2)
         y = max(0, (splash.winfo_screenheight() - height) // 2)
         splash.geometry(f"{width}x{height}+{x}+{y}")
         splash.protocol("WM_DELETE_WINDOW", self.root.destroy)
 
-        panel = tk.Frame(splash, bg="#ffffff", highlightbackground="#e5e5ea",
-                         highlightthickness=1)
-        panel.pack(fill="both", expand=True, padx=18, pady=18)
-        header = tk.Frame(panel, bg="#ffffff")
-        header.pack(fill="x", padx=25, pady=(25, 8))
-        tk.Label(header, text="MA", bg="#0071e3", fg="white",
-                 font=("Segoe UI", 12, "bold"), width=4, height=2).pack(side="left")
-        tk.Label(header, text="A股 MA 扫描器", bg="#ffffff", fg="#1d1d1f",
-                 font=("Segoe UI", 16, "bold")).pack(side="left", padx=(13, 0))
-        tk.Label(panel, text="正在准备今日行情", bg="#ffffff", fg="#1d1d1f",
-                 font=("Segoe UI", 12, "bold"), anchor="w").pack(
-                     fill="x", padx=25, pady=(12, 3))
+        card = tk.Frame(splash, bg="#ffffff", highlightbackground="#e5e5ea",
+                        highlightthickness=1)
+        card.pack(fill="both", expand=True, padx=14, pady=14)
+        header = tk.Frame(card, bg="#ffffff")
+        header.pack(fill="x", padx=24, pady=(21, 0))
+        tk.Label(header, text="MA", bg="#0071e3", fg="#ffffff",
+                 font=("Segoe UI", 13, "bold"), width=4, height=2).pack(side="left")
+        text_area = tk.Frame(header, bg="#ffffff")
+        text_area.pack(side="left", padx=(12, 0))
+        tk.Label(text_area, text="A股 MA 扫描器", bg="#ffffff", fg="#1d1d1f",
+                 font=("Segoe UI", 16, "bold"), anchor="w").pack(anchor="w")
+        tk.Label(text_area, text="每日行情准备 · 完成后自动进入", bg="#ffffff",
+                 fg="#8e8e93", font=("Segoe UI", 9)).pack(anchor="w")
+        self.splash_elapsed_var = tk.StringVar(value="已用时 00:00")
+        tk.Label(header, textvariable=self.splash_elapsed_var,
+                 font=("Segoe UI", 9), bg="#ffffff", fg="#6e6e73"
+                 ).pack(side="right", anchor="n")
+
+        heading = tk.Frame(card, bg="#ffffff")
+        heading.pack(fill="x", padx=24, pady=(22, 6))
+        self.splash_stage_var = tk.StringVar(value="准备连接行情")
+        tk.Label(heading, textvariable=self.splash_stage_var,
+                 font=("Segoe UI", 13, "bold"), bg="#ffffff", fg="#1d1d1f"
+                 ).pack(side="left")
+        self.splash_step_var = tk.StringVar(value="第 1 / 8 阶段")
+        tk.Label(heading, textvariable=self.splash_step_var,
+                 bg="#ffffff", fg="#8e8e93",
+                 font=("Segoe UI", 9)).pack(side="right")
+
         self.splash_message_var = tk.StringVar(value="正在检查本地行情…")
-        self.splash_phase_var = tk.StringVar(value="更新完成后会自动进入扫描器")
-        tk.Label(panel, textvariable=self.splash_message_var, bg="#ffffff",
-                 fg="#6e6e73", anchor="w", justify="left",
-                 wraplength=425, font=("Segoe UI", 10)).pack(
-                     fill="x", padx=25, pady=(0, 9))
-        progress_row = tk.Frame(panel, bg="#ffffff")
-        progress_row.pack(fill="x", padx=25)
-        ttk.Progressbar(progress_row, mode="determinate", maximum=100,
-                        variable=self.progress_var).pack(side="left", fill="x", expand=True)
+        tk.Label(card, textvariable=self.splash_message_var, bg="#ffffff",
+                 fg="#6e6e73", font=("Segoe UI", 10), anchor="w",
+                 justify="left", wraplength=490).pack(
+                     fill="x", padx=24, pady=(0, 11))
+        self.splash_count_var = tk.StringVar(value="正在准备")
+        tk.Label(card, textvariable=self.splash_count_var, bg="#ffffff",
+                 fg="#1d1d1f", font=("Segoe UI", 10, "bold"),
+                 anchor="w").pack(fill="x", padx=24)
+
+        self.splash_stage_progress_var = tk.DoubleVar(value=0)
+        ttk.Progressbar(card, mode="determinate", maximum=100,
+                        variable=self.splash_stage_progress_var).pack(
+                            fill="x", padx=24, pady=(6, 14))
+
+        overall_line = tk.Frame(card, bg="#ffffff")
+        overall_line.pack(fill="x", padx=24)
+        tk.Label(overall_line, text="总体流程进度", bg="#ffffff",
+                 fg="#6e6e73", font=("Segoe UI", 9)).pack(side="left")
         self.splash_percent_label = tk.Label(
-            progress_row, text="0%", bg="#ffffff", fg="#6e6e73",
-            width=5, anchor="e", font=("Segoe UI", 9))
-        self.splash_percent_label.pack(side="left", padx=(8, 0))
-        bottom = tk.Frame(panel, bg="#ffffff")
-        bottom.pack(fill="x", padx=25, pady=(14, 13))
-        tk.Label(bottom, textvariable=self.splash_phase_var, bg="#ffffff",
-                 fg="#8e8e93", justify="left", anchor="w",
-                 wraplength=280, font=("Segoe UI", 9)).pack(
-                     side="left", fill="x", expand=True)
-        ttk.Button(bottom, text="退出", command=self.root.destroy).pack(side="right")
-        self.splash_retry_button = ttk.Button(bottom, text="重试更新",
-                                               command=self.start_update)
+            overall_line, text="0%", bg="#ffffff", fg="#0071e3",
+            font=("Segoe UI", 10, "bold"))
+        self.splash_percent_label.pack(side="right")
+        ttk.Progressbar(card, mode="determinate", maximum=100,
+                        variable=self.progress_var).pack(
+                            fill="x", padx=24, pady=(5, 5))
+        tk.Label(card, text="百分比表示流程步骤，不代表剩余时间",
+                 bg="#ffffff", fg="#a1a1a6",
+                 font=("Segoe UI", 8), anchor="w").pack(fill="x", padx=24)
+
+        divider = tk.Frame(card, bg="#e5e5ea", height=1)
+        divider.pack(fill="x", padx=24, pady=(17, 11))
+        tk.Label(card, text="更新步骤", bg="#ffffff", fg="#6e6e73",
+                 font=("Segoe UI", 9, "bold"), anchor="w").pack(fill="x", padx=24)
+        phase_frame = tk.Frame(card, bg="#ffffff")
+        phase_frame.pack(fill="x", padx=24, pady=(5, 11))
+        self.splash_phase_labels = []
+        for idx, (title, _, _) in enumerate(UPDATE_PHASES):
+            label = tk.Label(phase_frame, text=f"○  {title}",
+                             anchor="w", bg="#ffffff", fg="#9898a0",
+                             font=("Segoe UI", 9))
+            label.grid(row=idx % 4, column=idx // 4, sticky="w", pady=4)
+            self.splash_phase_labels.append(label)
+        phase_frame.grid_columnconfigure(0, weight=1)
+        phase_frame.grid_columnconfigure(1, weight=1)
+
+        footer = tk.Frame(card, bg="#ffffff")
+        footer.pack(fill="x", padx=24, pady=(2, 17))
+        self.splash_phase_var = tk.StringVar(value="更新完成后自动进入扫描器")
+        tk.Label(footer, textvariable=self.splash_phase_var,
+                 fg="#8e8e93", bg="#ffffff",
+                 font=("Segoe UI", 9), wraplength=280,
+                 justify="left").pack(side="left", fill="x", expand=True)
+        ttk.Button(footer, text="退出", command=self.root.destroy).pack(side="right")
+        self.splash_retry_button = ttk.Button(
+            footer, text="重试更新", command=self.start_update)
         self.splash_retry_button.pack(side="right", padx=(0, 8))
         self.splash_retry_button.pack_forget()
+        self._update_splash_progress(0, "准备检查数据")
+        self.root.after(1000, self._tick_splash_clock)
+
+    def _tick_splash_clock(self):
+        if not self._startup_loading or not self.splash_window:
+            return
+        elapsed = max(0, int(time.monotonic() - self._startup_started_at))
+        minutes, seconds = divmod(elapsed, 60)
+        self.splash_elapsed_var.set(f"已用时 {minutes:02d}:{seconds:02d}")
+        self.root.after(1000, self._tick_splash_clock)
+
+    def _update_splash_progress(self, percent: float, task: str):
+        if not self._startup_loading or self.splash_window is None:
+            return
+        info = describe_update_progress(percent, task)
+        index = info["phase"]
+        self.splash_step_var.set(f"第 {index + 1} / {len(UPDATE_PHASES)} 阶段")
+        self.splash_stage_var.set(info["title"])
+        self.splash_message_var.set(info["task"])
+        self.splash_percent_label.configure(text=f'{info["overall"]:.0f}%')
+        self.splash_stage_progress_var.set(info["fraction"] * 100)
+        if info["total"] is not None:
+            self.splash_count_var.set(
+                f'已处理 {info["completed"]:,} / {info["total"]:,} 只'
+                + (f' · 当前 {info["stock"]}' if info["stock"] else ""))
+        elif info["fraction"] >= 1:
+            self.splash_count_var.set("该阶段已完成")
+        else:
+            self.splash_count_var.set("正在检查，请稍候…")
+        for i, label in enumerate(self.splash_phase_labels):
+            if i < index:
+                symbol, color = "✓", "#159b79"
+            elif i == index:
+                symbol, color = "●", "#0071e3"
+            else:
+                symbol, color = "○", "#9898a0"
+            label.configure(text=f"{symbol}  {UPDATE_PHASES[i][0]}", fg=color,
+                            font=("Segoe UI", 9, "bold" if i == index else "normal"))
 
     def _enter_scanner(self):
         """行情更新成功后关闭加载窗口，显示完整主窗口。"""
@@ -3978,8 +4128,7 @@ class StockScannerApp:
         )
         self.task_var.set(task)
         if self._startup_loading and self.splash_window is not None:
-            self.splash_percent_label.configure(text=f"{value:.0f}%")
-            self.splash_message_var.set(task)
+            self._update_splash_progress(value, task)
 
     # -------------------- GitHub 版本检查（不干扰行情任务） --------------------
 
@@ -4010,6 +4159,8 @@ class StockScannerApp:
         self.retry_button.grid_remove()
         self._busy = True
         if self._startup_loading and self.splash_window is not None:
+            self._startup_started_at = time.monotonic()
+            self.splash_elapsed_var.set("已用时 00:00")
             self.splash_retry_button.pack_forget()
             self.splash_phase_var.set("更新完成后会自动进入扫描器")
         self._set_actions_enabled(False)
@@ -4395,8 +4546,9 @@ class StockScannerApp:
         self.progress_box.grid_remove()
         self.warning_var.set("操作失败：" + message[:240])
         if was_update_error and self._startup_loading and self.splash_window is not None:
-            self.splash_phase_var.set("启动行情更新失败，主界面尚未开放")
+            self.splash_phase_var.set("启动行情更新失败 · 可以重试或退出")
             self.splash_message_var.set(message[:180])
+            self.splash_count_var.set("当前任务未完成，保留已保存的本地行情")
             self.splash_retry_button.pack(side="right", padx=(0, 8))
         # 报错详情保存至data文件夹；权限受限时回退终端，不影响GUI。
         try:
