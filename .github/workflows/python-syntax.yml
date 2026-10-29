@@ -1,0 +1,26 @@
+name: Python syntax check
+
+on:
+  push:
+    branches:
+      - dev/v1.2.6
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile scanner syntax
+        run: |
+          python -m py_compile A股MA扫描器_v1.2.6.py
