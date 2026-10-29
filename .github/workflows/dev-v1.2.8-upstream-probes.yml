@@ -1,0 +1,71 @@
+name: Dev v1.2.8 live upstream read-only probes
+on:
+  push:
+    branches: [dev/v1.2.8-full-fix]
+    paths:
+      - '.github/workflows/dev-v1.2.8-upstream-probes.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  baostock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install BaoStock
+        run: python -m pip install --disable-pip-version-check baostock pandas
+      - name: Live BaoStock session and after-adjusted daily bar
+        run: |
+          python - <<'PY'
+          import baostock as bs
+          lg=bs.login()
+          if lg.error_code!='0':
+              raise RuntimeError('BaoStock login failed: '+str(lg.error_msg))
+          try:
+              resp=bs.query_history_k_data_plus(
+                  'sh.600000','date,code,close,volume,tradestatus,isST,turn',
+                  start_date='2026-10-27',end_date='2026-10-29',
+                  frequency='d',adjustflag='1')
+              if resp.error_code!='0':
+                  raise RuntimeError('BaoStock daily query failed: '+str(resp.error_msg))
+              rows=[]
+              while resp.next():
+                  rows.append(resp.get_row_data())
+              if not rows:
+                  raise RuntimeError('BaoStock returned no trading bars for probe window')
+              print('BaoStock verified:',len(rows),'rows, first=',rows[0][0], 'last=',rows[-1][0])
+          finally:
+              bs.logout()
+          PY
+  tonghuashun:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install AKShare
+        run: python -m pip install --disable-pip-version-check akshare pandas
+      - name: Probe exact Tonghuashun five-day industry ranking, bounded subprocess
+        run: |
+          python - <<'PY'
+          import subprocess,sys
+          code="""import akshare as ak
+import pandas as pd
+df=ak.stock_fund_flow_industry(symbol='5日排行')
+assert df is not None and len(df)>=5
+assert {'行业','净额'}.issubset(df.columns), list(df.columns)
+v=pd.to_numeric(df['净额'],errors='coerce')
+assert v.notna().sum()>=5
+print('Tonghuashun checked:',len(df),'industries;',df['行业'].iloc[:5].tolist(),flush=True)
+"""
+          result=subprocess.run([sys.executable,'-c',code],capture_output=True,text=True,
+                                timeout=60,check=False)
+          print(result.stdout[-1800:],flush=True)
+          if result.returncode:
+              print(result.stderr[-2500:],file=sys.stderr)
+              raise RuntimeError('Tonghuashun five-day ranking live probe failed')
+          PY
