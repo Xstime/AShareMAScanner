@@ -1601,90 +1601,16 @@ class BaoStockBackend:
     # -------------------- 近5日行业资金TOP5（来源自动选择） --------------------
 
     FUND_RANK_TIMEOUT=25
-    FUND_MEMBER_TIMEOUT=65  # 最大行业约30页：允许完整翻页，不能只收前20只
-    FUND_MEMBER_FALLBACK_TIMEOUT=12
-    FUND_MEMBER_WORKERS=2  # 避免多行业密集请求触发公开网页限流
     FUND_JSON_PREFIX='__AShareMA_Fund_JSON__='
     FUND_CHILD=r"""
 import sys,akshare as ak
 endpoint=sys.argv[1]
-sector=sys.argv[2] if len(sys.argv)>2 else ''
 if endpoint=='em_rank':
     data=ak.stock_sector_fund_flow_rank(indicator='5日',sector_type='行业资金流')
     fields=['名称','5日主力净流入-净额']
 elif endpoint=='ths_rank':
     data=ak.stock_fund_flow_industry(symbol='5日排行')
     fields=['行业','净额']
-elif endpoint=='em_summary':
-    data=ak.stock_sector_fund_flow_summary(symbol=sector,indicator='5日')
-    fields=['代码']
-elif endpoint=='em_members':
-    data=ak.stock_board_industry_cons_em(symbol=sector)
-    fields=['代码']
-elif endpoint=='ths_names':
-    # 同花顺官方行业名和行业代码一一对应，防止跨平台名称误映射。
-    data=ak.stock_board_industry_name_ths()
-    fields=['name','code']
-elif endpoint=='ths_members':
-    # AKShare 1.20.2 已无 stock_board_industry_cons_ths。
-    # 公共行业详情页可按 /code/881xxx/page/N/ 翻页；不触碰需要登录的 AJAX 接口。
-    import re,time,requests,pandas as pd
-    from bs4 import BeautifulSoup
-    if not re.fullmatch(r'[0-9]{6}',sector):
-        raise ValueError('同花顺行业必须使用6位官方板块代码')
-    sess=requests.Session()
-    headers={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36',
-             'Referer':'https://q.10jqka.com.cn/thshy/'}
-    all_codes=set()
-    total_pages=None
-    for page in range(1,101):
-        suffix='' if page==1 else 'page/'+str(page)+'/'
-        url='https://q.10jqka.com.cn/thshy/detail/code/'+sector+'/'+suffix
-        response=sess.get(url,headers=headers,timeout=12)
-        response.raise_for_status()
-        soup=BeautifulSoup(response.text,'html.parser')
-        tables=[]
-        for table in soup.select('table'):
-            title=[cell.get_text(strip=True) for cell in table.select('thead th')]
-            if '代码' in title and '名称' in title:
-                tables.append(table)
-        if len(tables)!=1:
-            raise RuntimeError('同花顺行业表格缺失或页面受限')
-        page_codes=[]
-        for tr in tables[0].select('tbody tr'):
-            cells=tr.select('td')
-            if len(cells)>=3:
-                code=cells[1].get_text(strip=True)
-                if re.fullmatch(r'[0-9]{6}',code):
-                    page_codes.append(code)
-        if not page_codes or len(page_codes)!=len(set(page_codes)):
-            raise RuntimeError('同花顺行业第'+str(page)+'页为空或有重复代码')
-        pager=soup.select_one('.page_info')
-        if pager:
-            m=re.fullmatch(r'\s*(\d+)\s*/\s*(\d+)\s*',pager.get_text(strip=True))
-            if not m:
-                raise RuntimeError('同花顺行业页码格式发生变化')
-            current_page,reported_total=map(int,m.groups())
-            if current_page!=page or not 1<=reported_total<=100:
-                raise RuntimeError('同花顺行业页码与请求不一致')
-            if total_pages is None: total_pages=reported_total
-            if reported_total!=total_pages:
-                raise RuntimeError('同花顺行业抓取时页数发生变化')
-        elif page==1 and len(page_codes)<20:
-            # 少于20只的单页板块常不显示分页栏。
-            total_pages=1
-        elif page!=total_pages:
-            raise RuntimeError('同花顺行业非末页缺少页码，拒绝不完整数据')
-        if all_codes.intersection(page_codes):
-            raise RuntimeError('同花顺行业分页重复，拒绝不完整数据')
-        all_codes.update(page_codes)
-        if total_pages is not None and page==total_pages:
-            break
-        time.sleep(0.20)
-    else:
-        raise RuntimeError('同花顺行业超过100页，未验证完整性')
-    data=pd.DataFrame({'代码':sorted(all_codes)})
-    fields=['代码']
 else:
     raise ValueError('unknown endpoint')
 if data is None or data.empty or any(x not in data.columns for x in fields):
@@ -1694,7 +1620,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
 
     @classmethod
     def _fund_request(cls,endpoint,sector='',timeout=20):
-        if endpoint not in ('em_rank','ths_rank','ths_names','em_summary','em_members','ths_members'):
+        if endpoint not in ('em_rank','ths_rank'):
             raise ValueError('invalid fund endpoint')
         args=[sys.executable,'-c',cls.FUND_CHILD,endpoint]
         if sector: args.append(sector)
@@ -1719,25 +1645,6 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
             raise RuntimeError('资金结果格式错误')
         return pd.DataFrame(records)
 
-    def _fetch_same_source_members(self,source,rank,industry):
-        endpoints=(('em_summary',self.FUND_MEMBER_TIMEOUT),
-                   ('em_members',self.FUND_MEMBER_FALLBACK_TIMEOUT)) if source=='东方财富' else (
-                   ('ths_members',self.FUND_MEMBER_TIMEOUT),)
-        errors=[]
-        for endpoint,limit in endpoints:
-            try:
-                source_sector=(self._ths_sector_codes.get(industry,industry)
-                               if source=='同花顺' else industry)
-                frame=self._fund_request(endpoint,source_sector,limit)
-                if frame.empty or '代码' not in frame.columns:
-                    raise RuntimeError('无成分股')
-                symbols={code for value in frame['代码']
-                         if (code:=self._fund_stock_symbol(value)) is not None}
-                if symbols:return rank,symbols
-                raise RuntimeError('无有效A股成分股')
-            except (RuntimeError,TimeoutError,ValueError,KeyError) as exc:
-                errors.append(str(exc))
-        raise RuntimeError(f'{industry}: '+str(errors[:2]))
 
     def _fund_source_order(self):
         now=datetime.now(CST)
@@ -1783,27 +1690,28 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
         return None
 
     def load_fund_top5(self) -> tuple[list[dict], dict[int, set[str]]]:
+        """仅查询五日资金净流入 TOP5 行业榜单。
+
+        兼容旧调用方返回 (rows, {})，但不读取或请求成分股数据。
+        """
         with sqlite3.connect(self.db_path, timeout=30) as conn:
             rows = conn.execute("""
                 SELECT rank,industry,net_yuan,fetched_at,source
                 FROM fund_top5_snapshot ORDER BY rank
             """).fetchall()
-            members = conn.execute("""
-                SELECT rank,stock_code FROM fund_top5_member
-            """).fetchall()
-        mapping: dict[int, set[str]] = {}
-        for rank, code in members:
-            mapping.setdefault(int(rank), set()).add(str(code))
-        return ([dict(rank=int(rank),name=name,net_yuan=float(amount),fetched_at=fetched_at,source=source)
-                 for rank,name,amount,fetched_at,source in rows], mapping)
+        return ([dict(rank=int(rank),name=name,net_yuan=float(amount),
+                      fetched_at=fetched_at,source=source)
+                 for rank,name,amount,fetched_at,source in rows], {})
+
 
     def _fund_complete_snapshot(self,source,notify,now):
+        """只请求行业资金排名；任何情况下都不请求行业成分股。"""
         endpoint='em_rank' if source=='东方财富' else 'ths_rank'
-        notify(f'正在读取{source}近5日资金榜单…')
+        notify(f'正在读取{source}近5日行业资金净流入排名…')
         ranked=self._fund_request(endpoint,timeout=self.FUND_RANK_TIMEOUT)
         name_col,amount_col=('名称','5日主力净流入-净额') if source=='东方财富' else ('行业','净额')
         if ranked.empty or not {name_col,amount_col}.issubset(ranked.columns):
-            raise RuntimeError('资金榜单缺失字段')
+            raise RuntimeError(f'{source}榜单为空或缺少必要字段')
         ranked=ranked[[name_col,amount_col]].copy()
         ranked[amount_col]=pd.to_numeric(ranked[amount_col],errors='coerce')
         ranked=ranked.dropna(subset=[name_col,amount_col])
@@ -1812,88 +1720,50 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
         ranked=ranked[ranked[name_col].ne('')].drop_duplicates(name_col)
         ranked=ranked.sort_values(amount_col,ascending=False).head(5)
         if len(ranked)!=5:
-            raise RuntimeError('有效行业不足5个')
+            raise RuntimeError(f'{source}有效行业少于5个')
         multiplier=1 if source=='东方财富' else 100000000
         stamp=now.strftime('%Y-%m-%d %H:%M:%S')
         rows=[(i,str(item[name_col]),float(item[amount_col])*multiplier,stamp,source)
               for i,(_,item) in enumerate(ranked.iterrows(),1)]
-        # A valid ranking can still be displayed while constituent membership is missing.
-        # This is NOT a complete snapshot and MUST NOT replace the persisted filter cache.
-        self._last_rank_only = [
-            dict(rank=rank,name=name,net_yuan=amount,fetched_at=stamp,
-                 source=src,ranking_only=True)
-            for rank,name,amount,stamp,src in rows
-        ]
-        notify(f'{source} · 行业资金排名 5/5 已获取，开始核对成分股')
-        if source=='同花顺':
-            notify('同花顺 · 查询行业名称与代码对应表…')
-            names=self._fund_request('ths_names',timeout=self.FUND_RANK_TIMEOUT)
-            if names.empty or not {'name','code'}.issubset(names.columns):
-                raise RuntimeError('同花顺行业代码表缺失')
-            self._ths_sector_codes={
-                str(row['name']).strip():str(row['code']).strip()
-                for _,row in names.iterrows()}
-            unmatched=[industry for _,industry,_,_,_ in rows
-                       if industry not in self._ths_sector_codes]
-            if unmatched:
-                raise RuntimeError('同花顺资金行业无法匹配其官方行业代码：'+str(unmatched))
-        members=[]
-        errors=[]
-        successful=0
-        with ThreadPoolExecutor(max_workers=self.FUND_MEMBER_WORKERS,thread_name_prefix='fund-members') as pool:
-            jobs={pool.submit(self._fetch_same_source_members,source,rank,industry):(rank,industry)
-                  for rank,industry,_net,_stamp,_src in rows}
-            for count,job in enumerate(as_completed(jobs),1):
-                rank,industry=jobs[job]
-                try:
-                    _,codes=job.result()
-                    members.extend((rank,code) for code in sorted(codes))
-                    successful+=1
-                except Exception as exc:
-                    errors.append(f'{industry}: {exc}')
-                notify(f'{source} · 成分股已完成 {count}/5（成功{successful}、失败{len(errors)}）· {industry}')
-        if errors:
-            raise RuntimeError(
-                f'{source}排名已获取，但成分股 {len(errors)}/5 失败：'
-                + '；'.join(errors[:2])
-            )
-        if not all(any(r==i for r,_ in members) for i in range(1,6)):
-            raise RuntimeError('五个行业成分股不完整')
-        return rows,members
+        notify(f'{source} · 近5日行业资金 TOP5 排名获取成功（5/5）')
+        return rows
+
 
     def refresh_fund_top5(self,force=False,progress=None):
         notify=progress or (lambda _:None)
-        self._last_rank_only=[]
         self._fund_last_errors=[]
-        previous,previous_members=self.load_fund_top5()
+        previous,_=self.load_fund_top5()
         now=datetime.now(CST)
-        if (not force and len(previous)==5 and all(previous_members.get(i) for i in range(1,6))
+        if (not force and len(previous)==5
             and previous[0]['fetched_at'][:10]==now.strftime('%Y-%m-%d')
             and (now.hour<18 or previous[0]['fetched_at'][11:13]>='18')):
-            return '已使用今日资金榜单缓存'
+            return '已使用今日近5日资金TOP5行业榜单缓存'
         if now.weekday()<5 and now.hour<18:
             if previous:
-                return '今日行情未结算，沿用本地榜单，18:00后可刷新'
-            raise RuntimeError('交易日18:00后可获取完整的近5日资金榜单')
+                return '今日行情未结算，沿用本地TOP5行业榜单；18:00后可刷新'
+            raise RuntimeError('交易日18:00后可获取完整的近5日行业资金榜单')
         errors=[]
         for source in self._fund_source_order():
             began=time.monotonic()
             try:
-                rows,members=self._fund_complete_snapshot(source,notify,now)
+                rows=self._fund_complete_snapshot(source,notify,now)
+                # 同一个事务替换榜单并清空历史遗留成分股；榜单失败不修改缓存。
                 with sqlite3.connect(self.db_path,timeout=20) as conn:
                     conn.execute('DELETE FROM fund_top5_snapshot')
                     conn.execute('DELETE FROM fund_top5_member')
-                    conn.executemany('INSERT INTO fund_top5_snapshot(rank,industry,net_yuan,fetched_at,source) VALUES(?,?,?,?,?)',rows)
-                    conn.executemany('INSERT INTO fund_top5_member VALUES(?,?)',members)
+                    conn.executemany(
+                        'INSERT INTO fund_top5_snapshot(rank,industry,net_yuan,fetched_at,source) VALUES(?,?,?,?,?)',
+                        rows)
                 self._fund_note_health(source,True,time.monotonic()-began)
-                return f'{source} · TOP5资金榜单已更新'
+                return f'{source} · 近5日行业资金 TOP5 排名已更新'
             except (RuntimeError,TimeoutError,ValueError,sqlite3.Error) as exc:
                 self._fund_note_health(source,False,time.monotonic()-began)
                 errors.append(f'{source}: {exc}')
                 self._fund_last_errors.append(dict(source=source,error=str(exc)))
-                notify(f'{source}暂不可用，自动切换备用来源…')
-        raise RuntimeError('两个来源均未获取完整榜单，旧缓存未被覆盖。\n'
+                notify(f'{source}排名接口失败，切换备用来源…')
+        raise RuntimeError('两个来源的行业资金排名均未获取成功，原有榜单缓存已保留。\n'
                            + '\n'.join(errors)[:2600])
+
 
     def persist_day_universe(
         self,
@@ -3555,14 +3425,9 @@ class StockScannerApp:
         self._update_check_busy = False
         self._latest_release_url = None
 
-        # TOP5始终使用当次资金提供商的成分股代码，不通过BaoStock行业名称猜测。
-        self.fund_top5_only_var = tk.BooleanVar(value=False)
+        # 资金TOP5只供查看，不关联股票过滤或行业成分股。
         self.fund_status_var = tk.StringVar(value="等待行情检查完成…")
         self._fund_rows: list[dict] = []
-        self._fund_top5_codes: set[str] = set()
-        self._fund_members_by_rank: dict[int,set[str]] = {}
-        self._fund_selected_rank = None
-        self._fund_filter_ready = False
         self._fund_fetch_in_progress = False
 
         # 数据更新与策略扫描分离管理。
@@ -4051,10 +3916,6 @@ class StockScannerApp:
                   style="Headline.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(fund_heading, textvariable=self.fund_status_var,
                   style="Subtle.TLabel").grid(row=0, column=1, sticky="e", padx=(8, 10))
-        self.fund_only_check = ttk.Checkbutton(
-            fund_heading, text="仅看资金 TOP5", variable=self.fund_top5_only_var,
-            command=self._on_fund_top5_toggle)
-        self.fund_only_check.grid(row=0, column=2, sticky="e")
         self.fund_refresh_button = ttk.Button(fund_heading, text="刷新", command=lambda: self._start_fund_refresh(True))
         self.fund_refresh_button.grid(row=0, column=3, sticky="e", padx=(10, 0))
 
@@ -4073,8 +3934,6 @@ class StockScannerApp:
                            font=("Segoe UI", 12, "bold"), text="—")
             val.pack(fill="x", padx=10, pady=(0,5))
             self._fund_card_labels.append((lbl, val))
-            for target in (tile,lbl,val):
-                target.bind('<Button-1>',lambda _event,rank=idx+1:self._on_fund_card_click(rank))
 
         # 五个策略共用：板块与板块自身信号视图。
         # 不是额外下拉框，而是在结果上方直接列出触发板块。
@@ -4392,8 +4251,6 @@ class StockScannerApp:
         for button in (self.history_button,):
             button.configure(state=state)
 
-        self.fund_only_check.configure(
-            state="normal" if enabled and self._fund_filter_ready else "disabled")
         self.fund_refresh_button.configure(
             state="normal" if enabled and not self._fund_fetch_in_progress else "disabled")
 
@@ -4776,7 +4633,7 @@ class StockScannerApp:
         self.current_sector_filter = None
 
         self.sector_title_var.set(f"板块信号 · 今日 · {strategy_label}")
-        self._populate_sector_tree(self._limit_to_fund_top5(df))
+        self._populate_sector_tree(df)
         self.sector_box.grid()
 
         self._populate_tree(
@@ -5099,105 +4956,42 @@ class StockScannerApp:
             self.sector_toggle_button.configure(text="收起板块表")
         self.sector_expanded = not self.sector_expanded
 
-    # -------------------- 5日主力资金TOP5筛选 --------------------
-
-    def _limit_to_fund_top5(self, frame: pd.DataFrame) -> pd.DataFrame:
-        if frame.empty or not self.fund_top5_only_var.get():
-            return frame
-        if not self._fund_filter_ready or '_code_full' not in frame.columns:
-            return frame.iloc[0:0].copy()
-        symbols = frame['_code_full'].astype(str).str.split('.').str[-1].str.zfill(6)
-        allowed = (self._fund_members_by_rank.get(self._fund_selected_rank,set())
-                   if self._fund_selected_rank is not None else self._fund_top5_codes)
-        return frame.loc[symbols.isin(allowed)].copy()
-
-    def _on_fund_top5_toggle(self):
-        if self.fund_top5_only_var.get() and not self._fund_filter_ready:
-            self.fund_top5_only_var.set(False)
-            return
-        if not self.fund_top5_only_var.get():
-            self._fund_selected_rank = None
-        self._render_fund_cards()
-        if self.current_strategy_key and not self._scan_in_progress:
-            self._populate_sector_tree(self._limit_to_fund_top5(self.current_df))
-            self._apply_quick_filters(silent=True)
-
-    def _on_fund_card_click(self,rank:int):
-        if not self._fund_filter_ready:return
-        if self.fund_top5_only_var.get() and self._fund_selected_rank==rank:
-            self.fund_top5_only_var.set(False)
-            self._fund_selected_rank=None
-        else:
-            self.fund_top5_only_var.set(True)
-            self._fund_selected_rank=rank
-        self._on_fund_top5_toggle()
-
-    def _render_fund_cards(self):
-        for i,(label,value) in enumerate(self._fund_card_labels):
-            active=self.fund_top5_only_var.get() and self._fund_selected_rank==i+1
-            color='#eaf3ff' if active else '#ffffff'
-            label.configure(bg=color)
-            value.configure(bg=color)
+    # -------------------- 近5日行业资金 TOP5（仅显示） --------------------
 
     def _display_fund_top5(self, message: str):
         try:
-            rows, by_rank = self.backend.load_fund_top5()
+            rows,_ = self.backend.load_fund_top5()
         except Exception as exc:
-            rows, by_rank = [], {}
-            message = str(exc)
-        self._fund_rows = rows
-        self._fund_members_by_rank = by_rank
-        self._fund_top5_codes = set().union(*(by_rank.values())) if by_rank else set()
-        complete = len(rows) == 5 and all(by_rank.get(i) for i in range(1,6))
-        data_date = self.update_result.scan_date if self.update_result else None
-        # 资金榜单没有内置明确的行情截止日。为避免使用资金榜单去筛选过旧的本地行情，
-        # 仅接受与本地数据同日的快照；周末允许相对最近交易日延后1～2天。
-        fresh = False
-        if complete and data_date:
-            try:
-                captured = datetime.strptime(rows[0]['fetched_at'][:10], '%Y-%m-%d').date()
-                scanned = datetime.strptime(data_date, '%Y-%m-%d').date()
-                max_lag = 2 if datetime.now(CST).weekday() >= 5 else 0
-                fresh = 0 <= (captured - scanned).days <= max_lag
-            except ValueError:
-                fresh = False
-        self._fund_filter_ready = fresh
-        if not fresh and self.fund_top5_only_var.get():
-            self.fund_top5_only_var.set(False)
-        for i, (lbl, val) in enumerate(self._fund_card_labels):
-            if i < len(rows):
-                item = rows[i]
-                title = item['name']
-                if len(title) > 11:
-                    title = title[:10] + '…'
-                lbl.configure(text=f"#{i+1}  {title}")
-                amount = item['net_yuan']/100000000
-                val.configure(text=f"{amount:+.2f} 亿", fg="#d11a2a" if amount >= 0 else "#16a34a")
+            rows=[]
+            message=str(exc)
+        self._fund_rows=rows
+        for i,(lbl,val) in enumerate(self._fund_card_labels):
+            if i<len(rows):
+                item=rows[i]
+                name=item['name']
+                lbl.configure(text=f"#{i+1}  {name[:10]+'…' if len(name)>11 else name}")
+                amount=item['net_yuan']/100000000
+                val.configure(text=f"{amount:+.2f} 亿",
+                              fg="#d11a2a" if amount>=0 else "#16a34a")
             else:
                 lbl.configure(text=f"#{i+1}  暂无数据")
-                val.configure(text='—', fg='#6e6e73')
-        self._render_fund_cards()
+                val.configure(text="—",fg="#6e6e73")
         if rows:
-            stamp = rows[0]['fetched_at'][5:16]
-            source=rows[0].get('source','东方财富')
-            suffix='数据可筛选' if fresh else '榜单与行情日期未匹配，暂不可筛选'
-            info=f'{source} · 抓取 {stamp} · {suffix}'
-            if message and ('失败' in message or '异常' in message):
-                info += " · 更新失败，请重试"
-            self.fund_status_var.set(info)
+            stamp=rows[0]['fetched_at'][5:16]
+            source=rows[0].get('source','未知来源')
+            suffix=' · 更新失败，展示旧缓存' if message and ('失败' in message or '异常' in message) else ''
+            self.fund_status_var.set(f'{source} · 抓取 {stamp} · 仅展示排名{suffix}')
         else:
-            info = message or '等待资金榜单；需安装 AKShare'
-            self.fund_status_var.set(info[:50] + ('…' if len(info) > 50 else ''))
-        self._set_actions_enabled(not getattr(self, '_busy', False))
-        if self.current_strategy_key and not self._scan_in_progress:
-            self._populate_sector_tree(self._limit_to_fund_top5(self.current_df))
-            self._apply_quick_filters(silent=True)
+            info=message or '暂无资金TOP5行业榜单'
+            self.fund_status_var.set(info[:72] + ('…' if len(info)>72 else ''))
+        self._set_actions_enabled(not getattr(self,'_busy',False))
+
 
     def _start_fund_refresh(self, force: bool = False):
         if self._fund_fetch_in_progress or getattr(self, '_busy', False):
             return
         self._fund_fetch_in_progress = True
-        self.fund_status_var.set('正在读取资金排名及五大行业成分股…')
+        self.fund_status_var.set('正在获取近5日行业资金TOP5排名…')
         self._set_actions_enabled(True)
         def worker():
             try:
@@ -5236,13 +5030,11 @@ class StockScannerApp:
         self.quick_change_range = (low, high)
         filtered = self.backend.filter_results(self.current_df, self.search_var.get(), self.market_var.get(),
                                               self.industry_var.get(), low, high, self.current_sector_filter)
-        filtered = self._limit_to_fund_top5(filtered)
         self.visible_df = filtered
         if self.current_strategy_key:
             self._populate_tree(self.current_strategy_key, filtered)
             suffix = f" · {self.current_sector_filter}" if self.current_sector_filter else ""
-            fund_suffix = " · 资金TOP5" if self.fund_top5_only_var.get() else ""
-            self.summary_var.set(f"{self.current_strategy_label}{fund_suffix}{suffix} · 显示 {len(filtered)} 条 / 原始 {len(self.current_df)} 条")
+            self.summary_var.set(f"{self.current_strategy_label}{suffix} · 显示 {len(filtered)} 条 / 原始 {len(self.current_df)} 条")
 
     def _reset_quick_filters(self):
         self.search_var.set("")
