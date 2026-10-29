@@ -1,0 +1,29 @@
+# Market data, SQLite WAL/SHM, runtime logs
+/data/
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/*.sqlite
+**/*.sqlite3
+*.log
+
+# Python/IDE/OS runtime
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.env.*
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local test and build outputs
+build/
+dist/
+*.spec
+*.zip
