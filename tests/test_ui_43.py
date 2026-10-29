@@ -36,6 +36,8 @@ class DesktopLayoutTests(unittest.TestCase):
             for item in reversed(self.mocks):item.stop()
 
     def test_real_three_column_workbench(self):
+        # 启动加载窗口尚未完成时，主界面必须隐藏。
+        self.assertEqual(self.root.state(), 'withdrawn')
         # Tk hides the scanner at startup; geometry reports 1x1 until it is mapped.
         self.app._enter_scanner()
         self.root.update_idletasks()
@@ -48,7 +50,7 @@ class DesktopLayoutTests(unittest.TestCase):
         self.assertEqual(len(self.app.strategy_buttons),7)
         self.assertEqual(len(self.app.strategy_button_by_key),7)
         self.assertEqual(len(self.app._fund_card_labels),5)
-        self.assertEqual(self.root.state(),'withdrawn')
+        self.assertEqual(self.root.state(),'normal')
 
     def test_strategy_sidebar_highlight_and_parameters(self):
         self.app.current_strategy_key='ma5_turn_up'
