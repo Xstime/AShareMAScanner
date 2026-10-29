@@ -3393,7 +3393,7 @@ class StockScannerApp:
         self._update_check_busy = False
         self._latest_release_url = None
 
-        # TOP5使用东方财富行业的实际成分股代码，独立于BaoStock行业名称。
+        # TOP5始终使用当次资金提供商的成分股代码，不通过BaoStock行业名称猜测。
         self.fund_top5_only_var = tk.BooleanVar(value=False)
         self.fund_status_var = tk.StringVar(value="等待行情检查完成…")
         self._fund_rows: list[dict] = []
@@ -3514,7 +3514,7 @@ class StockScannerApp:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(6, weight=1)
 
-        top = ttk.Frame(self.root, padding=(16, 14, 16, 4))
+        top = ttk.Frame(self.root, padding=(16, 10, 16, 2))
         top.grid(row=0, column=0, sticky="ew")
         top.columnconfigure(0, weight=1)
 
@@ -3595,7 +3595,7 @@ class StockScannerApp:
 
         action_box = ttk.Frame(
             self.root,
-            padding=(16, 7, 16, 6),
+            padding=(16, 3, 16, 3),
         )
         action_box.grid(row=2, column=0, sticky="ew")
 
@@ -3684,7 +3684,7 @@ class StockScannerApp:
                   style="Subtle.TLabel").pack(side="left")
 
         # 资金榜单是高度固定的小模块，不影响个股表的自适应高度。
-        self.fund_box = ttk.Frame(self.root, padding=(16, 3, 16, 4))
+        self.fund_box = ttk.Frame(self.root, padding=(16, 1, 16, 2))
         self.fund_box.grid(row=4, column=0, sticky="ew")
         self.fund_box.columnconfigure(0, weight=1)
         fund_heading = ttk.Frame(self.fund_box)
@@ -3723,7 +3723,7 @@ class StockScannerApp:
         # 不是额外下拉框，而是在结果上方直接列出触发板块。
         self.sector_box = ttk.Frame(
             self.root,
-            padding=(16, 2, 16, 8),
+            padding=(16, 1, 16, 3),
         )
         self.sector_box.grid(
             row=5,
@@ -3746,7 +3746,7 @@ class StockScannerApp:
 
         ttk.Label(
             sector_head,
-            text="单击过滤，双击看走势",
+            text="单击过滤，双击看走势及历史",
             style="Subtle.TLabel",
         ).grid(row=0, column=1, sticky="e")
         self.sector_expanded = False
@@ -5011,6 +5011,13 @@ class StockScannerApp:
             desc,
             text="  ·  成分股后复权收盘价归一化后等权平均",
         ).pack(side="left")
+        # 板块列表只显示当日信号；历史信号在走势详情中按同一策略回算。
+        dates=df.get('trade_date',pd.Series(dtype=str)).astype(str).tolist()
+        history=[d for d in dates if self.backend._sector_strategy_triggered(
+            df,strategy_key,d,self.current_filters) and d!=end_date]
+        status=('历史信号：'+'、'.join(history[-5:][::-1]) if history
+                else '历史信号：本地图表范围内暂无其他触发')
+        ttk.Label(win,text=status,style='Subtle.TLabel').pack(anchor='w',padx=14,pady=(0,4))
 
         legend = ttk.Frame(
             win,
