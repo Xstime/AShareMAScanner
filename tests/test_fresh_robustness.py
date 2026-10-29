@@ -328,5 +328,34 @@ class Backend(unittest.TestCase):
             self.assertEqual(c.execute("SELECT COUNT(*) FROM fetch_queue").fetchone()[0],0)
             self.assertEqual(c.execute("SELECT COUNT(*) FROM daily").fetchone()[0],45)
 
+    def fake_release(self, tag, url):
+        import json
+        from contextlib import nullcontext
+        class Response:
+            def __enter__(self):return self
+            def __exit__(self,*exc):return False
+            def read(self,max_size):
+                return json.dumps({"tag_name":tag,"html_url":url}).encode("utf-8")
+        return patch.object(mod.urllib.request,"urlopen",return_value=Response())
+
+    def test_23_withdrawn_dev_version_must_not_claim_latest_official(self):
+        with self.fake_release("v1.2.6","https://github.com/Xstime/AShareMAScanner/releases/tag/v1.2.6"):
+            status,url=mod.fetch_latest_release()
+        self.assertIn("开发/未发布版本",status)
+        self.assertIn("v1.2.6",status)
+        self.assertEqual(url,mod.RELEASES_PAGE)
+
+    def test_24_newer_public_release_is_detected_and_linked(self):
+        url="https://github.com/Xstime/AShareMAScanner/releases/tag/v1.2.9"
+        with self.fake_release("v1.2.9",url):
+            status,actual=mod.fetch_latest_release()
+        self.assertIn("v1.2.9",status)
+        self.assertEqual(actual,url)
+
+    def test_25_release_url_rejects_external_hosts(self):
+        with self.fake_release("v1.2.9","https://evil.example/install"):
+            status,url=mod.fetch_latest_release()
+        self.assertEqual(url,mod.RELEASES_PAGE)
+
 if __name__=="__main__":
     unittest.main(verbosity=2)
