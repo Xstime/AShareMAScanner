@@ -37,6 +37,19 @@ jobs:
             tail -n 24 "audit-evidence/$suite.log"
           done
           exit 0
+      - name: Capture actual PySide6 demo screenshot
+        shell: bash
+        run: |
+          mkdir -p audit-evidence
+          QT_QPA_PLATFORM=offscreen xvfb-run -a python 'A股MA扫描器_v1.2.8.pyw' --demo --screenshot audit-evidence/workbench.png
+          test -s audit-evidence/workbench.png
+          python - <<'PY'
+          from PySide6.QtGui import QImage
+          image=QImage("audit-evidence/workbench.png")
+          assert not image.isNull()
+          assert (image.width(),image.height())==(1120,840), (image.width(),image.height())
+          print("Verified real 1120x840 PySide6 GUI screenshot")
+          PY
       - name: Upload auditable raw test results
         if: always()
         uses: actions/upload-artifact@v4
