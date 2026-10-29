@@ -3497,7 +3497,7 @@ try:
         QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
         QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
         QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QTableWidget,
-        QTableWidgetItem, QVBoxLayout, QWidget,
+        QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
     )
 
 except Exception as exc:
@@ -3895,13 +3895,19 @@ class ScannerWindow(QMainWindow):
         opt = QVBoxLayout(self.volume_options)
         opt.setContentsMargins(0, 8, 0, 0)
         self.volume_min = QLineEdit("1.5")
-        self.volume_min.setPlaceholderText("放量下限")
+        self.volume_min.setPlaceholderText("最小放量倍数")
+        self.volume_max = QLineEdit()
+        self.volume_max.setPlaceholderText("最大放量倍数（可留空）")
         self.turnover_min = QLineEdit("3")
-        self.turnover_min.setPlaceholderText("换手率下限")
-        opt.addWidget(self._text("放量倍数 ≥", "small"))
-        opt.addWidget(self.volume_min)
-        opt.addWidget(self._text("换手率 ≥ (%)", "small"))
-        opt.addWidget(self.turnover_min)
+        self.turnover_min.setPlaceholderText("最小换手率%")
+        self.turnover_max = QLineEdit()
+        self.turnover_max.setPlaceholderText("最大换手率%（可留空）")
+        for label, entry in (
+            ("放量倍数下限", self.volume_min), ("放量倍数上限", self.volume_max),
+            ("换手率下限 (%)", self.turnover_min), ("换手率上限 (%)", self.turnover_max)
+        ):
+            opt.addWidget(self._text(label, "small"))
+            opt.addWidget(entry)
         apply = QPushButton("重新筛选")
         apply.clicked.connect(self._rerun_strategy)
         opt.addWidget(apply)
@@ -3958,6 +3964,33 @@ class ScannerWindow(QMainWindow):
         self.industry.currentIndexChanged.connect(self.apply_filters)
         search.addWidget(self.industry, 2)
         mid.addLayout(search)
+        change_row = QHBoxLayout()
+        self.change_min = QLineEdit()
+        self.change_min.setPlaceholderText("涨幅下限 (%)")
+        self.change_max = QLineEdit()
+        self.change_max.setPlaceholderText("涨幅上限 (%)")
+        for label, entry in (("涨幅下限%", self.change_min), ("涨幅上限%", self.change_max)):
+            change_row.addWidget(self._text(label, "small"))
+            change_row.addWidget(entry, 1)
+            entry.editingFinished.connect(self.apply_filters)
+        mid.addLayout(change_row)
+        sector_head = QHBoxLayout()
+        sector_head.addWidget(self._text("板块信号 · 点击筛选 / 双击查看走势", "section"))
+        sector_head.addStretch(1)
+        self.sector_reset = QPushButton("全部板块")
+        self.sector_reset.clicked.connect(self._reset_sector_filter)
+        sector_head.addWidget(self.sector_reset)
+        mid.addLayout(sector_head)
+        self.sector_table = QTableWidget(0, 3)
+        self.sector_table.setHorizontalHeaderLabels(["板块", "今日触发", "板块信号"])
+        self.sector_table.verticalHeader().hide()
+        self.sector_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.sector_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.sector_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.sector_table.setMaximumHeight(120)
+        self.sector_table.itemSelectionChanged.connect(self._on_sector_selected)
+        self.sector_table.cellDoubleClicked.connect(self._open_sector_chart)
+        mid.addWidget(self.sector_table)
         results = QHBoxLayout()
         results.addWidget(self._text("选股结果", "section"))
         results.addStretch(1)
@@ -3968,7 +4001,7 @@ class ScannerWindow(QMainWindow):
 
         self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
-            ["代码", "名称", "板块", "收盘价", "涨幅%", "放量", "换手率%"]
+            ["代码", "名称", "板块", "收盘价", "当日涨幅%", "放量倍数", "换手率%"]
         )
         self.table.verticalHeader().hide()
         self.table.setShowGrid(False)
