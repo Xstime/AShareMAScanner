@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-# Cloud validation after replacing THS industry membership with public HTML pagination.
+# Cloud validation of sector-only five-day capital-inflow rankings.
 """Live, read-only probe for production TOP5 endpoints; explicitly opt-in only.
 
 Runs the actual backend methods and does not mutate the user's SQLite database.
-Results in GitHub Actions show success/failure by stage and source.
+Results in GitHub Actions show success/failure of the two ranking sources only.
 """
 from __future__ import annotations
 
@@ -54,14 +54,14 @@ def run_probe():
                 messages.append(message)
                 emit("progress", source=source, message=message)
             try:
-                rows, members = backend._fund_complete_snapshot(
+                rows = backend._fund_complete_snapshot(
                     source, notify, module.datetime.now(module.CST)
                 )
-                counts = {}
-                for rank, industry, _, _, _ in rows:
-                    counts[industry] = sum(1 for r, _ in members if r == rank)
-                outcome[source] = {"ok": True, "elapsed_s": round(time.monotonic() - started, 2),
-                                   "top5": [r[1] for r in rows], "members": counts}
+                outcome[source] = {
+                    "ok": True, "elapsed_s": round(time.monotonic() - started, 2),
+                    "top5": [{"sector": row[1], "net_yuan": row[2]} for row in rows],
+                    "count": len(rows),
+                }
                 emit("source_success", source=source, **outcome[source])
             except Exception as exc:
                 outcome[source] = {"ok": False, "elapsed_s": round(time.monotonic() - started, 2),
