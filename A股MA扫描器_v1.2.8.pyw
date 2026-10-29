@@ -4617,19 +4617,83 @@ class ScannerWindow(QMainWindow):
         if self.demo:
             QMessageBox.information(self, "信号历史", "演示模式不提供真实信号历史。")
             return
-        # Read-only query to keep the PySide6 preview independent of the old Tkinter dialogs.
-        try:
-            f = self.backend.get_signal_history(
-                str(record["_code_full"]), self.update_result.scan_date,
-                self.engine.RangeFilter()
-            )
-            text = "暂无历史触发信号" if f.empty else "\n".join(
-                f'{r["signal_date"]} · {r["strategy"]}'
-                for r in f.head(35).to_dict("records")
-            )
-            self._show_error("本地信号历史", text)
-        except Exception:
-            self._show_error("历史读取失败", traceback.format_exc())
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f'{record.get("代码")} {record.get("名称")} · 信号历史')
+        dialog.resize(1100, 650)
+        layout = QVBoxLayout(dialog)
+        notice = self._text("正在后台回算本地历史信号…", "small")
+        layout.addWidget(notice)
+        table = QTableWidget(0, 8)
+        table.setHorizontalHeaderLabels(["触发日", "策略", "连续日数", "收盘价",
+                                        "放量倍数", "换手率%", "参数", "来源"])
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setSortingEnabled(True)
+        layout.addWidget(table, 1)
+        code = str(record["_code_full"])
+        name = str(record.get("名称", ""))
+
+        def display(history):
+            if not dialog.isVisible():
+                return
+            notice.setText(f"历史共 {len(history)} 条信号 · 双击记录查看触发日走势图")
+            table.setSortingEnabled(False)
+            table.setRowCount(len(history))
+            for index, rec in enumerate(history.to_dict("records")):
+                payload = json.loads(rec.get("payload") or "{}")
+                filter_key = str(rec.get("filter_key", "固定规则"))
+                if filter_key != "固定规则":
+                    try:
+                        lo, hi, tlo, thi = json.loads(filter_key)
+                        filter_key = (f"放量 {lo:g}～{hi if hi is not None else '不限'}；"
+                                      f"换手率 {tlo:g}～{thi if thi is not None else '不限'}%")
+                    except (TypeError, ValueError):
+                        pass
+                labels = {k: label for k, label, _ in STRATEGIES}
+                row = (rec.get("signal_date"), labels.get(rec.get("strategy"), rec.get("strategy")),
+                       rec.get("streak"), payload.get("收盘价"),
+                       payload.get("放量倍数"), payload.get("换手率%"),
+                       filter_key, rec.get("source"))
+                for col, value in enumerate(row):
+                    item = QTableWidgetItem(value_text(value) if col in (3, 4, 5) else str(value))
+                    item.setData(Qt.ItemDataRole.UserRole, str(rec.get("signal_date", "")))
+                    table.setItem(index, col, item)
+            table.setSortingEnabled(True)
+            table.resizeColumnsToContents()
+
+        def fail(details):
+            if dialog.isVisible():
+                notice.setText("历史记录回算失败")
+                self._show_error("历史读取失败", details)
+
+        def view_record(row, column):
+            item = table.item(row, 0)
+            if item is None:
+                return
+            date = str(item.data(Qt.ItemDataRole.UserRole) or item.text())
+            try:
+                frame = self.backend.get_chart_data(code, date)
+                if frame.empty:
+                    return
+                plot = QDialog(dialog)
+                plot.setWindowTitle(f"{name} · {date} 触发日")
+                plot.resize(900, 620)
+                view = QVBoxLayout(plot)
+                chart = PriceChart()
+                chart.set_frame(frame, signal_date=date)
+                view.addWidget(chart)
+                plot.exec()
+            except Exception:
+                self._show_error("历史走势图失败", traceback.format_exc())
+
+        table.cellDoubleClicked.connect(view_record)
+        worker = HistoryWorker(self.backend, code, self.update_result.scan_date,
+                               self.current_filters)
+        worker.success.connect(display)
+        worker.failed.connect(fail)
+        self._remember(worker)
+        dialog.show()
+        worker.start()
 
     def _show_release_info(self):
         if self._version_worker is not None and self._version_worker.isRunning():
