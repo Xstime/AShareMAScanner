@@ -3528,7 +3528,7 @@ class ScanWorker(QThread):
     success = Signal(int, object)
     failed = Signal(int, str)
 
-    def __init__(self, backend, request_id, strategy, date, previous, filters):
+    def __init__(self, backend, request_id, strategy, date, previous, filters, cancel_event=None):
         super().__init__()
         self.backend = backend
         self.request_id = request_id
@@ -3536,11 +3536,13 @@ class ScanWorker(QThread):
         self.date = date
         self.previous = previous
         self.filters = filters
+        self.cancel_event = cancel_event
 
     def run(self):
         try:
             frame = self.backend.scan_strategy(
-                self.strategy, self.date, False, self.previous, self.filters
+                self.strategy, self.date, False, self.previous, self.filters,
+                cancel_event=self.cancel_event
             )
             self.success.emit(self.request_id, frame)
         except Exception:
@@ -4155,45 +4157,58 @@ class ScannerWindow(QMainWindow):
     def _rerun_strategy(self):
         if self.update_result is None:
             return
+        if self._scan_cancel_event is not None:
+            self._scan_cancel_event.set()
         self.scan_token += 1
+        self._scan_cancel_event = threading.Event()
         self.frame = pd.DataFrame()
+        self.sector_filter = None
+        self.sector_table.blockSignals(True)
+        self.sector_table.setRowCount(0)
+        self.sector_table.blockSignals(False)
         self.apply_filters()
         if self.demo:
             self.frame = sample_data(self.current_key)
+            self._update_industry_filter()
+            self._populate_sector_table()
             self.apply_filters()
             return
         try:
             filters = None
             if self.current_key == "volume_turnover":
                 filters = self.engine.RangeFilter(
-                    float(self.volume_min.text()), None,
-                    float(self.turnover_min.text()), None,
+                    float(self.volume_min.text().strip()),
+                    float(self.volume_max.text()) if self.volume_max.text().strip() else None,
+                    float(self.turnover_min.text().strip()),
+                    float(self.turnover_max.text()) if self.turnover_max.text().strip() else None,
                 )
-        except ValueError:
-            self.result_info.setText("请输入有效的放量倍数和换手率")
+                self.current_filters = filters
+        except (ValueError, OverflowError) as exc:
+            self.result_info.setText("请输入有效的放量倍数及换手率上下限：" + str(exc))
             return
         self.result_info.setText("正在读取本地行情并计算策略…")
         worker = ScanWorker(self.backend, self.scan_token, self.current_key,
                             self.update_result.scan_date,
-                            self.update_result.previous_trade_date, filters)
+                            self.update_result.previous_trade_date, filters,
+                            self._scan_cancel_event)
         worker.success.connect(self._scan_ready)
         worker.failed.connect(self._scan_failed)
         self._remember(worker)
         worker.start()
-
     def _scan_ready(self, token, frame):
         if token != self.scan_token:
             return
+        self._scan_cancel_event = None
         self.frame = frame
         self._update_industry_filter()
+        self._populate_sector_table()
         self.apply_filters()
-
     def _scan_failed(self, token, detail):
         if token != self.scan_token:
             return
+        self._scan_cancel_event = None
         self.result_info.setText("策略执行失败，点击查看错误信息")
         self._show_error("策略执行失败", detail)
-
     def _update_industry_filter(self):
         current = self.industry.currentText()
         self.industry.blockSignals(True)
@@ -4205,14 +4220,95 @@ class ScannerWindow(QMainWindow):
         self.industry.setCurrentIndex(max(0, index))
         self.industry.blockSignals(False)
 
+    def _populate_sector_table(self):
+        self.sector_table.blockSignals(True)
+        self.sector_table.setRowCount(0)
+        if not self.frame.empty and "板块" in self.frame.columns:
+            data = []
+            for sector, group in self.frame.groupby("板块", dropna=False):
+                name = str(sector or "未分类")
+                triggered = int((group["触发日"].astype(str) == str(self.update_result.scan_date)).sum())
+                status = str(group["板块信号"].iloc[0]) if "板块信号" in group else "未触发"
+                data.append((name, triggered, status))
+            data.sort(key=lambda item: (item[2] == "今日触发", item[1], item[0]), reverse=True)
+            self.sector_table.setRowCount(len(data))
+            for r, (name, count, status) in enumerate(data):
+                for c, value in enumerate((name, count, status)):
+                    item = QTableWidgetItem(str(value))
+                    if c == 1:
+                        item.setData(Qt.ItemDataRole.EditRole, int(count))
+                    self.sector_table.setItem(r, c, item)
+        self.sector_table.blockSignals(False)
+        self.sector_table.resizeColumnsToContents()
+
+    def _reset_sector_filter(self):
+        self.sector_filter = None
+        self.sector_table.blockSignals(True)
+        self.sector_table.clearSelection()
+        self.sector_table.blockSignals(False)
+        self.apply_filters()
+
+    def _on_sector_selected(self):
+        chosen = self.sector_table.selectedItems()
+        self.sector_filter = (self.sector_table.item(chosen[0].row(), 0).text()
+                              if chosen else None)
+        self.apply_filters()
+
+    def _open_sector_chart(self, row, column):
+        if self.demo or self.backend is None or self.update_result is None:
+            QMessageBox.information(self, "板块走势", "演示模式没有真实板块历史数据。")
+            return
+        item = self.sector_table.item(row, 0)
+        if item is None:
+            return
+        sector = item.text()
+        try:
+            data = self.backend.get_sector_chart_data(sector, self.update_result.scan_date)
+            if data.empty:
+                QMessageBox.information(self, "板块走势", "本地板块数据不足，无法绘图。")
+                return
+            status = self.backend.get_sector_strategy_status(
+                sector, self.current_key, self.update_result.scan_date,
+                False, self.update_result.previous_trade_date,
+                self.current_filters if self.current_key == "volume_turnover" else None)
+            dlg = QDialog(self)
+            dlg.setWindowTitle(f"{sector} · {self.strategy_title.text()}")
+            dlg.resize(950, 720)
+            layout = QVBoxLayout(dlg)
+            layout.addWidget(self._text(f"{sector} · {self.strategy_title.text()} · {status}", "brand"))
+            layout.addWidget(self._text("行业成分股后复权价格归一化后的等权指数；板块信号按当前策略计算", "small"))
+            chart = PriceChart()
+            chart.set_frame(data, signal_date=self.update_result.scan_date)
+            layout.addWidget(chart, 3)
+            if self.current_key == "volume_turnover":
+                for field, title in (("放量倍数", "板块放量倍数"), ("turnover", "板块等权换手率%")):
+                    view = PriceChart()
+                    view.set_frame(data, series=[field])
+                    layout.addWidget(self._text(title, "small"))
+                    layout.addWidget(view, 1)
+            dlg.exec()
+        except Exception:
+            self._show_error("读取板块历史失败", traceback.format_exc())
+
     def clear_filters(self):
         self.query.clear()
         self.market.setCurrentIndex(0)
         self.industry.setCurrentIndex(0)
-        self._render_funds()
+        self.change_min.clear()
+        self.change_max.clear()
+        self._reset_sector_filter()
         self.apply_filters()
-
     def apply_filters(self):
+        try:
+            low = float(self.change_min.text()) if self.change_min.text().strip() else None
+            high = float(self.change_max.text()) if self.change_max.text().strip() else None
+            if any(v is not None and not math.isfinite(v) for v in (low, high)):
+                raise ValueError("涨幅上下限必须为有限数字")
+            if low is not None and high is not None and low > high:
+                raise ValueError("涨幅下限不能大于上限")
+        except ValueError as exc:
+            self.result_info.setText("涨幅范围无效：" + str(exc))
+            return
         if self.frame.empty:
             self.filtered = pd.DataFrame()
         else:
@@ -4234,6 +4330,14 @@ class ScannerWindow(QMainWindow):
             sector = self.industry.currentText()
             if sector and sector != "全部行业":
                 frame = frame.loc[frame["板块"].astype(str).eq(sector)]
+            if self.sector_filter:
+                frame = frame.loc[frame["板块"].astype(str).eq(self.sector_filter)]
+            if low is not None or high is not None:
+                change = pd.to_numeric(frame["当日涨幅%"], errors="coerce")
+                if low is not None:
+                    frame = frame.loc[change >= low]
+                if high is not None:
+                    frame = frame.loc[change <= high]
             self.filtered = frame.copy()
         self._draw_table()
         self.hit_count.setText(f"命中 {len(self.filtered)} 只")
@@ -4241,22 +4345,39 @@ class ScannerWindow(QMainWindow):
             "模拟数据 · 非真实行情" if self.demo else
             f"股票结果 {len(self.filtered)} 只 · {self.update_result.scan_date if self.update_result else '—'}"
         )
-
     def _draw_table(self):
+        # Like v1.2.6, show metrics particular to the active strategy.
+        common = ["代码", "名称", "板块", "触发日", "收盘价", "当日涨幅%"]
+        if self.current_key == "volume_turnover":
+            columns = common + ["放量倍数", "换手率%"]
+        elif self.current_key == "ma5_turn_up":
+            columns = common + ["MA5", "昨日MA5", "MA5上拐幅度%", "放量倍数", "换手率%"]
+        elif self.current_key == "ma_convergence_up":
+            columns = common + ["MA5", "MA10", "MA20", "昨日粘合度%",
+                                "今日发散度%", "发散增加百分点", "放量倍数", "换手率%"]
+        elif self.current_key.startswith("breakout_ma"):
+            ma = self.current_key.replace("breakout_ma", "")
+            columns = common + [f"MA{ma}", f"突破MA{ma}幅度%", "放量倍数", "换手率%"]
+        else:
+            columns = common + ["MA5", "MA10", "MA5高于MA10%", "放量倍数", "换手率%"]
         self.table.blockSignals(True)
         self.table.setSortingEnabled(False)
+        self.table.setColumnCount(len(columns))
+        self.table.setHorizontalHeaderLabels(columns)
         self.table.setRowCount(0 if self.filtered.empty else len(self.filtered))
         for row_number, (_, record) in enumerate(self.filtered.iterrows()):
-            for column, key in enumerate(
-                ("代码", "名称", "板块", "收盘价", "当日涨幅%", "放量倍数", "换手率%")
-            ):
-                raw = record.get(key, None)
-                value = value_text(raw) if column >= 3 else str(raw or "—")
+            for column, key in enumerate(columns):
+                raw = record.get(key)
+                if key in ("代码", "名称", "板块", "触发日"):
+                    value = str(raw) if raw is not None and not pd.isna(raw) else "—"
+                else:
+                    value = value_text(raw)
                 item = QTableWidgetItem(value)
                 item.setData(Qt.ItemDataRole.UserRole, str(record.get("_code_full", "")))
-                if column >= 3:
+                if key not in ("代码", "名称", "板块", "触发日"):
                     try:
-                        item.setData(Qt.ItemDataRole.EditRole, float(raw))
+                        if raw is not None and math.isfinite(float(raw)):
+                            item.setData(Qt.ItemDataRole.EditRole, float(raw))
                     except (ValueError, TypeError):
                         pass
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -4268,12 +4389,9 @@ class ScannerWindow(QMainWindow):
         self.table.blockSignals(False)
         if self.table.rowCount():
             self.table.selectRow(0)
-            # Populating the table temporarily blocks Qt signals; explicitly
-            # synchronize the inspector with the newly selected first row.
             self._stock_selected()
         else:
             self._clear_stock()
-
     def _render_funds(self):
         """TOP5 五个板块只展示排名及净流入金额，不支持点击筛选。"""
         for idx, card in enumerate(self.fund_cards):
