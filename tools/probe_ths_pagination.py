@@ -44,3 +44,25 @@ for idx,path in enumerate(options):
     except Exception as exc:
         print("CASE",idx,"ERROR",type(exc).__name__,str(exc)[:250],flush=True)
     time.sleep(.5)
+
+
+print("BATTERY LAST-PAGE DIAGNOSTICS",flush=True)
+for url in [
+    "https://q.10jqka.com.cn/thshy/detail/code/881281/page/5/",
+    "https://q.10jqka.com.cn/thshy/detail/code/881281/page/6/",
+    "https://q.10jqka.com.cn/thshy/detail/page/6/code/881281/",
+    "https://q.10jqka.com.cn/thshy/detail/code/881281/page/6/?r=1"
+]:
+    try:
+        rr=requests.get(url,headers=headers,timeout=15)
+        soup=BeautifulSoup(rr.text,"html.parser")
+        trs=soup.select("table tbody tr")
+        pager=soup.select_one(".page_info")
+        text=soup.get_text(" ",strip=True)
+        print("BATTERY",url,"STATUS",rr.status_code,"SIZE",len(rr.content),
+              "ROWS",len(trs),"PAGE",pager.get_text(strip=True) if pager else "none",
+              "TITLE",soup.title.get_text(strip=True) if soup.title else "none",
+              "FIRST",text[:170],flush=True)
+    except Exception as exc:
+        print("BATTERY ERROR",type(exc).__name__,str(exc)[:250],flush=True)
+    time.sleep(.5)
