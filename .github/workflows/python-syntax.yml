@@ -1,32 +1,48 @@
-name: Python syntax check
+name: Three-stage Tkinter and PySide6 PYw regression
 
 on:
   push:
     branches:
-      - dev/v1.2.8-pyw-clean
+      - dev/v1.2.8-hybrid-pyw
   pull_request:
     branches:
       - main
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  compile:
+  validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Compile scanner syntax
+      - name: Install Qt and Tk native runtime
         run: |
-          python -m py_compile A股MA扫描器_v1.2.8.pyw
-      - name: Install test dependency
-        run: python -m pip install pandas
-      - name: Ensure virtual display is available
-        run: command -v xvfb-run || (sudo apt-get update && sudo apt-get install -y xvfb)
-      - name: Run offline regression and startup GUI tests
+          sudo apt-get update
+          sudo apt-get install -y xvfb python3-tk libegl1 libopengl0 libxkbcommon-x11-0 libxcb-cursor0
+      - name: Install all production dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Verify single PYw file compiles
+        run: python -m py_compile A股MA扫描器_v1.2.8.pyw
+      - name: Test existing scanners, Tk update stage, and actual Qt GUI
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: xvfb-run -a python -m unittest discover -s tests -v
+      - name: Save real 4:3 PySide6 main-window screenshot
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          mkdir -p docs
+          xvfb-run -a python "A股MA扫描器_v1.2.8.pyw" --demo --screenshot docs/pyside6-v1.2.8.png
+          test -s docs/pyside6-v1.2.8.png
+          file docs/pyside6-v1.2.8.png
+      - name: Upload GUI preview
+        uses: actions/upload-artifact@v4
+        with:
+          name: pyside6-three-stage-preview
+          path: docs/pyside6-v1.2.8.png
