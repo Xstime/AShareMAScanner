@@ -52,8 +52,11 @@ class RankOnlyTests(unittest.TestCase):
                 raise TimeoutError("THS mock timeout")
             raise RuntimeError("constituent API blocked")
         self.backend._fund_request=ranking_but_no_constituents
+        notices=[]
         with self.assertRaisesRegex(RuntimeError,"两个来源均未获取完整榜单"):
-            self.backend.refresh_fund_top5(force=True)
+            self.backend.refresh_fund_top5(force=True,progress=notices.append)
+        self.assertTrue(any("排名 5/5 已获取" in msg for msg in notices))
+        self.assertTrue(any("成功0、失败5" in msg for msg in notices))
         self.assertEqual(len(self.backend._last_rank_only),5)
         self.assertTrue(self.backend._last_rank_only[0]["ranking_only"])
         self.assertEqual(self.backend._last_rank_only[0]["source"],"东方财富")
