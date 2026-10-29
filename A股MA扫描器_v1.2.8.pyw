@@ -3501,7 +3501,7 @@ try:
     from PySide6.QtWidgets import (
         QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QFrame,
         QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
-        QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
+        QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
         QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QTableWidget,
         QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
     )
@@ -4087,6 +4087,8 @@ class ScannerWindow(QMainWindow):
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSortingEnabled(True)
         self.table.itemSelectionChanged.connect(self._stock_selected)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._table_context_menu)
         self.table.horizontalHeader().setStretchLastSection(True)
         mid.addWidget(self.table, 1)
         self.result_info = self._text("选择策略后开始扫描", "small")
@@ -4319,6 +4321,8 @@ class ScannerWindow(QMainWindow):
             for r, (name, count, status) in enumerate(data):
                 for c, value in enumerate((name, count, status)):
                     item = QTableWidgetItem(str(value))
+                    if c == 0:
+                        item.setToolTip(name)
                     if c == 1:
                         item.setData(Qt.ItemDataRole.EditRole, int(count))
                     self.sector_table.setItem(r, c, item)
@@ -4632,6 +4636,20 @@ class ScannerWindow(QMainWindow):
         if token == self.chart_token:
             self.chart_status.setText("走势图读取失败")
             self._show_error("走势图读取失败", detail)
+    def _table_context_menu(self, position):
+        item = self.table.itemAt(position)
+        if item is None:
+            return
+        self.table.selectRow(item.row())
+        menu = QMenu(self)
+        chart_action = menu.addAction("走势图")
+        history_action = menu.addAction("信号历史")
+        chosen = menu.exec(self.table.viewport().mapToGlobal(position))
+        if chosen == chart_action:
+            self._full_chart_dialog()
+        elif chosen == history_action:
+            self._history_dialog()
+
     def _full_chart_dialog(self):
         record = getattr(self, "selected_stock", None)
         if record is None:
