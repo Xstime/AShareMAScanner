@@ -25,5 +25,5 @@ jobs:
           python-version: '3.12'
       - name: Install actual market-data dependencies
         run: python -m pip install --disable-pip-version-check pandas baostock akshare
-      - name: Real-world TOP5 rank and five constituent endpoints per source
+      - name: Real-world TOP5 sector ranking interfaces (no constituent requests)
         run: timeout 450s python -u tools/probe_top5_live.py
