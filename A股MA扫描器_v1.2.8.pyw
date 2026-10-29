@@ -104,6 +104,7 @@ import webbrowser
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -616,6 +617,22 @@ class UpdateResult:
 # 后端
 # ============================================================
 
+@contextmanager
+def sqlite_connection(path: Path, timeout: float = 30):
+    """Transaction-safe and deterministically closed SQLite connection.
+
+    sqlite3.Connection.__exit__ commits/rolls back but DOES NOT close its file
+    handle. Always close explicitly, particularly on Windows where the file
+    cannot be renamed or deleted until all connections are closed.
+    """
+    connection = sqlite3.connect(path, timeout=timeout)
+    try:
+        with connection:
+            yield connection
+    finally:
+        connection.close()
+
+
 class BaoStockBackend:
     HISTORY_FIELDS = "date,code,close,volume,tradestatus,isST,turn"
 
@@ -780,7 +797,7 @@ class BaoStockBackend:
         # 检测已有数据库是否存在SQLite逻辑损坏，不自动清空或重建用户数据。
         if self.db_path.exists():
             try:
-                with sqlite3.connect(self.db_path, timeout=30) as conn:
+                with sqlite_connection(self.db_path, timeout=30) as conn:
                     result = conn.execute("PRAGMA quick_check").fetchone()
                     if result is None or result[0] != "ok":
                         raise RuntimeError(
@@ -814,7 +831,7 @@ class BaoStockBackend:
         cb(1, "原 data 文件夹可写，继续使用现有数据库")
 
     def init_db(self):
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
 
@@ -1046,7 +1063,7 @@ class BaoStockBackend:
         # 四种策略中 MA20 的“昨日/今日”判断至少需要21根
         # 个股实际正常交易K线。这里直接以数据库实际行数为准，
         # 可兼容之前只为 MA10 建过较短历史的旧数据库。
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             existing = conn.execute("""
                 SELECT code
                 FROM daily
@@ -1063,7 +1080,7 @@ class BaoStockBackend:
         return {r[0] for r in existing} | {r[0] for r in recorded}
 
     def get_existing_codes_for_date(self, trade_date: str) -> set[str]:
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             rows = conn.execute("""
                 SELECT code
                 FROM daily
@@ -1074,7 +1091,7 @@ class BaoStockBackend:
         return {r[0] for r in rows}
 
     def get_day_universe(self, trade_date: str) -> pd.DataFrame:
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             return pd.read_sql_query("""
                 SELECT trade_date, code, name, trade_status
                 FROM day_universe
@@ -1083,7 +1100,7 @@ class BaoStockBackend:
             """, conn, params=(trade_date,))
 
     def get_partial_dates(self) -> list[str]:
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             rows = conn.execute("""
                 SELECT trade_date
                 FROM day_status
@@ -1094,7 +1111,7 @@ class BaoStockBackend:
         return [r[0] for r in rows]
 
     def get_latest_processed_date(self) -> Optional[str]:
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             row = conn.execute("""
                 SELECT MAX(trade_date)
                 FROM day_status
@@ -1103,7 +1120,7 @@ class BaoStockBackend:
         return row[0] if row and row[0] else None
 
     def get_latest_daily_date(self) -> Optional[str]:
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             row = conn.execute("""
                 SELECT MAX(trade_date)
                 FROM daily
@@ -1112,7 +1129,7 @@ class BaoStockBackend:
         return row[0] if row and row[0] else None
 
     def get_day_status_info(self, trade_date: str):
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             row = conn.execute("""
                 SELECT
                     expected_count,
@@ -1134,7 +1151,7 @@ class BaoStockBackend:
         }
 
     def update_day_status(self, trade_date: str):
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             expected = conn.execute("""
                 SELECT COUNT(*)
                 FROM day_universe
@@ -1454,7 +1471,7 @@ class BaoStockBackend:
         return self.run_query(q)
 
     def get_industry_map(self) -> dict[str, str]:
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             rows = conn.execute("""
                 SELECT code, industry
                 FROM industry_cache
@@ -1467,7 +1484,7 @@ class BaoStockBackend:
         }
 
     def _industry_cache_info(self):
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             row = conn.execute("""
                 SELECT COUNT(*), MAX(fetched_at)
                 FROM industry_cache
@@ -1586,7 +1603,7 @@ class BaoStockBackend:
                     "行业分类没有可用A股记录"
                 )
 
-            with sqlite3.connect(self.db_path, timeout=30) as conn:
+            with sqlite_connection(self.db_path, timeout=30) as conn:
                 conn.executemany("""
                     INSERT OR REPLACE INTO industry_cache
                     (
@@ -1668,7 +1685,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
 
         兼容旧调用方返回 (rows, {})，但不读取或请求成分股数据。
         """
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             rows = conn.execute("""
                 SELECT rank,industry,net_yuan,fetched_at,source
                 FROM fund_top5_snapshot WHERE source='同花顺' ORDER BY rank
@@ -1721,7 +1738,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                 if attempt>1:
                     notify('同花顺 · 首次请求失败，正在重试（2/2）…')
                 rows=self._fund_complete_snapshot(notify,now)
-                with sqlite3.connect(self.db_path,timeout=20) as conn:
+                with sqlite_connection(self.db_path, timeout=20) as conn:
                     conn.execute('DELETE FROM fund_top5_snapshot')
                     # 清理早期程序遗留的成分股缓存，新版本不再使用。
                     conn.execute('DELETE FROM fund_top5_member')
@@ -1752,7 +1769,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
             for r in stocks.itertuples(index=False)
         ]
 
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             conn.executemany("""
                 INSERT OR REPLACE INTO day_universe
                 (trade_date, code, name, trade_status)
@@ -1839,7 +1856,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
 
     def backfill_turnover(self, end_date: str, cb: ProgressCallback) -> str:
         """仅补近期正常交易记录的缺失换手率；逐股提交，NULL 即续传标记。"""
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             dates = conn.execute("SELECT DISTINCT trade_date FROM daily WHERE trade_date<=? "
                                  "ORDER BY trade_date DESC LIMIT 80", (end_date,)).fetchall()
             if not dates:
@@ -1859,7 +1876,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                     value = self.valid_turnover(getattr(row, "turn", None))
                     if value is not None:
                         rows.append((value, code, str(row.date)))
-                with sqlite3.connect(self.db_path, timeout=30) as conn:
+                with sqlite_connection(self.db_path, timeout=30) as conn:
                     conn.executemany("UPDATE daily SET turnover=? WHERE code=? AND trade_date=? "
                                      "AND turnover IS NULL", rows)
             except Exception:
@@ -1868,7 +1885,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
             if idx % BATCH_SIZE == 0:
                 time.sleep(BATCH_PAUSE)
         cb(96, "近期换手率检查完成")
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             missing = conn.execute("SELECT COUNT(*) FROM daily WHERE trade_date BETWEEN ? AND ? "
                                    "AND trade_status=1 AND turnover IS NULL", (start, end_date)).fetchone()[0]
         return (f"近期有 {missing} 条换手率缺失，第5策略结果可能不完整；下次启动继续补抓。"
@@ -1882,7 +1899,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
         start_p: float,
         end_p: float,
     ):
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             rows = conn.execute("""
                 SELECT code, name, start_date, end_date
                 FROM init_queue
@@ -1895,7 +1912,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
 
         total = len(rows)
 
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             for idx, (code, name, start_date, end_date) in enumerate(
                 rows,
                 start=1,
@@ -1970,7 +1987,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
 
         total = len(todo)
 
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             for idx, r in enumerate(
                 todo.itertuples(index=False),
                 start=1,
@@ -2076,7 +2093,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
 
         total = len(todo)
 
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             for idx, r in enumerate(
                 todo.itertuples(index=False),
                 start=1,
@@ -2356,7 +2373,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
             return
         rows = []
         key = self.filter_key(strategy, filters)
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             for item in data.to_dict("records"):
                 payload = {k: (None if pd.isna(v) else v) for k, v in item.items()}
                 code, day = str(item["_code_full"]), str(item["触发日"])
@@ -2373,7 +2390,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                         payload["放量倍数"] = bar[0]/average if average>0 else None
                 rows.append((code, day, strategy, key, str(item.get("名称", "")),
                              json.dumps(payload, ensure_ascii=False, allow_nan=False), source, self.now_text()))
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             conn.executemany("""
                 INSERT INTO signal_history VALUES(?,?,?,?,?,?,?,?)
                 ON CONFLICT(code,signal_date,strategy,filter_key) DO UPDATE SET
@@ -2387,7 +2404,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                            filters: Optional[RangeFilter] = None) -> pd.DataFrame:
         """回算这只股票的本地全部历史；保留已扫描过的其他参数方案。"""
         filters = filters or RangeFilter()
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             raw = pd.read_sql_query("SELECT * FROM daily WHERE code=? AND trade_date<=? ORDER BY trade_date",
                                     conn, params=(code, end_date))
         if not raw.empty:
@@ -2440,7 +2457,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                         results[strategy].append(payload)
             for strategy, rows in results.items():
                 self.record_signals(strategy, pd.DataFrame(rows), filters, "本地回算")
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             history = pd.read_sql_query("SELECT * FROM signal_history WHERE code=? AND signal_date<=? "
                                         "ORDER BY signal_date DESC,strategy,filter_key", conn, params=(code,end_date))
             days = [r[0] for r in conn.execute("SELECT DISTINCT trade_date FROM daily WHERE trade_date<=? ORDER BY trade_date",
@@ -2492,7 +2509,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
         end_date: str,
         distinct_days: int = 80,
     ) -> pd.DataFrame:
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             dates = conn.execute("""
                 SELECT DISTINCT trade_date
                 FROM daily
@@ -2916,7 +2933,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
     # -------------------- 图表数据 --------------------
 
     def get_chart_data(self, code_full: str, end_date: str) -> pd.DataFrame:
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             df = pd.read_sql_query("SELECT * FROM daily WHERE code=? AND trade_date<=? "
                                    "AND trade_status=1 ORDER BY trade_date DESC LIMIT 80",
                                    conn, params=(code_full, end_date))
@@ -2963,7 +2980,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
             SELECT code,trade_date,close,volume,trade_status,turnover
             FROM recent WHERE rn<=70 ORDER BY code,trade_date DESC
         """
-        with sqlite3.connect(self.db_path, timeout=20) as conn:
+        with sqlite_connection(self.db_path, timeout=20) as conn:
             raw = pd.read_sql_query(sql, conn, params=(sector_name, end_date))
 
         if raw.empty:
