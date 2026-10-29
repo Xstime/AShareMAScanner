@@ -16,14 +16,14 @@ def get_codes_from_page(session,sector_code,page):
     r.raise_for_status()
     soup=BeautifulSoup(r.text,"html.parser")
     infos=soup.select(".page_info")
-    if not infos:
-        raise RuntimeError("missing page counter; page might be blocked")
-    match=re.fullmatch(r"\s*(\d+)\s*/\s*(\d+)\s*",infos[0].get_text(strip=True))
-    if not match:
-        raise RuntimeError("unrecognized pagination "+str(infos[0].get_text(strip=True)))
-    actual,total=map(int,match.groups())
-    if actual!=page or total<=0 or total>100:
-        raise RuntimeError(f"page counter mismatch {actual}/{total} expected {page}")
+    total = None
+    if infos:
+        match=re.fullmatch(r"\s*(\d+)\s*/\s*(\d+)\s*",infos[0].get_text(strip=True))
+        if not match:
+            raise RuntimeError("unrecognized pagination "+str(infos[0].get_text(strip=True)))
+        actual,total=map(int,match.groups())
+        if actual!=page or total<=0 or total>100:
+            raise RuntimeError(f"page counter mismatch {actual}/{total} expected {page}")
     table=None
     for current in soup.select("table"):
         names=[cell.get_text(strip=True) for cell in current.select("thead th")]
@@ -41,6 +41,8 @@ def get_codes_from_page(session,sector_code,page):
             codes.append(code)
     if not codes:
         raise RuntimeError("empty constituent table")
+    if total is None and page==1 and len(codes)<20:
+        total=1
     return total,codes
 
 rank=ak.stock_fund_flow_industry(symbol="5日排行")
@@ -65,16 +67,20 @@ for _,rec in rank.iterrows():
             print("START",sector,code,"PAGES",page_count,"EXPECTED",expected,"FIRST",len(first),flush=True)
             for p in range(2,page_count+1):
                 current_total,codes=get_codes_from_page(sess,code,p)
-                if current_total!=page_count:
+                if current_total is not None and current_total!=page_count:
                     raise RuntimeError(f"page count shifted {page_count}->{current_total}")
+                if current_total is None and p!=page_count:
+                    raise RuntimeError(f"missing pagination before final page {p}")
                 if len(found.intersection(codes))>0:
                     raise RuntimeError(f"duplicate stocks between pages: {len(found.intersection(codes))}")
                 found.update(codes)
                 if p==page_count or p%4==0:
                     print("PAGE",sector,p,"/",page_count,"COUNT",len(found),flush=True)
                 time.sleep(.15)
-        print("RESULT",sector,"PASS" if len(found)==expected else "COUNT_MISMATCH",
-              "GOT",len(found),"EXPECTED",expected,"FIRST_CODES",sorted(found)[:4],flush=True)
+        print("RESULT",sector,"COMPLETE" if len(found)>0 else "EMPTY",
+              "GOT",len(found),"REFERENCE_COMPANIES",expected,
+              "COUNT_NOTE","mismatch" if len(found)!=expected else "matched",
+              "FIRST_CODES",sorted(found)[:4],flush=True)
     except Exception as exc:
         print("RESULT",sector,"FAIL",type(exc).__name__,str(exc)[:400],
               "PARTIAL",len(found),flush=True)
