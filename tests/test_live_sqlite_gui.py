@@ -36,7 +36,7 @@ class ActualBackendGui(unittest.TestCase):
         days=pd.date_range("2026-08-17",periods=35,freq="B").strftime("%Y-%m-%d").tolist()
         self.end=days[-1]
         self.prev=days[-2]
-        with sqlite3.connect(self.b.db_path) as c:
+        with mod.sqlite_connection(self.b.db_path) as c:
             c.executemany("INSERT INTO daily(code,trade_date,name,close,volume,trade_status,is_st,turnover) VALUES(?,?,?,?,?,?,?,?)",
                          [("sh.600000",d,"真实GUI银行",10+i*.2,40000 if i==34 else 10000,1,0,4.0)
                           for i,d in enumerate(days)])
