@@ -64,6 +64,31 @@ class RankOnlyTests(unittest.TestCase):
         self.assertEqual(len(self.backend._fund_last_errors),2)
         self.assertIn("constituent API blocked",self.backend._fund_last_errors[0]["error"])
 
+    def test_ths_rank_matches_exact_official_industry_codes(self):
+        seen=[]
+        def mock_request(endpoint,sector="",timeout=20):
+            seen.append((endpoint,sector))
+            if endpoint == "em_rank":
+                raise TimeoutError("Eastmoney offline")
+            if endpoint == "ths_rank":
+                return pd.DataFrame([
+                    {"行业":f"行业{i}","净额":6-i} for i in range(1,6)])
+            if endpoint == "ths_names":
+                return pd.DataFrame([
+                    {"name":f"行业{i}","code":f"8811{i:02d}"} for i in range(1,6)])
+            if endpoint == "ths_members":
+                assert str(sector).startswith("8811"),sector
+                return pd.DataFrame({"代码":["600001","000002"]})
+            raise AssertionError(endpoint)
+        self.backend._fund_request=mock_request
+        self.backend.refresh_fund_top5(force=True)
+        rows,members=self.backend.load_fund_top5()
+        self.assertEqual(len(rows),5)
+        self.assertEqual(rows[0]["source"],"同花顺")
+        self.assertEqual(members[1],{"600001","000002"})
+        self.assertEqual(len([x for x in seen if x[0]=="ths_names"]),1)
+        self.assertEqual(len([x for x in seen if x[0]=="ths_members"]),5)
+
     def test_both_rank_sources_blocked_have_no_rank_only(self):
         def blocked(endpoint,sector="",timeout=20):
             raise TimeoutError("offline")
