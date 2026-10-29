@@ -1,0 +1,21 @@
+name: Emergency unpublish v1.2.8 Release
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/recall-v1.2.8.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  unpublish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Move published v1.2.8 release back to draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --method PATCH "/repos/${GITHUB_REPOSITORY}/releases/428114244" -F draft=true -F make_latest=false
+          test "$(gh api "/repos/${GITHUB_REPOSITORY}/releases/428114244" --jq '.draft')" = "true"
+          echo "v1.2.8 Release is now a draft and is no longer publicly published."

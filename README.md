@@ -1,3 +1,9 @@
+# 发布状态警告：v1.2.8 已要求撤回
+
+**请暂勿使用或下载 v1.2.8。** 2026-10-30 源码审计发现 PySide6 前端存在从 v1.2.6 遗漏的功能和信号历史运行错误，完整功能回归尚未通过。修复前请使用[上一稳定发布 v1.2.6](https://github.com/Xstime/AShareMAScanner/releases/tag/v1.2.6)。本仓库暂保留 v1.2.8 源码供审计修复，不代表其可安全发布。
+
+---
+
 # AShareMAScanner · A股 MA 扫描器 v1.2.8
 
 **单个 Python `.pyw` 文件**，保留三个依次运行的桌面界面。无需制作、安装大型 EXE，但需要系统 Python 3.10+ 和 Tkinter。
