@@ -3,7 +3,7 @@ name: Python syntax check
 on:
   push:
     branches:
-      - dev/v1.2.6
+      - dev/v1.2.8-pyw-clean
   pull_request:
     branches:
       - main
@@ -23,7 +23,7 @@ jobs:
           python-version: '3.12'
       - name: Compile scanner syntax
         run: |
-          python -m py_compile A股MA扫描器_v1.2.6.pyw
+          python -m py_compile A股MA扫描器_v1.2.8.pyw
       - name: Install test dependency
         run: python -m pip install pandas
       - name: Ensure virtual display is available
