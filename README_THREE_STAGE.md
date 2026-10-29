@@ -6,7 +6,7 @@
 
 下载 `A股MA扫描器_v1.2.8.pyw`，放到之前的 A 股扫描器目录，保持原来的 `data/a_share_baostock_hfq.db` 不变。
 
-有带 Tkinter 的 Windows Python 3.11+ 即可双击运行。首次启动按需从 PyPI 安装 `pandas`、`baostock`、`akshare`、`PySide6`；不打包成 EXE，不需要自行复制 Qt DLL。PySide6 较大，首次安装可能需要一定时间。
+有带 Tkinter 的 Windows Python 3.11+ 即可双击运行。首次启动按需从 PyPI 安装 `pandas`、`baostock`、`akshare`、`PySide6-Essentials`；不打包成 EXE，不需要自行复制 Qt DLL。PySide6 主界面只用到基础 Qt 组件，因此安装 **PySide6-Essentials** 而非完整 PySide6；跳过无须使用的 Qt Addons 等扩展包。首次安装仍可能需要一定时间。
 
 依次显示三个界面：
 
@@ -27,3 +27,15 @@ python A股MA扫描器_v1.2.8.pyw --demo
 演示仍然经过两个 Tkinter 界面，第三界面使用明确标记的虚构股票和虚构资金值，不调用股票行情接口。此命令会检查和自动安装缺失库，确保 Qt 可运行。
 
 > 此版本需验证 Windows 实机上的 Tk/Qt 安装环境和真实 BaoStock 更新完整流程后才能作为正式 Release 发布。
+
+## 依赖精简审计
+
+| 依赖 | 实际职责 | 决定 |
+| --- | --- | --- |
+| pandas / NumPy | 历史日线、七种策略计算、分组统计与扫描结果 | 保留，不能安全地只复制几个函数代替 |
+| BaoStock | A 股历史行情和交易日下载 | 保留，体积较小，是核心来源 |
+| AKShare | 同花顺近五日行业主力资金 TOP5（仅排名） | 保留已验证的接口，不采用自制 HTML 爬虫 |
+| PySide6 | 4:3 三栏主界面的 QtCore / QtGui / QtWidgets | 改用 **PySide6-Essentials** 安装，保留代码的 PySide6 导入方式 |
+| tkinter、sqlite3、urllib 等 | 启动与行情进度窗口、SQLite 缓存 | Python 标准库，无需 pip 单独安装 |
+
+这是 **精简依赖安装体积**，不是压缩 .pyw 字节码。对已经安装完整 PySide6 的电脑，不主动卸载额外模块，以免影响其他程序。
