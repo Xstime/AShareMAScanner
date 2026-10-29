@@ -268,5 +268,65 @@ class Backend(unittest.TestCase):
         path.rename(moved)
         moved.rename(path)
 
+    def simulated_update(self, fail_queries=False):
+        """Keep actual update_all, SQLite, queues, and strategy source intact; mock only APIs."""
+        days=pd.bdate_range(end="2026-10-29",periods=45).strftime("%Y-%m-%d").tolist()
+        latest=days[-1]
+        self.b.login=lambda:None
+        self.b.logout=lambda:None
+        self.b.today_cn=lambda:latest
+        self.b.is_today_trading_day=lambda:False
+        self.b.get_latest_available_trade_date=lambda:latest
+        self.b.get_previous_market_trade_date=lambda _:days[-2]
+        self.b.recent_n_trade_dates=lambda end,n:days[-n:]
+        self.b.query_all_a_stocks=lambda date:pd.DataFrame([
+            {"code":"sh.600000","name":"回归测试","trade_status":1}])
+        self.b.query_stock_industry_all=lambda:pd.DataFrame([
+            {"code":"sh.600000","code_name":"回归测试","industry":"电力"}])
+        self.b.query_trade_dates=lambda start,end:pd.DataFrame([
+            {"calendar_date":x,"is_trading_day":"1"} for x in days if start<=x<=end])
+        self.hist_calls=[]
+        def fetch(code,start,end):
+            self.hist_calls.append((code,start,end))
+            if fail_queries:
+                raise ConnectionError("isolated upstream outage")
+            return pd.DataFrame([{"date":date,"code":code,"close":str(10+i*.05),
+                "volume":str(10000+i),"tradestatus":"1","isST":"0","turn":"3.4"}
+                for i,date in enumerate(days) if start<=date<=end])
+        self.b.query_stock_history=fetch
+        return days
+
+    def test_21_full_first_run_then_second_run_only_incremental(self):
+        days=self.simulated_update()
+        notes=[]
+        first=self.b.update_all(lambda pct,msg:notes.append((pct,msg)))
+        self.assertEqual(first.scan_date,days[-1])
+        self.assertEqual((first.expected,first.saved,first.failed),(1,1,0))
+        self.assertAlmostEqual(first.completeness,100)
+        self.assertTrue(notes and notes[-1][0]==100)
+        with mod.sqlite_connection(self.b.db_path) as c:
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM daily").fetchone()[0],45)
+        before=len(self.hist_calls)
+        again=self.b.update_all(lambda pct,msg:None)
+        self.assertEqual(again.completeness,100)
+        self.assertEqual(len(self.hist_calls),before,"No whole-history re-download on repeated startup")
+
+    def test_22_outage_creates_retry_queues_next_run_repairs_without_deleting_db(self):
+        days=self.simulated_update(fail_queries=True)
+        first=self.b.update_all(lambda pct,msg:None)
+        self.assertEqual((first.expected,first.saved),(1,0))
+        self.assertLess(first.completeness,100)
+        with mod.sqlite_connection(self.b.db_path) as c:
+            self.assertGreater(c.execute("SELECT COUNT(*) FROM init_queue").fetchone()[0],0)
+            self.assertGreater(c.execute("SELECT COUNT(*) FROM fetch_queue").fetchone()[0],0)
+        self.simulated_update(fail_queries=False)
+        second=self.b.update_all(lambda pct,msg:None)
+        self.assertEqual((second.expected,second.saved,second.failed),(1,1,0))
+        self.assertAlmostEqual(second.completeness,100)
+        with mod.sqlite_connection(self.b.db_path) as c:
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM init_queue").fetchone()[0],0)
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM fetch_queue").fetchone()[0],0)
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM daily").fetchone()[0],45)
+
 if __name__=="__main__":
     unittest.main(verbosity=2)
