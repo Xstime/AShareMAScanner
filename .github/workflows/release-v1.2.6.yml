@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - 'A股MA扫描器_v1.2.6.pyw'
+      - '.github/workflows/release-v1.2.6.yml'
   workflow_dispatch:
 
 permissions:
@@ -35,16 +36,29 @@ jobs:
       - name: Run regression tests before publishing
         run: xvfb-run -a python -m unittest discover -s tests -v
 
-      - name: Publish verified .pyw to GitHub Releases
+      - name: Prepare easy-to-download release files
+        run: |
+          cp "A股MA扫描器_v1.2.6.pyw" AShareMAScanner_v1.2.6.pyw
+          python - <<'PY'
+          from zipfile import ZipFile, ZIP_DEFLATED
+          with ZipFile('AShareMAScanner_v1.2.6.zip', 'w', ZIP_DEFLATED) as bundle:
+              for filename in ['A股MA扫描器_v1.2.6.pyw', 'requirements.txt', 'README.md']:
+                  bundle.write(filename)
+          PY
+
+      - name: Publish verified Windows script and ZIP
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v1.2.6 >/dev/null 2>&1; then
-            echo "Release v1.2.6 already exists; not replacing published assets."
-            exit 0
+          if ! gh release view v1.2.6 >/dev/null 2>&1; then
+            gh release create v1.2.6 \
+              --target "$GITHUB_SHA" \
+              --title "v1.2.6 · 可视化行情加载" \
+              --notes-file RELEASE_NOTES_v1.2.6.md \
+              --latest
           fi
-          gh release create v1.2.6 "A股MA扫描器_v1.2.6.pyw" \
-            --target "$GITHUB_SHA" \
-            --title "v1.2.6 · 可视化行情加载" \
-            --notes-file RELEASE_NOTES_v1.2.6.md \
-            --latest
+          gh release upload v1.2.6 AShareMAScanner_v1.2.6.pyw AShareMAScanner_v1.2.6.zip --clobber
+          # GitHub rewrites non-ASCII asset filenames. Remove the ambiguous auto-renamed copy.
+          if gh release view v1.2.6 --json assets --jq '.assets[].name' | grep -Fxq 'A.MA._v1.2.6.pyw'; then
+            gh release delete-asset v1.2.6 'A.MA._v1.2.6.pyw' --yes
+          fi
