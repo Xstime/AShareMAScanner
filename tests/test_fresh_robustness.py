@@ -46,7 +46,7 @@ class Backend(unittest.TestCase):
     def insert(self, code="sh.600000",name="正样本",close=lambda i:10+i*.05,vol=lambda i:10000,
                turnover=3.5,st=0,days=None):
         days=self.days if days is None else days
-        with sqlite3.connect(self.b.db_path) as c:
+        with mod.sqlite_connection(self.b.db_path) as c:
             c.executemany("""INSERT OR REPLACE INTO daily
               (code,trade_date,name,close,volume,trade_status,is_st,turnover)
               VALUES(?,?,?,?,?,?,?,?)""",
@@ -97,7 +97,7 @@ class Backend(unittest.TestCase):
 
     def test_04_day_completeness_excludes_wrong_and_inactive_stocks(self):
         d=self.days[-1]
-        with sqlite3.connect(self.b.db_path) as c:
+        with mod.sqlite_connection(self.b.db_path) as c:
             c.executemany("INSERT INTO day_universe(trade_date,code,name,trade_status) VALUES(?,?,?,?)",
                           [(d,"sh.600000","A",1),(d,"sh.600001","B",1),(d,"sh.600002","C",0)])
             c.executemany("INSERT INTO daily(code,trade_date,name,close,volume,trade_status,is_st,turnover) VALUES(?,?,?,?,?,?,?,?)",
@@ -109,7 +109,7 @@ class Backend(unittest.TestCase):
 
     def test_05_successful_retry_removes_obsolete_fetch_failure(self):
         d=self.days[-1]
-        with sqlite3.connect(self.b.db_path) as c:
+        with mod.sqlite_connection(self.b.db_path) as c:
             c.execute("INSERT INTO day_universe(trade_date,code,name,trade_status) VALUES(?,?,?,1)",(d,"sh.600000","A"))
             c.execute("INSERT INTO fetch_queue(code,trade_date,name,reason,retry_count) VALUES(?,?,?,?,1)",
                       ("sh.600000",d,"A","timeout"))
@@ -117,7 +117,7 @@ class Backend(unittest.TestCase):
                       ("sh.600000",d,"A",11,110,1,0,2))
         info=self.b.update_day_status(d)
         self.assertEqual((info["saved"],info["failed"],info["status"]),(1,0,"complete"))
-        with sqlite3.connect(self.b.db_path) as c:
+        with mod.sqlite_connection(self.b.db_path) as c:
             self.assertEqual(c.execute("SELECT COUNT(*) FROM fetch_queue").fetchone()[0],0)
 
     def test_06_corrupted_sqlite_must_not_be_deleted(self):
@@ -144,7 +144,7 @@ class Backend(unittest.TestCase):
         second=self.b.get_signal_history("sh.600000",end)
         self.assertEqual(len(first),len(second))
         self.assertTrue({"streak","strategy","filter_key","payload"}.issubset(first.columns))
-        with sqlite3.connect(self.b.db_path) as c:
+        with mod.sqlite_connection(self.b.db_path) as c:
             rows=c.execute("SELECT COUNT(*) FROM signal_history").fetchone()[0]
         self.assertEqual(rows,len(second))
 
@@ -159,7 +159,7 @@ class Backend(unittest.TestCase):
     def test_10_sector_cache_returns_independent_copy(self):
         self.insert(code="sh.600000")
         self.insert(code="sh.600001",close=21)
-        with sqlite3.connect(self.b.db_path) as c:
+        with mod.sqlite_connection(self.b.db_path) as c:
             c.executemany("INSERT INTO industry_cache(code,name,industry) VALUES(?,?,?)",
                           [("sh.600000","A","电力"),("sh.600001","B","电力")])
         frame=self.b.get_sector_chart_data("电力",self.days[-1])
@@ -194,7 +194,7 @@ class Backend(unittest.TestCase):
         self.assertTrue(all(math.isfinite(row[2]) for row in rows))
 
     def test_14_failed_rank_refresh_keeps_complete_previous_snapshot(self):
-        with sqlite3.connect(self.b.db_path) as c:
+        with mod.sqlite_connection(self.b.db_path) as c:
             c.executemany("INSERT INTO fund_top5_snapshot(rank,industry,net_yuan,fetched_at,source) VALUES(?,?,?,?,?)",
                           [(i,f"Sector{i}",100e8,"2026-10-25 18:00:00","同花顺") for i in range(1,6)])
         before=self.b.load_fund_top5()
@@ -205,7 +205,7 @@ class Backend(unittest.TestCase):
         self.assertEqual(self.b.load_fund_top5(),before)
 
     def test_15_failed_rank_sqlite_write_does_not_destroy_old_snapshot(self):
-        with sqlite3.connect(self.b.db_path) as c:
+        with mod.sqlite_connection(self.b.db_path) as c:
             c.executemany("INSERT INTO fund_top5_snapshot(rank,industry,net_yuan,fetched_at,source) VALUES(?,?,?,?,?)",
                           [(i,f"Old{i}",100e8,"2026-10-25 18:00:00","同花顺") for i in range(1,6)])
             c.execute("""CREATE TRIGGER deny_top5 BEFORE INSERT ON fund_top5_snapshot
@@ -225,7 +225,7 @@ class Backend(unittest.TestCase):
                 self.b._fund_request("ths_rank",timeout=1)
 
     def test_17_fund_snapshot_is_ths_only(self):
-        with sqlite3.connect(self.b.db_path) as c:
+        with mod.sqlite_connection(self.b.db_path) as c:
             c.executemany("INSERT INTO fund_top5_snapshot(rank,industry,net_yuan,fetched_at,source) VALUES(?,?,?,?,?)",
                           [(i,f"Old{i}",100e8,"2026-10-25 18:00:00","东方财富") for i in range(1,6)])
         self.assertEqual(self.b.load_fund_top5(),([],{}))
@@ -241,7 +241,7 @@ class Backend(unittest.TestCase):
     def test_19_completeness_does_not_count_infinite_legacy_values(self):
         """Preexisting corrupt-but-readable SQLite values must not imply 100% complete."""
         d=self.days[-1]
-        with sqlite3.connect(self.b.db_path) as c:
+        with mod.sqlite_connection(self.b.db_path) as c:
             c.execute("INSERT INTO day_universe(trade_date,code,name,trade_status) VALUES(?,?,?,?)",
                       (d,"sh.600000","A",1))
             c.execute("INSERT INTO daily(code,trade_date,name,close,volume,trade_status,is_st,turnover) VALUES(?,?,?,?,?,?,?,?)",
