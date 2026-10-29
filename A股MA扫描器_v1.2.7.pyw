@@ -1622,6 +1622,9 @@ elif endpoint=='em_members':
     data=ak.stock_board_industry_cons_em(symbol=sector)
     fields=['代码']
 elif endpoint=='ths_members':
+    # AKShare 1.20.2 has a ranking API but no industry-cons API.
+    if not hasattr(ak, 'stock_board_industry_cons_ths'):
+        raise RuntimeError('当前 AKShare 没有 stock_board_industry_cons_ths 成分股接口；排名接口可能仍正常')
     data=ak.stock_board_industry_cons_ths(symbol=sector)
     fields=['代码']
 else:
@@ -1761,8 +1764,10 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                  source=src,ranking_only=True)
             for rank,name,amount,stamp,src in rows
         ]
+        notify(f'{source} · 行业资金排名 5/5 已获取，开始核对成分股')
         members=[]
         errors=[]
+        successful=0
         with ThreadPoolExecutor(max_workers=self.FUND_MEMBER_WORKERS,thread_name_prefix='fund-members') as pool:
             jobs={pool.submit(self._fetch_same_source_members,source,rank,industry):(rank,industry)
                   for rank,industry,_net,_stamp,_src in rows}
@@ -1771,11 +1776,15 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                 try:
                     _,codes=job.result()
                     members.extend((rank,code) for code in sorted(codes))
-                    notify(f'{source} · 成分股 {count}/5 · {industry}')
+                    successful+=1
                 except Exception as exc:
                     errors.append(f'{industry}: {exc}')
-                    notify(f'{source} · 成分股 {count}/5 失败')
-        if errors: raise RuntimeError('；'.join(errors[:2]))
+                notify(f'{source} · 成分股已完成 {count}/5（成功{successful}、失败{len(errors)}）· {industry}')
+        if errors:
+            raise RuntimeError(
+                f'{source}排名已获取，但成分股 {len(errors)}/5 失败：'
+                + '；'.join(errors[:2])
+            )
         if not all(any(r==i for r,_ in members) for i in range(1,6)):
             raise RuntimeError('五个行业成分股不完整')
         return rows,members
