@@ -115,4 +115,26 @@ class ActualBackendGui(unittest.TestCase):
         self.assertTrue(self.pump(lambda:not any(isinstance(w,mod.ScanWorker) and w.isRunning()
                                               for w in self.win.workers)))
 
+    def test_05_deselecting_last_stock_clears_stale_detail_panel(self):
+        self.win._select_strategy("volume_turnover")
+        self.assertTrue(self.pump(lambda:self.win.table.rowCount()==1))
+        self.assertIsNotNone(self.win.selected_stock)
+        self.win.table.clearSelection()
+        self.app.processEvents()
+        self.assertIsNone(self.win.selected_stock)
+        self.assertEqual(self.win.stock_name.text(),"请选择股票")
+
+    def test_06_history_window_is_disposed_after_close(self):
+        from PySide6.QtCore import Qt
+        self.win._select_strategy("volume_turnover")
+        self.assertTrue(self.pump(lambda:self.win.table.rowCount()==1))
+        self.win._history_dialog()
+        dialogs=[d for d in self.win.findChildren(QDialog) if d.windowTitle().endswith("信号历史")]
+        self.assertEqual(len(dialogs),1)
+        self.assertTrue(dialogs[0].testAttribute(Qt.WidgetAttribute.WA_DeleteOnClose),
+            "Frequent history queries must not accumulate closed QDialogs and tables")
+        self.assertTrue(self.pump(lambda:not any(isinstance(w,mod.HistoryWorker) and w.isRunning()
+                                               for w in self.win.workers)))
+        dialogs[0].close()
+
 if __name__=="__main__":unittest.main(verbosity=2)
