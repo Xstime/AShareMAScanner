@@ -1,0 +1,27 @@
+name: Live alternative THS constituent routes
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - dev/v1.2.7-pyside6
+    paths:
+      - 'tools/probe_top5_alternatives.py'
+      - '.github/workflows/probe-top5-alternatives.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install current AKShare and HTML parsers
+        run: python -m pip install --disable-pip-version-check akshare pandas lxml beautifulsoup4 html5lib
+      - name: Test real same-source sector code and member methods
+        run: python -u tools/probe_top5_alternatives.py
