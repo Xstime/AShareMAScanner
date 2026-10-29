@@ -18,8 +18,8 @@ A股 MA 扫描器（单文件 Tkinter .pyw · BaoStock + 同花顺资金 TOP5 ·
     7) 均线粘合向上：昨日MA5/10/20偏离度≤2%，今日全线上升、MA5>MA10>MA20并向上发散，且仅首次触发
 - 个股结果仅显示最新市场交易日触发，所有策略均显示放量倍数与换手率。
 - MA5拐头策略不以价格上穿MA5、放量或换手率作为附加门槛。
-- 新策略支持行业板块同规则判断、单击板块筛选、双击板块看MA5走势、信号历史回算。
-- 七个策略按钮采用两行四列的紧凑布局。
+- 七种策略支持行业板块同规则判断、单击板块筛选、双击查看当前策略的板块走势及历史信号。
+- PySide6 主界面采用左侧七策略、中央筛选与结果、右侧个股详情三栏布局。
 - 第5策略修改参数后，重新点击筛选策略按钮生效。
 - 策略扫描期间可直接切换其他策略；旧扫描自动取消，以最后一次点击为准。
 - 切换策略时立即清空旧板块过滤和旧个股结果，避免新策略标题配上旧策略数据。
@@ -33,8 +33,8 @@ A股 MA 扫描器（单文件 Tkinter .pyw · BaoStock + 同花顺资金 TOP5 ·
 - 个股与板块走势图支持悬停读数；板块名称支持悬停完整提示。
 - 个股图增加成交量、放量倍数、换手率与触发日标记。
 - 结果支持代码/名称、市场、行业、涨幅范围快捷过滤。
-- 新增近5交易日主力净流入TOP5横向卡片；可一键限定五大资金流入行业的成分股。
-- 行业资金流来自东方财富（AKShare）；按成分股代码严格匹配，不依赖BaoStock行业名称。
+- 近5日同花顺行业资金净流入 TOP5 仅展示行业排名与金额，不抓成分股、不按榜单筛选股票。
+- 资金排名仅通过 AKShare 的同花顺五日行业排行获取；保留失败前的同花顺缓存。
 - 资金接口故障不影响七个选股策略，禁止用未验证的板块名称猜测股票。
 - 启动时自动检测并安装缺失的 pandas、baostock、akshare；优先清华镜像，失败改用官方 PyPI。
 - 无 Excel 导出，无数据库位置按钮。
@@ -104,6 +104,7 @@ import webbrowser
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -386,7 +387,7 @@ def _release_version(value: str):
 def fetch_latest_release():
     """只读取本项目正式 GitHub Release，不执行远程程序。"""
     request = urllib.request.Request(RELEASE_API, headers={
-        "User-Agent": "AShareMAScanner-update-checker/1.2.6",
+        "User-Agent": "AShareMAScanner-update-checker/1.2.8",
         "Accept": "application/vnd.github+json",
     })
     try:
@@ -408,8 +409,13 @@ def fetch_latest_release():
         current = _release_version(APP_VERSION)
         if latest is None or current is None:
             raise ValueError("无效版本号")
-        if latest <= current:
-            return "当前已是最新版本", None
+        if latest < current:
+            # A higher local version than the latest published release is not
+            # equivalent to being the newest stable version (e.g. recalled 1.2.8).
+            return (f"当前运行 v{'.'.join(map(str, current))} 开发/未发布版本；"
+                    f"GitHub 最新正式版为 v{'.'.join(map(str, latest))}", RELEASES_PAGE)
+        if latest == current:
+            return "当前已是最新正式版本", None
         url = str(item.get("html_url", ""))
         if not url.startswith(RELEASES_PAGE + "/tag/"):
             url = RELEASES_PAGE
@@ -616,6 +622,22 @@ class UpdateResult:
 # 后端
 # ============================================================
 
+@contextmanager
+def sqlite_connection(path: Path, timeout: float = 30):
+    """Transaction-safe and deterministically closed SQLite connection.
+
+    sqlite3.Connection.__exit__ commits/rolls back but DOES NOT close its file
+    handle. Always close explicitly, particularly on Windows where the file
+    cannot be renamed or deleted until all connections are closed.
+    """
+    connection = sqlite3.connect(path, timeout=timeout)
+    try:
+        with connection:
+            yield connection
+    finally:
+        connection.close()
+
+
 class BaoStockBackend:
     HISTORY_FIELDS = "date,code,close,volume,tradestatus,isST,turn"
 
@@ -780,7 +802,7 @@ class BaoStockBackend:
         # 检测已有数据库是否存在SQLite逻辑损坏，不自动清空或重建用户数据。
         if self.db_path.exists():
             try:
-                with sqlite3.connect(self.db_path, timeout=30) as conn:
+                with sqlite_connection(self.db_path, timeout=30) as conn:
                     result = conn.execute("PRAGMA quick_check").fetchone()
                     if result is None or result[0] != "ok":
                         raise RuntimeError(
@@ -814,7 +836,7 @@ class BaoStockBackend:
         cb(1, "原 data 文件夹可写，继续使用现有数据库")
 
     def init_db(self):
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
 
@@ -1046,11 +1068,12 @@ class BaoStockBackend:
         # 四种策略中 MA20 的“昨日/今日”判断至少需要21根
         # 个股实际正常交易K线。这里直接以数据库实际行数为准，
         # 可兼容之前只为 MA10 建过较短历史的旧数据库。
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             existing = conn.execute("""
                 SELECT code
                 FROM daily
-                WHERE trade_status=1
+                WHERE trade_status=1 AND close > 0 AND close < 1.0e308
+                  AND volume IS NOT NULL AND volume >= 0 AND volume < 1.0e308
                 GROUP BY code
                 HAVING COUNT(*) >= 23
             """).fetchall()
@@ -1063,18 +1086,19 @@ class BaoStockBackend:
         return {r[0] for r in existing} | {r[0] for r in recorded}
 
     def get_existing_codes_for_date(self, trade_date: str) -> set[str]:
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             rows = conn.execute("""
                 SELECT code
                 FROM daily
                 WHERE trade_date=? AND trade_status=1
-                  AND close > 0 AND volume IS NOT NULL AND volume >= 0
+                  AND close > 0 AND close < 1.0e308
+                  AND volume IS NOT NULL AND volume >= 0 AND volume < 1.0e308
             """, (trade_date,)).fetchall()
 
         return {r[0] for r in rows}
 
     def get_day_universe(self, trade_date: str) -> pd.DataFrame:
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             return pd.read_sql_query("""
                 SELECT trade_date, code, name, trade_status
                 FROM day_universe
@@ -1083,7 +1107,7 @@ class BaoStockBackend:
             """, conn, params=(trade_date,))
 
     def get_partial_dates(self) -> list[str]:
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             rows = conn.execute("""
                 SELECT trade_date
                 FROM day_status
@@ -1094,7 +1118,7 @@ class BaoStockBackend:
         return [r[0] for r in rows]
 
     def get_latest_processed_date(self) -> Optional[str]:
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             row = conn.execute("""
                 SELECT MAX(trade_date)
                 FROM day_status
@@ -1103,16 +1127,18 @@ class BaoStockBackend:
         return row[0] if row and row[0] else None
 
     def get_latest_daily_date(self) -> Optional[str]:
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             row = conn.execute("""
                 SELECT MAX(trade_date)
                 FROM daily
+                WHERE trade_status=1 AND close > 0 AND close < 1.0e308
+                  AND volume IS NOT NULL AND volume >= 0 AND volume < 1.0e308
             """).fetchone()
 
         return row[0] if row and row[0] else None
 
     def get_day_status_info(self, trade_date: str):
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             row = conn.execute("""
                 SELECT
                     expected_count,
@@ -1134,7 +1160,7 @@ class BaoStockBackend:
         }
 
     def update_day_status(self, trade_date: str):
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             expected = conn.execute("""
                 SELECT COUNT(*)
                 FROM day_universe
@@ -1149,8 +1175,8 @@ class BaoStockBackend:
                 INNER JOIN daily AS d
                     ON d.code=u.code AND d.trade_date=u.trade_date
                 WHERE u.trade_date=? AND u.trade_status=1
-                  AND d.trade_status=1 AND d.close > 0
-                  AND d.volume IS NOT NULL AND d.volume >= 0
+                  AND d.trade_status=1 AND d.close > 0 AND d.close < 1.0e308
+                  AND d.volume IS NOT NULL AND d.volume >= 0 AND d.volume < 1.0e308
             """, (trade_date,)).fetchone()[0]
 
             # 以前失败、现在已写入成功行情的项目，应自动清理队列。
@@ -1161,8 +1187,8 @@ class BaoStockBackend:
                     SELECT 1 FROM daily AS d
                     WHERE d.code=fetch_queue.code
                       AND d.trade_date=fetch_queue.trade_date
-                      AND d.trade_status=1 AND d.close > 0
-                      AND d.volume IS NOT NULL AND d.volume >= 0
+                      AND d.trade_status=1 AND d.close > 0 AND d.close < 1.0e308
+                      AND d.volume IS NOT NULL AND d.volume >= 0 AND d.volume < 1.0e308
                   )
             """, (trade_date,))
             failed = conn.execute("""
@@ -1454,7 +1480,7 @@ class BaoStockBackend:
         return self.run_query(q)
 
     def get_industry_map(self) -> dict[str, str]:
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             rows = conn.execute("""
                 SELECT code, industry
                 FROM industry_cache
@@ -1467,7 +1493,7 @@ class BaoStockBackend:
         }
 
     def _industry_cache_info(self):
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             row = conn.execute("""
                 SELECT COUNT(*), MAX(fetched_at)
                 FROM industry_cache
@@ -1586,7 +1612,7 @@ class BaoStockBackend:
                     "行业分类没有可用A股记录"
                 )
 
-            with sqlite3.connect(self.db_path, timeout=30) as conn:
+            with sqlite_connection(self.db_path, timeout=30) as conn:
                 conn.executemany("""
                     INSERT OR REPLACE INTO industry_cache
                     (
@@ -1616,7 +1642,7 @@ class BaoStockBackend:
                 "板块分类暂不可用，个股扫描继续",
             )
 
-    # -------------------- 近5日行业资金TOP5（来源自动选择） --------------------
+    # -------------------- 近5日行业资金TOP5（仅同花顺） --------------------
 
     FUND_RANK_TIMEOUT=25
     FUND_JSON_PREFIX='__AShareMA_Fund_JSON__='
@@ -1668,10 +1694,10 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
 
         兼容旧调用方返回 (rows, {})，但不读取或请求成分股数据。
         """
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             rows = conn.execute("""
                 SELECT rank,industry,net_yuan,fetched_at,source
-                FROM fund_top5_snapshot ORDER BY rank
+                FROM fund_top5_snapshot WHERE source='同花顺' ORDER BY rank
             """).fetchall()
         return ([dict(rank=int(rank),name=name,net_yuan=float(amount),
                       fetched_at=fetched_at,source=source)
@@ -1721,7 +1747,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                 if attempt>1:
                     notify('同花顺 · 首次请求失败，正在重试（2/2）…')
                 rows=self._fund_complete_snapshot(notify,now)
-                with sqlite3.connect(self.db_path,timeout=20) as conn:
+                with sqlite_connection(self.db_path, timeout=20) as conn:
                     conn.execute('DELETE FROM fund_top5_snapshot')
                     # 清理早期程序遗留的成分股缓存，新版本不再使用。
                     conn.execute('DELETE FROM fund_top5_member')
@@ -1752,7 +1778,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
             for r in stocks.itertuples(index=False)
         ]
 
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             conn.executemany("""
                 INSERT OR REPLACE INTO day_universe
                 (trade_date, code, name, trade_status)
@@ -1839,7 +1865,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
 
     def backfill_turnover(self, end_date: str, cb: ProgressCallback) -> str:
         """仅补近期正常交易记录的缺失换手率；逐股提交，NULL 即续传标记。"""
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             dates = conn.execute("SELECT DISTINCT trade_date FROM daily WHERE trade_date<=? "
                                  "ORDER BY trade_date DESC LIMIT 80", (end_date,)).fetchall()
             if not dates:
@@ -1859,7 +1885,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                     value = self.valid_turnover(getattr(row, "turn", None))
                     if value is not None:
                         rows.append((value, code, str(row.date)))
-                with sqlite3.connect(self.db_path, timeout=30) as conn:
+                with sqlite_connection(self.db_path, timeout=30) as conn:
                     conn.executemany("UPDATE daily SET turnover=? WHERE code=? AND trade_date=? "
                                      "AND turnover IS NULL", rows)
             except Exception:
@@ -1868,7 +1894,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
             if idx % BATCH_SIZE == 0:
                 time.sleep(BATCH_PAUSE)
         cb(96, "近期换手率检查完成")
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             missing = conn.execute("SELECT COUNT(*) FROM daily WHERE trade_date BETWEEN ? AND ? "
                                    "AND trade_status=1 AND turnover IS NULL", (start, end_date)).fetchone()[0]
         return (f"近期有 {missing} 条换手率缺失，第5策略结果可能不完整；下次启动继续补抓。"
@@ -1882,7 +1908,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
         start_p: float,
         end_p: float,
     ):
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             rows = conn.execute("""
                 SELECT code, name, start_date, end_date
                 FROM init_queue
@@ -1895,7 +1921,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
 
         total = len(rows)
 
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             for idx, (code, name, start_date, end_date) in enumerate(
                 rows,
                 start=1,
@@ -1970,7 +1996,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
 
         total = len(todo)
 
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             for idx, r in enumerate(
                 todo.itertuples(index=False),
                 start=1,
@@ -2076,7 +2102,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
 
         total = len(todo)
 
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             for idx, r in enumerate(
                 todo.itertuples(index=False),
                 start=1,
@@ -2356,7 +2382,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
             return
         rows = []
         key = self.filter_key(strategy, filters)
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             for item in data.to_dict("records"):
                 payload = {k: (None if pd.isna(v) else v) for k, v in item.items()}
                 code, day = str(item["_code_full"]), str(item["触发日"])
@@ -2373,7 +2399,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                         payload["放量倍数"] = bar[0]/average if average>0 else None
                 rows.append((code, day, strategy, key, str(item.get("名称", "")),
                              json.dumps(payload, ensure_ascii=False, allow_nan=False), source, self.now_text()))
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             conn.executemany("""
                 INSERT INTO signal_history VALUES(?,?,?,?,?,?,?,?)
                 ON CONFLICT(code,signal_date,strategy,filter_key) DO UPDATE SET
@@ -2387,12 +2413,12 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                            filters: Optional[RangeFilter] = None) -> pd.DataFrame:
         """回算这只股票的本地全部历史；保留已扫描过的其他参数方案。"""
         filters = filters or RangeFilter()
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             raw = pd.read_sql_query("SELECT * FROM daily WHERE code=? AND trade_date<=? ORDER BY trade_date",
                                     conn, params=(code, end_date))
         if not raw.empty:
             g = self._prepare_group(raw)
-            results = {k: [] for k in StockScannerApp.STRATEGIES.values()}
+            results = {key: [] for key, _, _ in STRATEGIES}
             for pos in range(1, len(g)):
                 row, prev = g.iloc[pos], g.iloc[pos-1]
                 name_on_day = str(row.get("name", "") or "").strip().upper()
@@ -2440,7 +2466,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                         results[strategy].append(payload)
             for strategy, rows in results.items():
                 self.record_signals(strategy, pd.DataFrame(rows), filters, "本地回算")
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             history = pd.read_sql_query("SELECT * FROM signal_history WHERE code=? AND signal_date<=? "
                                         "ORDER BY signal_date DESC,strategy,filter_key", conn, params=(code,end_date))
             days = [r[0] for r in conn.execute("SELECT DISTINCT trade_date FROM daily WHERE trade_date<=? ORDER BY trade_date",
@@ -2492,7 +2518,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
         end_date: str,
         distinct_days: int = 80,
     ) -> pd.DataFrame:
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             dates = conn.execute("""
                 SELECT DISTINCT trade_date
                 FROM daily
@@ -2916,7 +2942,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
     # -------------------- 图表数据 --------------------
 
     def get_chart_data(self, code_full: str, end_date: str) -> pd.DataFrame:
-        with sqlite3.connect(self.db_path, timeout=30) as conn:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
             df = pd.read_sql_query("SELECT * FROM daily WHERE code=? AND trade_date<=? "
                                    "AND trade_status=1 ORDER BY trade_date DESC LIMIT 80",
                                    conn, params=(code_full, end_date))
@@ -2963,7 +2989,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
             SELECT code,trade_date,close,volume,trade_status,turnover
             FROM recent WHERE rn<=70 ORDER BY code,trade_date DESC
         """
-        with sqlite3.connect(self.db_path, timeout=20) as conn:
+        with sqlite_connection(self.db_path, timeout=20) as conn:
             raw = pd.read_sql_query(sql, conn, params=(sector_name, end_date))
 
         if raw.empty:
@@ -3353,7 +3379,7 @@ def run_tk_data_phase(backend=None, *, autostart=True):
     后台线程只向 Queue 发送状态，所有 Tk 组件操作只在主线程完成。
     """
     import tkinter as _tk
-    from tkinter import ttk as _ttk
+    from tkinter import ttk as _ttk, messagebox as _messagebox
     engine_backend = backend or BaoStockBackend(DB_PATH)
     root = _tk.Tk()
     root.title("A股 MA 扫描器 · 2/3 行情数据抓取")
@@ -3415,6 +3441,12 @@ def run_tk_data_phase(backend=None, *, autostart=True):
         if lines>140:log.delete("1.0","45.0")
         log.configure(state="disabled")
     def abort():
+        if state["running"]:
+            _messagebox.showinfo(
+                "数据更新尚未完成",
+                "为避免中断 SQLite 数据库写入，请等待当前抓取结束后退出。",
+                parent=root)
+            return
         state["aborted"]=True
         root.quit()
     root.protocol("WM_DELETE_WINDOW",abort)
@@ -3495,9 +3527,9 @@ try:
     from PySide6.QtWidgets import (
         QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QFrame,
         QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
-        QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
+        QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
         QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QTableWidget,
-        QTableWidgetItem, QVBoxLayout, QWidget,
+        QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
     )
 
 except Exception as exc:
@@ -3528,7 +3560,7 @@ class ScanWorker(QThread):
     success = Signal(int, object)
     failed = Signal(int, str)
 
-    def __init__(self, backend, request_id, strategy, date, previous, filters):
+    def __init__(self, backend, request_id, strategy, date, previous, filters, cancel_event=None):
         super().__init__()
         self.backend = backend
         self.request_id = request_id
@@ -3536,11 +3568,13 @@ class ScanWorker(QThread):
         self.date = date
         self.previous = previous
         self.filters = filters
+        self.cancel_event = cancel_event
 
     def run(self):
         try:
             frame = self.backend.scan_strategy(
-                self.strategy, self.date, False, self.previous, self.filters
+                self.strategy, self.date, False, self.previous, self.filters,
+                cancel_event=self.cancel_event
             )
             self.success.emit(self.request_id, frame)
         except Exception:
@@ -3588,70 +3622,127 @@ class ChartWorker(QThread):
             self.failed.emit(self.token, traceback.format_exc())
 
 
+class VersionWorker(QThread):
+    success = Signal(str, object)
+    failed = Signal(str)
+
+    def run(self):
+        try:
+            status, url = fetch_latest_release()
+            self.success.emit(status, url)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class HistoryWorker(QThread):
+    success = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, backend, code, date, filters):
+        super().__init__()
+        self.backend, self.code, self.date, self.filters = backend, code, date, filters
+
+    def run(self):
+        try:
+            self.success.emit(self.backend.get_signal_history(self.code, self.date, self.filters))
+        except Exception:
+            self.failed.emit(traceback.format_exc())
+
+
 class PriceChart(QWidget):
+    """Render price / MA / volume / turnover using local data only."""
+    COLORS = {"close": "#222938", "MA5": "#347df4", "MA10": "#e6a24b",
+              "MA20": "#a487dc", "volume": "#347df4",
+              "放量倍数": "#a487dc", "turnover": "#db8b30"}
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.data = pd.DataFrame()
-        self.setMinimumHeight(164)
+        self.series = ["close", "MA5", "MA10", "MA20"]
+        self.signal_date = None
+        self.setMinimumHeight(160)
+        self.setMouseTracking(True)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-    def set_frame(self, data):
-        self.data = data if data is not None else pd.DataFrame()
+    def set_frame(self, data, series=None, signal_date=None):
+        self.data = data.copy() if data is not None else pd.DataFrame()
+        self.series = list(series) if series else ["close", "MA5", "MA10", "MA20"]
+        self.signal_date = signal_date
         self.update()
+
+    def mouseMoveEvent(self, event):
+        if not self.data.empty:
+            n = len(self.data)
+            idx = max(0, min(n-1, round((event.position().x() - 55)
+                                        / max(1,self.width()-74) * max(0,n-1))))
+            row = self.data.iloc[idx]
+            info = [str(row.get("trade_date", "—"))]
+            for key in self.series:
+                try:
+                    value = float(row[key])
+                    if math.isfinite(value):
+                        info.append(f"{key}: {value:.3f}")
+                except (ValueError, TypeError, KeyError):
+                    pass
+            self.setToolTip("\n".join(info))
+        super().mouseMoveEvent(event)
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = self.rect()
         painter.fillRect(rect, QColor("#ffffff"))
-        left, top, right, bottom = 28, 14, rect.width() - 10, rect.height() - 25
-        if self.data.empty or bottom - top < 30:
+        left, top, right, bottom = 55, 20, rect.width()-19, rect.height()-34
+        if self.data.empty or right<=left or bottom<=top+15:
             painter.setPen(QColor("#9ca3b0"))
-            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "选择股票后显示本地均线走势图")
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "暂无可用的本地走势图")
+            painter.end()
             return
-        df = self.data
-        curves = [("close", "#222938", 2.3), ("MA5", "#347df4", 1.5),
-                  ("MA10", "#e6a24b", 1.5), ("MA20", "#a487dc", 1.5)]
-        valid = []
-        for field, _, _ in curves:
-            if field in df:
-                valid += pd.to_numeric(df[field], errors="coerce").dropna().tolist()
+        arrays=[(name,pd.to_numeric(self.data[name],errors="coerce"))
+                for name in self.series if name in self.data.columns]
+        valid=[float(v) for _,a in arrays for v in a.dropna() if math.isfinite(float(v))]
         if not valid:
+            painter.setPen(QColor("#9ca3b0"))
+            painter.drawText(rect,Qt.AlignmentFlag.AlignCenter,"所选指标没有可用数值")
+            painter.end()
             return
-        low, high = min(valid), max(valid)
-        if high <= low:
-            high, low = high + 1, low - 1
-        span = high - low
-        low -= span * .08
-        high += span * .08
-        for k in range(4):
-            y = top + (bottom - top) * k / 3
-            painter.setPen(QPen(QColor("#edf0f5"), 1))
-            painter.drawLine(left, int(y), right, int(y))
-        n = len(df)
-        def coordinate(index, val):
-            x = left + ((right - left) * index / max(1, n - 1))
-            y = bottom - ((float(val) - low) / (high - low)) * (bottom - top)
-            return int(x), int(y)
-        for field, color, thickness in curves:
-            if field not in df:
-                continue
-            vals = pd.to_numeric(df[field], errors="coerce")
-            painter.setPen(QPen(QColor(color), thickness))
-            previous = None
-            for i, v in enumerate(vals):
+        low,high=min(valid),max(valid)
+        gap=(high-low) if high>low else max(abs(high)*.02,1)
+        low-=gap*.08
+        high+=gap*.08
+        n=len(self.data)
+        def pt(i,v):
+            return (int(left+(right-left)*i/max(1,n-1)),
+                    int(bottom-(float(v)-low)*(bottom-top)/(high-low)))
+        for i in range(5):
+            y=int(top+(bottom-top)*i/4)
+            painter.setPen(QPen(QColor("#edf0f5"),1))
+            painter.drawLine(left,y,right,y)
+            painter.setPen(QColor("#7a8190"))
+            painter.drawText(2,y+5,f"{high-(high-low)*i/4:.2f}")
+        if self.signal_date and "trade_date" in self.data:
+            for i,date in enumerate(self.data["trade_date"].astype(str)):
+                if date==str(self.signal_date):
+                    x,_=pt(i,low)
+                    painter.setPen(QPen(QColor("#d11a2a"),1))
+                    painter.drawLine(x,top,x,bottom)
+                    painter.drawText(x+2,top+12,"触发")
+        for name,values in arrays:
+            painter.setPen(QPen(QColor(self.COLORS.get(name,"#347df4")),1.8))
+            previous=None
+            for i,v in enumerate(values):
                 if pd.isna(v) or not math.isfinite(float(v)):
-                    previous = None
+                    previous=None
                     continue
-                point = coordinate(i, v)
+                p=pt(i,v)
                 if previous is not None:
-                    painter.drawLine(*previous, *point)
-                previous = point
-        painter.setPen(QColor("#9199a9"))
-        if "trade_date" in df.columns and n:
-            painter.drawText(left, rect.height() - 6, str(df.iloc[0]["trade_date"])[5:])
-            text = str(df.iloc[-1]["trade_date"])[5:]
-            painter.drawText(right - 42, rect.height() - 6, text)
+                    painter.drawLine(*previous,*p)
+                previous=p
+        if "trade_date" in self.data:
+            painter.setPen(QColor("#7a8190"))
+            for i in sorted({round((n-1)*k/5) for k in range(6)}):
+                x,_=pt(i,low)
+                painter.drawText(max(2,x-17),rect.height()-8,str(self.data.iloc[i]["trade_date"])[5:])
         painter.end()
 
 
@@ -3752,6 +3843,13 @@ class ScannerWindow(QMainWindow):
         self.workers = []
         self.scan_token = 0
         self.chart_token = 0
+        self._restart_requested = False
+        self._scan_cancel_event = None
+        self.selected_stock = None
+        self.sector_filter = None
+        self.current_filters = RangeFilter()
+        self._latest_release_url = None
+        self._version_worker = None
         self.setWindowTitle("A股 MA 扫描器 v1.2.8 · PySide6 4:3 工作台")
         self.resize(1120, 840)
         self.setMinimumSize(980, 735)
@@ -3772,6 +3870,17 @@ class ScannerWindow(QMainWindow):
             self._on_update_ready(prepared_result)
         else:
             raise RuntimeError("主界面必须等待 Tkinter 行情抓取成功后才能启动")
+
+    def closeEvent(self, event):
+        # No QThread can be destroyed while it is still running.
+        if self._scan_cancel_event is not None:
+            self._scan_cancel_event.set()
+        if any(worker.isRunning() for worker in self.workers):
+            event.ignore()
+            self.statusBar().showMessage("后台任务尚未结束，完成后自动关闭…")
+            QTimer.singleShot(250, self.close)
+            return
+        super().closeEvent(event)
 
     def _text(self, value, role=None, parent=None):
         label = QLabel(value, parent)
@@ -3888,13 +3997,19 @@ class ScannerWindow(QMainWindow):
         opt = QVBoxLayout(self.volume_options)
         opt.setContentsMargins(0, 8, 0, 0)
         self.volume_min = QLineEdit("1.5")
-        self.volume_min.setPlaceholderText("放量下限")
+        self.volume_min.setPlaceholderText("最小放量倍数")
+        self.volume_max = QLineEdit()
+        self.volume_max.setPlaceholderText("最大放量倍数（可留空）")
         self.turnover_min = QLineEdit("3")
-        self.turnover_min.setPlaceholderText("换手率下限")
-        opt.addWidget(self._text("放量倍数 ≥", "small"))
-        opt.addWidget(self.volume_min)
-        opt.addWidget(self._text("换手率 ≥ (%)", "small"))
-        opt.addWidget(self.turnover_min)
+        self.turnover_min.setPlaceholderText("最小换手率%")
+        self.turnover_max = QLineEdit()
+        self.turnover_max.setPlaceholderText("最大换手率%（可留空）")
+        for label, entry in (
+            ("放量倍数下限", self.volume_min), ("放量倍数上限", self.volume_max),
+            ("换手率下限 (%)", self.turnover_min), ("换手率上限 (%)", self.turnover_max)
+        ):
+            opt.addWidget(self._text(label, "small"))
+            opt.addWidget(entry)
         apply = QPushButton("重新筛选")
         apply.clicked.connect(self._rerun_strategy)
         opt.addWidget(apply)
@@ -3951,6 +4066,33 @@ class ScannerWindow(QMainWindow):
         self.industry.currentIndexChanged.connect(self.apply_filters)
         search.addWidget(self.industry, 2)
         mid.addLayout(search)
+        change_row = QHBoxLayout()
+        self.change_min = QLineEdit()
+        self.change_min.setPlaceholderText("涨幅下限 (%)")
+        self.change_max = QLineEdit()
+        self.change_max.setPlaceholderText("涨幅上限 (%)")
+        for label, entry in (("涨幅下限%", self.change_min), ("涨幅上限%", self.change_max)):
+            change_row.addWidget(self._text(label, "small"))
+            change_row.addWidget(entry, 1)
+            entry.editingFinished.connect(self.apply_filters)
+        mid.addLayout(change_row)
+        sector_head = QHBoxLayout()
+        sector_head.addWidget(self._text("板块信号 · 点击筛选 / 双击查看走势", "section"))
+        sector_head.addStretch(1)
+        self.sector_reset = QPushButton("全部板块")
+        self.sector_reset.clicked.connect(self._reset_sector_filter)
+        sector_head.addWidget(self.sector_reset)
+        mid.addLayout(sector_head)
+        self.sector_table = QTableWidget(0, 3)
+        self.sector_table.setHorizontalHeaderLabels(["板块", "今日触发", "板块信号"])
+        self.sector_table.verticalHeader().hide()
+        self.sector_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.sector_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.sector_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.sector_table.setMaximumHeight(120)
+        self.sector_table.itemSelectionChanged.connect(self._on_sector_selected)
+        self.sector_table.cellDoubleClicked.connect(self._open_sector_chart)
+        mid.addWidget(self.sector_table)
         results = QHBoxLayout()
         results.addWidget(self._text("选股结果", "section"))
         results.addStretch(1)
@@ -3961,7 +4103,7 @@ class ScannerWindow(QMainWindow):
 
         self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
-            ["代码", "名称", "板块", "收盘价", "涨幅%", "放量", "换手率%"]
+            ["代码", "名称", "板块", "收盘价", "当日涨幅%", "放量倍数", "换手率%"]
         )
         self.table.verticalHeader().hide()
         self.table.setShowGrid(False)
@@ -3971,6 +4113,8 @@ class ScannerWindow(QMainWindow):
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSortingEnabled(True)
         self.table.itemSelectionChanged.connect(self._stock_selected)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._table_context_menu)
         self.table.horizontalHeader().setStretchLastSection(True)
         mid.addWidget(self.table, 1)
         self.result_info = self._text("选择策略后开始扫描", "small")
@@ -4022,7 +4166,7 @@ class ScannerWindow(QMainWindow):
         self.page.addWidget(page)
 
         footer = self.statusBar()
-        footer.showMessage("开发预览 · 独立 PySide6 前端 · 不修改原有数据库路径")
+        footer.showMessage("本地 SQLite / BaoStock · v1.2.8 开发修复版")
 
     def _load_demo(self):
         self.demo = True
@@ -4056,16 +4200,23 @@ class ScannerWindow(QMainWindow):
         return self._restart_pipeline()
 
     def _restart_pipeline(self):
-        """重新运行三阶段启动流程，不在 Qt 运行时混用 Tk 主循环。"""
+        """Exit Qt, release SQLite lock, then restart in main()."""
         confirm=QMessageBox.question(
             self,"重新更新行情",
             "将关闭当前 PySide6 主界面，然后重新显示 Tkinter 行情更新窗口。继续吗？")
         if confirm!=QMessageBox.StandardButton.Yes:return
-        flags=(subprocess.CREATE_NO_WINDOW if os.name=="nt" else 0)
-        subprocess.Popen([sys.executable,str(Path(__file__).resolve())],
-                         stdin=subprocess.DEVNULL,creationflags=flags,
-                         cwd=str(Path(__file__).resolve().parent))
-        QApplication.quit()
+        if self._scan_cancel_event is not None:
+            self._scan_cancel_event.set()
+        self.refresh_market.setEnabled(False)
+        self.statusBar().showMessage("正在等待扫描和资金后台任务安全退出…")
+        self._complete_restart()
+
+    def _complete_restart(self):
+        if any(worker.isRunning() for worker in self.workers):
+            QTimer.singleShot(200, self._complete_restart)
+            return
+        self._restart_requested = True
+        QApplication.instance().quit()
 
 
     def _on_update_progress(self, percent, task):
@@ -4118,45 +4269,58 @@ class ScannerWindow(QMainWindow):
     def _rerun_strategy(self):
         if self.update_result is None:
             return
+        if self._scan_cancel_event is not None:
+            self._scan_cancel_event.set()
         self.scan_token += 1
+        self._scan_cancel_event = threading.Event()
         self.frame = pd.DataFrame()
+        self.sector_filter = None
+        self.sector_table.blockSignals(True)
+        self.sector_table.setRowCount(0)
+        self.sector_table.blockSignals(False)
         self.apply_filters()
         if self.demo:
             self.frame = sample_data(self.current_key)
+            self._update_industry_filter()
+            self._populate_sector_table()
             self.apply_filters()
             return
         try:
             filters = None
             if self.current_key == "volume_turnover":
                 filters = self.engine.RangeFilter(
-                    float(self.volume_min.text()), None,
-                    float(self.turnover_min.text()), None,
+                    float(self.volume_min.text().strip()),
+                    float(self.volume_max.text()) if self.volume_max.text().strip() else None,
+                    float(self.turnover_min.text().strip()),
+                    float(self.turnover_max.text()) if self.turnover_max.text().strip() else None,
                 )
-        except ValueError:
-            self.result_info.setText("请输入有效的放量倍数和换手率")
+                self.current_filters = filters
+        except (ValueError, OverflowError) as exc:
+            self.result_info.setText("请输入有效的放量倍数及换手率上下限：" + str(exc))
             return
         self.result_info.setText("正在读取本地行情并计算策略…")
         worker = ScanWorker(self.backend, self.scan_token, self.current_key,
                             self.update_result.scan_date,
-                            self.update_result.previous_trade_date, filters)
+                            self.update_result.previous_trade_date, filters,
+                            self._scan_cancel_event)
         worker.success.connect(self._scan_ready)
         worker.failed.connect(self._scan_failed)
         self._remember(worker)
         worker.start()
-
     def _scan_ready(self, token, frame):
         if token != self.scan_token:
             return
+        self._scan_cancel_event = None
         self.frame = frame
         self._update_industry_filter()
+        self._populate_sector_table()
         self.apply_filters()
-
     def _scan_failed(self, token, detail):
         if token != self.scan_token:
             return
+        self._scan_cancel_event = None
         self.result_info.setText("策略执行失败，点击查看错误信息")
         self._show_error("策略执行失败", detail)
-
     def _update_industry_filter(self):
         current = self.industry.currentText()
         self.industry.blockSignals(True)
@@ -4168,14 +4332,120 @@ class ScannerWindow(QMainWindow):
         self.industry.setCurrentIndex(max(0, index))
         self.industry.blockSignals(False)
 
+    def _populate_sector_table(self):
+        self.sector_table.blockSignals(True)
+        self.sector_table.setRowCount(0)
+        if not self.frame.empty and "板块" in self.frame.columns:
+            data = []
+            for sector, group in self.frame.groupby("板块", dropna=False):
+                name = str(sector or "未分类")
+                triggered = int((group["触发日"].astype(str) == str(self.update_result.scan_date)).sum())
+                status = str(group["板块信号"].iloc[0]) if "板块信号" in group else "未触发"
+                data.append((name, triggered, status))
+            data.sort(key=lambda item: (item[2] == "今日触发", item[1], item[0]), reverse=True)
+            self.sector_table.setRowCount(len(data))
+            for r, (name, count, status) in enumerate(data):
+                for c, value in enumerate((name, count, status)):
+                    item = QTableWidgetItem(str(value))
+                    if c == 0:
+                        item.setToolTip(name)
+                    if c == 1:
+                        item.setData(Qt.ItemDataRole.EditRole, int(count))
+                    self.sector_table.setItem(r, c, item)
+        self.sector_table.blockSignals(False)
+        self.sector_table.resizeColumnsToContents()
+
+    def _reset_sector_filter(self):
+        self.sector_filter = None
+        self.sector_table.blockSignals(True)
+        self.sector_table.clearSelection()
+        self.sector_table.blockSignals(False)
+        self.apply_filters()
+
+    def _on_sector_selected(self):
+        chosen = self.sector_table.selectedItems()
+        self.sector_filter = (self.sector_table.item(chosen[0].row(), 0).text()
+                              if chosen else None)
+        self.apply_filters()
+
+    def _open_sector_chart(self, row, column):
+        if self.demo or self.backend is None or self.update_result is None:
+            QMessageBox.information(self, "板块走势", "演示模式没有真实板块历史数据。")
+            return
+        item = self.sector_table.item(row, 0)
+        if item is None:
+            return
+        sector = item.text()
+        try:
+            data = self.backend.get_sector_chart_data(sector, self.update_result.scan_date)
+            if data.empty:
+                QMessageBox.information(self, "板块走势", "本地板块数据不足，无法绘图。")
+                return
+            status = self.backend.get_sector_strategy_status(
+                sector, self.current_key, self.update_result.scan_date,
+                False, self.update_result.previous_trade_date,
+                self.current_filters if self.current_key == "volume_turnover" else None)
+            dlg = QDialog(self)
+            dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+            dlg.setWindowTitle(f"{sector} · {self.strategy_title.text()}")
+            dlg.resize(950, 720)
+            layout = QVBoxLayout(dlg)
+            layout.addWidget(self._text(f"{sector} · {self.strategy_title.text()} · {status}", "brand"))
+            layout.addWidget(self._text("行业成分股后复权价格归一化后的等权指数；板块信号按当前策略计算", "small"))
+            history = []
+            if "trade_date" in data.columns:
+                for date in data["trade_date"].astype(str):
+                    if date == self.update_result.scan_date:
+                        continue
+                    if self.backend._sector_strategy_triggered(
+                            data, self.current_key, date,
+                            self.current_filters if self.current_key == "volume_turnover" else None):
+                        history.append(date)
+            layout.addWidget(self._text(
+                "历史触发：" + "、".join(history[-5:][::-1])
+                if history else "本地走势图范围内无其他历史触发", "small"))
+            if self.current_key.startswith("breakout_ma"):
+                fields = ["close", "MA" + self.current_key.replace("breakout_ma", "")]
+            elif self.current_key in ("ma5_turn_up",):
+                fields = ["close", "MA5"]
+            elif self.current_key == "ma5_cross_ma10":
+                fields = ["close", "MA5", "MA10"]
+            elif self.current_key == "volume_turnover":
+                fields = ["close"]
+            else:
+                fields = ["close", "MA5", "MA10", "MA20"]
+            chart = PriceChart()
+            chart.set_frame(data, series=fields, signal_date=self.update_result.scan_date)
+            layout.addWidget(chart, 3)
+            if self.current_key == "volume_turnover":
+                for field, title in (("放量倍数", "板块放量倍数"), ("turnover", "板块等权换手率%")):
+                    view = PriceChart()
+                    view.set_frame(data, series=[field])
+                    layout.addWidget(self._text(title, "small"))
+                    layout.addWidget(view, 1)
+            dlg.exec()
+        except Exception:
+            self._show_error("读取板块历史失败", traceback.format_exc())
+
     def clear_filters(self):
         self.query.clear()
         self.market.setCurrentIndex(0)
         self.industry.setCurrentIndex(0)
-        self._render_funds()
+        self.change_min.clear()
+        self.change_max.clear()
+        self._reset_sector_filter()
         self.apply_filters()
-
     def apply_filters(self):
+        try:
+            low = float(self.change_min.text()) if self.change_min.text().strip() else None
+            high = float(self.change_max.text()) if self.change_max.text().strip() else None
+            if any(v is not None and not math.isfinite(v) for v in (low, high)):
+                raise ValueError("涨幅上下限必须为有限数字")
+            if low is not None and high is not None and low > high:
+                raise ValueError("涨幅下限不能大于上限")
+        except ValueError as exc:
+            self.result_info.setText("涨幅范围无效：" + str(exc))
+            return
         if self.frame.empty:
             self.filtered = pd.DataFrame()
         else:
@@ -4197,6 +4467,14 @@ class ScannerWindow(QMainWindow):
             sector = self.industry.currentText()
             if sector and sector != "全部行业":
                 frame = frame.loc[frame["板块"].astype(str).eq(sector)]
+            if self.sector_filter:
+                frame = frame.loc[frame["板块"].astype(str).eq(self.sector_filter)]
+            if low is not None or high is not None:
+                change = pd.to_numeric(frame["当日涨幅%"], errors="coerce")
+                if low is not None:
+                    frame = frame.loc[change >= low]
+                if high is not None:
+                    frame = frame.loc[change <= high]
             self.filtered = frame.copy()
         self._draw_table()
         self.hit_count.setText(f"命中 {len(self.filtered)} 只")
@@ -4204,22 +4482,39 @@ class ScannerWindow(QMainWindow):
             "模拟数据 · 非真实行情" if self.demo else
             f"股票结果 {len(self.filtered)} 只 · {self.update_result.scan_date if self.update_result else '—'}"
         )
-
     def _draw_table(self):
+        # Like v1.2.6, show metrics particular to the active strategy.
+        common = ["代码", "名称", "板块", "触发日", "收盘价", "当日涨幅%"]
+        if self.current_key == "volume_turnover":
+            columns = common + ["放量倍数", "换手率%"]
+        elif self.current_key == "ma5_turn_up":
+            columns = common + ["MA5", "昨日MA5", "MA5上拐幅度%", "放量倍数", "换手率%"]
+        elif self.current_key == "ma_convergence_up":
+            columns = common + ["MA5", "MA10", "MA20", "昨日粘合度%",
+                                "今日发散度%", "发散增加百分点", "放量倍数", "换手率%"]
+        elif self.current_key.startswith("breakout_ma"):
+            ma = self.current_key.replace("breakout_ma", "")
+            columns = common + [f"MA{ma}", f"突破MA{ma}幅度%", "放量倍数", "换手率%"]
+        else:
+            columns = common + ["MA5", "MA10", "MA5高于MA10%", "放量倍数", "换手率%"]
         self.table.blockSignals(True)
         self.table.setSortingEnabled(False)
+        self.table.setColumnCount(len(columns))
+        self.table.setHorizontalHeaderLabels(columns)
         self.table.setRowCount(0 if self.filtered.empty else len(self.filtered))
         for row_number, (_, record) in enumerate(self.filtered.iterrows()):
-            for column, key in enumerate(
-                ("代码", "名称", "板块", "收盘价", "当日涨幅%", "放量倍数", "换手率%")
-            ):
-                raw = record.get(key, None)
-                value = value_text(raw) if column >= 3 else str(raw or "—")
+            for column, key in enumerate(columns):
+                raw = record.get(key)
+                if key in ("代码", "名称", "板块", "触发日"):
+                    value = str(raw) if raw is not None and not pd.isna(raw) else "—"
+                else:
+                    value = value_text(raw)
                 item = QTableWidgetItem(value)
                 item.setData(Qt.ItemDataRole.UserRole, str(record.get("_code_full", "")))
-                if column >= 3:
+                if key not in ("代码", "名称", "板块", "触发日"):
                     try:
-                        item.setData(Qt.ItemDataRole.EditRole, float(raw))
+                        if raw is not None and math.isfinite(float(raw)):
+                            item.setData(Qt.ItemDataRole.EditRole, float(raw))
                     except (ValueError, TypeError):
                         pass
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -4231,12 +4526,9 @@ class ScannerWindow(QMainWindow):
         self.table.blockSignals(False)
         if self.table.rowCount():
             self.table.selectRow(0)
-            # Populating the table temporarily blocks Qt signals; explicitly
-            # synchronize the inspector with the newly selected first row.
             self._stock_selected()
         else:
             self._clear_stock()
-
     def _render_funds(self):
         """TOP5 五个板块只展示排名及净流入金额，不支持点击筛选。"""
         for idx, card in enumerate(self.fund_cards):
@@ -4274,6 +4566,16 @@ class ScannerWindow(QMainWindow):
     def start_fund_refresh(self):
         if self.demo:
             return
+        now = datetime.now(CST)
+        if now.weekday() < 5 and now.hour < 18:
+            # Current trading-day ranking is not yet settled. Do not throw an
+            # error dialog on normal morning startup when no cache exists.
+            if not self.funds:
+                self.fund_source_label.setText("交易日 18:00 后可刷新 TOP5")
+            else:
+                self._check_fund_freshness()
+            self.statusBar().showMessage("交易日资金榜单尚未结算，18:00 后可刷新；扫描策略不受影响")
+            return
         if self.backend is None or any(isinstance(w, FundWorker) and w.isRunning() for w in self.workers):
             return
         self.fund_error_details = ""
@@ -4301,11 +4603,11 @@ class ScannerWindow(QMainWindow):
         self._render_funds()
         self.fund_source_label.setText(
             f"{self.fund_source} · 更新失败，显示旧缓存" if rows
-            else "两个资金排名来源均失败 · 查看原因"
+            else "同花顺资金排名失败 · 查看原因"
         )
         self._show_error(
             "TOP5 排名刷新失败",
-            "两家数据源的资金排名获取失败；原有榜单缓存未被覆盖。\n\n"
+            "同花顺资金排名获取失败；原有同花顺榜单缓存未被覆盖。\n\n"
             + self.fund_error_details,
         )
 
@@ -4313,16 +4615,20 @@ class ScannerWindow(QMainWindow):
     def _stock_selected(self):
         selected = self.table.selectedItems()
         if not selected:
+            self._clear_stock()
             return
         row = selected[0].row()
         if row < 0:
+            self._clear_stock()
             return
         code_item = self.table.item(row, 0)
         if code_item is None:
+            self._clear_stock()
             return
         full_code = code_item.data(Qt.ItemDataRole.UserRole)
         matching = self.filtered.loc[self.filtered["_code_full"].astype(str) == full_code]
         if matching.empty:
+            self._clear_stock()
             return
         record = matching.iloc[0]
         self.selected_stock = record
@@ -4353,13 +4659,15 @@ class ScannerWindow(QMainWindow):
         worker.start()
 
     def _clear_stock(self):
+        self.selected_stock = None
+        self.chart_token += 1
         self.stock_name.setText("请选择股票")
         self.stock_code.setText("点击列表行查看")
         self.stock_price.setText("—")
         self.stock_change.setText("")
         self.metrics.setText("放量倍数   —\n\n换手率        —\n\n触发日期     —")
         self.chart.set_frame(pd.DataFrame())
-
+        self.chart_status.setText("请选择列表中的股票")
     def _chart_ready(self, token, frame):
         if token == self.chart_token:
             self.chart.set_frame(frame)
@@ -4368,22 +4676,49 @@ class ScannerWindow(QMainWindow):
     def _chart_failed(self, token, detail):
         if token == self.chart_token:
             self.chart_status.setText("走势图读取失败")
-            self.fund_error_details = detail
+            self._show_error("走势图读取失败", detail)
+    def _table_context_menu(self, position):
+        item = self.table.itemAt(position)
+        if item is None:
+            return
+        self.table.selectRow(item.row())
+        menu = QMenu(self)
+        chart_action = menu.addAction("走势图")
+        history_action = menu.addAction("信号历史")
+        chosen = menu.exec(self.table.viewport().mapToGlobal(position))
+        if chosen == chart_action:
+            self._full_chart_dialog()
+        elif chosen == history_action:
+            self._history_dialog()
 
     def _full_chart_dialog(self):
         record = getattr(self, "selected_stock", None)
         if record is None:
             return
         dialog = QDialog(self)
-        dialog.setWindowTitle(f'{record.get("名称")} · 30日走势图')
-        dialog.resize(900, 590)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dialog.setWindowTitle(f'{record.get("名称")} · 最近30日行情与成交指标')
+        dialog.resize(960, 760)
         layout = QVBoxLayout(dialog)
-        layout.addWidget(self._text(str(record.get("名称")), "brand"))
-        chart = PriceChart()
-        chart.set_frame(self.chart.data)
-        layout.addWidget(chart)
+        layout.addWidget(self._text(
+            f'{record.get("代码")} {record.get("名称")} · 触发日 {record.get("触发日", "—")}', "brand"))
+        tabs = QTabWidget()
+        price = PriceChart()
+        price.set_frame(self.chart.data, signal_date=str(record.get("触发日", "")))
+        tabs.addTab(price, "价格与均线")
+        metrics = QWidget()
+        ml = QVBoxLayout(metrics)
+        for field, label in (("volume", "成交量（股）"),
+                             ("放量倍数", "放量倍数（与前5个交易日比）"),
+                             ("turnover", "换手率%")):
+            ml.addWidget(self._text(label, "section"))
+            chart = PriceChart()
+            chart.set_frame(self.chart.data, series=[field],
+                            signal_date=str(record.get("触发日", "")))
+            ml.addWidget(chart, 1)
+        tabs.addTab(metrics, "成交量 · 放量 · 换手率")
+        layout.addWidget(tabs, 1)
         dialog.exec()
-
     def _history_dialog(self):
         record = getattr(self, "selected_stock", None)
         if record is None:
@@ -4391,34 +4726,133 @@ class ScannerWindow(QMainWindow):
         if self.demo:
             QMessageBox.information(self, "信号历史", "演示模式不提供真实信号历史。")
             return
-        # Read-only query to keep the PySide6 preview independent of the old Tkinter dialogs.
-        try:
-            f = self.backend.get_signal_history(
-                str(record["_code_full"]), self.update_result.scan_date,
-                self.engine.RangeFilter()
-            )
-            text = "暂无历史触发信号" if f.empty else "\n".join(
-                f'{r["signal_date"]} · {r["strategy"]}'
-                for r in f.head(35).to_dict("records")
-            )
-            self._show_error("本地信号历史", text)
-        except Exception:
-            self._show_error("历史读取失败", traceback.format_exc())
+        dialog = QDialog(self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        window_closed = [False]
+        dialog.finished.connect(lambda *_: window_closed.__setitem__(0, True))
+        dialog.destroyed.connect(lambda *_: window_closed.__setitem__(0, True))
+        dialog.setWindowTitle(f'{record.get("代码")} {record.get("名称")} · 信号历史')
+        dialog.resize(1100, 650)
+        layout = QVBoxLayout(dialog)
+        notice = self._text("正在后台回算本地历史信号…", "small")
+        layout.addWidget(notice)
+        table = QTableWidget(0, 8)
+        table.setHorizontalHeaderLabels(["触发日", "策略", "连续日数", "收盘价",
+                                        "放量倍数", "换手率%", "参数", "来源"])
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setSortingEnabled(True)
+        layout.addWidget(table, 1)
+        code = str(record["_code_full"])
+        name = str(record.get("名称", ""))
+
+        def display(history):
+            if window_closed[0] or not dialog.isVisible():
+                return
+            notice.setText(f"历史共 {len(history)} 条信号 · 双击记录查看触发日走势图")
+            table.setSortingEnabled(False)
+            table.setRowCount(len(history))
+            for index, rec in enumerate(history.to_dict("records")):
+                try:
+                    payload = json.loads(rec.get("payload") or "{}")
+                    if not isinstance(payload, dict):
+                        payload = {}
+                except (ValueError, TypeError):
+                    payload = {}
+                filter_key = str(rec.get("filter_key", "固定规则"))
+                if filter_key != "固定规则":
+                    try:
+                        lo, hi, tlo, thi = json.loads(filter_key)
+                        filter_key = (f"放量 {lo:g}～{hi if hi is not None else '不限'}；"
+                                      f"换手率 {tlo:g}～{thi if thi is not None else '不限'}%")
+                    except (TypeError, ValueError):
+                        pass
+                labels = {k: label for k, label, _ in STRATEGIES}
+                row = (rec.get("signal_date"), labels.get(rec.get("strategy"), rec.get("strategy")),
+                       rec.get("streak"), payload.get("收盘价"),
+                       payload.get("放量倍数"), payload.get("换手率%"),
+                       filter_key, rec.get("source"))
+                for col, value in enumerate(row):
+                    item = QTableWidgetItem(value_text(value) if col in (3, 4, 5) else str(value))
+                    item.setData(Qt.ItemDataRole.UserRole, str(rec.get("signal_date", "")))
+                    table.setItem(index, col, item)
+            table.setSortingEnabled(True)
+            table.resizeColumnsToContents()
+
+        def fail(details):
+            if not window_closed[0] and dialog.isVisible():
+                notice.setText("历史记录回算失败")
+                self._show_error("历史读取失败", details)
+
+        def view_record(row, column):
+            item = table.item(row, 0)
+            if item is None:
+                return
+            date = str(item.data(Qt.ItemDataRole.UserRole) or item.text())
+            try:
+                frame = self.backend.get_chart_data(code, date)
+                if frame.empty:
+                    return
+                plot = QDialog(dialog)
+                plot.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+                plot.setWindowTitle(f"{name} · {date} 触发日")
+                plot.resize(900, 620)
+                view = QVBoxLayout(plot)
+                chart = PriceChart()
+                chart.set_frame(frame, signal_date=date)
+                view.addWidget(chart)
+                plot.exec()
+            except Exception:
+                self._show_error("历史走势图失败", traceback.format_exc())
+
+        table.cellDoubleClicked.connect(view_record)
+        worker = HistoryWorker(self.backend, code, self.update_result.scan_date,
+                               self.current_filters)
+        worker.success.connect(display)
+        worker.failed.connect(fail)
+        self._remember(worker)
+        dialog.show()
+        worker.start()
 
     def _show_release_info(self):
-        QMessageBox.information(
-            self, "检查更新",
-            "这是独立 PySide6 开发预览，不会覆盖 v1.2.6 正式版。\n"
-            "请到 github.com/Xstime/AShareMAScanner/releases 查看正式版本。"
-        )
-
+        if self._version_worker is not None and self._version_worker.isRunning():
+            return
+        # VersionWorker calls fetch_latest_release() outside the Qt GUI thread.
+        worker = VersionWorker()
+        self._version_worker = worker
+        def ready(status, url):
+            if url:
+                box = QMessageBox(self)
+                newer_stable = "开发/未发布版本" in status
+                box.setWindowTitle("正式版本信息" if newer_stable else "发现新版本")
+                box.setText(status)
+                box.setInformativeText("只打开 GitHub Releases；不会覆盖程序或本地数据库。")
+                button = box.addButton("查看正式版" if newer_stable else "前往下载",
+                                       QMessageBox.ButtonRole.AcceptRole)
+                box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+                box.exec()
+                if box.clickedButton() == button:
+                    webbrowser.open(url)
+            else:
+                QMessageBox.information(self, "检查更新", status)
+        worker.success.connect(ready)
+        worker.failed.connect(lambda msg: QMessageBox.warning(self, "检查更新失败", msg))
+        self._remember(worker)
+        worker.start()
     def _show_error(self, title, details):
+        if not self.demo:
+            try:
+                DATA_DIR.mkdir(parents=True, exist_ok=True)
+                with (DATA_DIR / "scanner_error.log").open("a", encoding="utf-8") as log:
+                    log.write(f"\n[{datetime.now().isoformat(timespec='seconds')}] {title}\n{details}\n")
+            except OSError:
+                pass
         dialog = QDialog(self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dialog.setWindowTitle(title)
         dialog.resize(710, 410)
         layout = QVBoxLayout(dialog)
-        summary = QLabel("接口错误详情 / traceback（可复制用于排查）")
-        layout.addWidget(summary)
+        layout.addWidget(QLabel("错误详情 / traceback（可复制用于排查）"))
         txt = QPlainTextEdit()
         txt.setReadOnly(True)
         txt.setPlainText(details)
@@ -4427,7 +4861,6 @@ class ScannerWindow(QMainWindow):
         close.clicked.connect(dialog.accept)
         layout.addWidget(close)
         dialog.exec()
-
 
 
 def main():
@@ -4458,7 +4891,21 @@ def main():
             win.grab().save(args.screenshot)
             app.quit()
         QTimer.singleShot(900,save_and_quit)
-    return app.exec()
+    code = app.exec()
+    if win._restart_requested:
+        # The next Tkinter stage must not race the old process's database lock.
+        for worker in list(win.workers):
+            if worker.isRunning():
+                worker.wait(10000)
+        if backend is not None and backend._instance_lock_file is not None:
+            backend._instance_lock_file.close()
+            backend._instance_lock_file = None
+        win.close()
+        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        subprocess.Popen([sys.executable, str(Path(__file__).resolve())],
+                         stdin=subprocess.DEVNULL, creationflags=flags,
+                         cwd=str(Path(__file__).resolve().parent))
+    return code
 
 
 if __name__=="__main__":

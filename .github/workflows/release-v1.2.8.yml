@@ -1,11 +1,129 @@
-name: v1.2.8 publishing DISABLED (withdrawn)
+name: Publish repaired v1.2.8 (verify, replace draft assets, retag)
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/release-v1.2.8.yml'
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  withdrawn:
+  linux-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
-      - name: Do not publish recalled v1.2.8
-        run: echo "v1.2.8 is withdrawn; automatic and manual publication are disabled."
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Qt and Tk dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb python3-tk libegl1 libopengl0 libxkbcommon-x11-0 libxcb-cursor0
+          python -m pip install -r requirements.txt
+      - name: Compile and run 81 regression tests
+        shell: bash
+        run: |
+          python -m py_compile 'A股MA扫描器_v1.2.8.pyw'
+          for suite in test_hybrid_pyside6.py test_ths_top5_only.py test_three_stage_tk.py test_github_updates.py test_progress_visualizer.py test_startup_splash.py test_fund_sources.py test_v128_full_audit.py test_fresh_robustness.py test_live_sqlite_gui.py; do
+            QT_QPA_PLATFORM=offscreen xvfb-run -a python -m unittest discover -s tests -p "$suite" -v
+          done
+      - name: Render and validate PySide6 graphical workbench
+        run: |
+          QT_QPA_PLATFORM=offscreen xvfb-run -a python 'A股MA扫描器_v1.2.8.pyw' --demo --screenshot /tmp/v128.png
+          python - <<'PY'
+          from PySide6.QtGui import QImage
+          image = QImage("/tmp/v128.png")
+          assert not image.isNull() and (image.width(),image.height()) == (1120,840)
+          print("v1.2.8 Qt GUI screenshot verified at 1120x840")
+          PY
+  windows-tests:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Run native Windows Qt and SQLite regression suites
+        run: |
+          python -m py_compile "A股MA扫描器_v1.2.8.pyw"
+          python -m unittest discover -s tests -p "test_fresh_robustness.py" -v
+          python -m unittest discover -s tests -p "test_live_sqlite_gui.py" -v
+          python -m unittest discover -s tests -p "test_v128_full_audit.py" -v
+          python -m unittest discover -s tests -p "test_hybrid_pyside6.py" -v
+          python -m unittest discover -s tests -p "test_ths_top5_only.py" -v
+  publish:
+    name: Retag and republish existing v1.2.8 draft with fixed assets
+    needs: [linux-tests, windows-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify release is still draft and main is the tested commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$GITHUB_SHA"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/428114244" --jq '.draft')" = true
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/428114244" --jq '.tag_name')" = v1.2.8
+      - name: Package repaired source and zip (never package data folder)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output
+          cp "A股MA扫描器_v1.2.8.pyw" output/AShareMAScanner_v1.2.8.pyw
+          python - <<'PY'
+          from zipfile import ZipFile,ZIP_DEFLATED
+          with ZipFile("output/AShareMAScanner_v1.2.8.zip","w",ZIP_DEFLATED,compresslevel=9) as z:
+              for name in ("A股MA扫描器_v1.2.8.pyw","requirements.txt","README.md","RELEASE_NOTES_v1.2.8.md"):
+                  z.write(name,arcname=name)
+          with ZipFile("output/AShareMAScanner_v1.2.8.zip") as z:
+              assert z.testzip() is None
+              assert "A股MA扫描器_v1.2.8.pyw" in z.namelist()
+          PY
+          sha256sum output/*
+      - name: Replace old tag and old release attachments while release remains draft
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/v1.2.8" \
+            -f "sha=$GITHUB_SHA" -F force=true --jq '.object.sha'
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v1.2.8" --jq '.object.sha')" = "$GITHUB_SHA"
+          gh release upload v1.2.8 output/AShareMAScanner_v1.2.8.pyw \
+            output/AShareMAScanner_v1.2.8.zip --clobber --repo "$GITHUB_REPOSITORY"
+          python - <<'PY'
+          import json,os,subprocess
+          item=json.loads(subprocess.check_output([
+              "gh","api",f"repos/{os.environ['GITHUB_REPOSITORY']}/releases/428114244"]))
+          assert item["draft"], "Release must remain unpublished during asset replacement"
+          assets={x["name"]:x["size"] for x in item["assets"]}
+          for name in ("AShareMAScanner_v1.2.8.pyw","AShareMAScanner_v1.2.8.zip"):
+              size=os.stat("output/"+name).st_size
+              assert assets.get(name)==size, f"{name}: expected {size}, got {assets.get(name)}"
+          print("Verified new release asset names and byte sizes",assets)
+          PY
+      - name: Publish the repaired v1.2.8 as latest stable Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/428114244" \
+            -f "name=v1.2.8 修复版" \
+            -f "body=$(cat RELEASE_NOTES_v1.2.8.md)" \
+            -f "target_commitish=$GITHUB_SHA" \
+            -F draft=false -f make_latest=true --jq '{tag_name,draft,name,published_at}'
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/428114244" --jq '.draft')" = false
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name')" = v1.2.8
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v1.2.8" --jq '.object.sha')" = "$GITHUB_SHA"
+          echo "Published repaired v1.2.8; assets match the tested main commit"

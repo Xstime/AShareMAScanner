@@ -63,7 +63,7 @@ class TonghuashunRankTests(unittest.TestCase):
         self.assertEqual(self.calls,[("ths_rank","")])
         self.assertIn("同花顺",result)
         self.assertTrue(any("5/5" in m for m in notes))
-        with sqlite3.connect(self.backend.db_path) as conn:
+        with module.sqlite_connection(self.backend.db_path) as conn:
             self.assertEqual(conn.execute("select count(*) from fund_top5_member").fetchone()[0],0)
 
     def test_retries_once_and_preserves_old_cache_on_failure(self):
@@ -98,10 +98,10 @@ class TonghuashunRankTests(unittest.TestCase):
 
     def test_clears_members_left_by_old_versions(self):
         self.backend._fund_request=self.ranking
-        with sqlite3.connect(self.backend.db_path) as conn:
+        with module.sqlite_connection(self.backend.db_path) as conn:
             conn.execute("INSERT INTO fund_top5_member VALUES (?,?)",(1,"600001"))
         self.backend.refresh_fund_top5(force=True)
-        with sqlite3.connect(self.backend.db_path) as conn:
+        with module.sqlite_connection(self.backend.db_path) as conn:
             self.assertEqual(conn.execute("select count(*) from fund_top5_member").fetchone()[0],0)
 
     def test_rank_script_contains_no_other_providers_or_members(self):
