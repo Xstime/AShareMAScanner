@@ -1,4 +1,5 @@
 import importlib.util
+from importlib.machinery import SourceFileLoader
 import json
 import sys
 import types
@@ -8,8 +9,8 @@ from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 
 sys.modules['baostock'] = types.ModuleType('baostock')
-path = Path(__file__).resolve().parents[1] / 'A股MA扫描器_v1.2.6.py'
-spec = importlib.util.spec_from_file_location('release_checker_test', path)
+path = Path(__file__).resolve().parents[1] / 'A股MA扫描器_v1.2.6.pyw'
+spec = importlib.util.spec_from_loader('release_checker_test', SourceFileLoader('release_checker_test', str(path)))
 scanner = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = scanner
 spec.loader.exec_module(scanner)
