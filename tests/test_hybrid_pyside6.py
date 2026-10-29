@@ -58,6 +58,7 @@ class HybridQtTests(unittest.TestCase):
         self.assertFalse(self.win.volume_options.isHidden())
         self.win._select_strategy("ma5_turn_up")
         self.assertTrue(self.win.volume_options.isHidden())
+        self.win._select_strategy("ma_convergence_up")
         self.win.query.setText("演示科技")
         self.qt.processEvents()
         self.assertEqual(self.win.table.rowCount(),1)
