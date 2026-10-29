@@ -25,11 +25,17 @@ jobs:
       - name: Install Tk and Qt system libraries
         run: sudo apt-get update && sudo apt-get install -y xvfb python3-tk libegl1 libopengl0 libxkbcommon-x11-0 libxcb-cursor0
       - name: Install actual Python dependencies
-        run: python -m pip install pandas baostock akshare 'PySide6>=6.7,<7'
+        run: python -m pip install pandas baostock 'PySide6>=6.7,<7'
       - name: Generate standalone Pythonw source
         run: python tools/build_three_stage.py
       - name: Static syntax compilation
-        run: python -m py_compile A股MA扫描器_v1.2.8.pyw
+        run: |
+          python -m py_compile A股MA扫描器_v1.2.8.pyw
+          python -c "import importlib.util; assert importlib.util.find_spec('akshare') is None, 'Unexpected AKShare install'"
+      - name: Test lightweight HTML parser without external services
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest discover -s tests -p 'test_ths_lightweight.py' -v
       - name: Run Qt and THS-only backend unit tests
         env:
           QT_QPA_PLATFORM: offscreen
