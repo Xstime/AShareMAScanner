@@ -1601,9 +1601,9 @@ class BaoStockBackend:
     # -------------------- 近5日行业资金TOP5（来源自动选择） --------------------
 
     FUND_RANK_TIMEOUT=25
-    FUND_MEMBER_TIMEOUT=17
+    FUND_MEMBER_TIMEOUT=65  # 最大行业约30页：允许完整翻页，不能只收前20只
     FUND_MEMBER_FALLBACK_TIMEOUT=12
-    FUND_MEMBER_WORKERS=3
+    FUND_MEMBER_WORKERS=2  # 避免多行业密集请求触发公开网页限流
     FUND_JSON_PREFIX='__AShareMA_Fund_JSON__='
     FUND_CHILD=r"""
 import sys,akshare as ak
@@ -1621,11 +1621,69 @@ elif endpoint=='em_summary':
 elif endpoint=='em_members':
     data=ak.stock_board_industry_cons_em(symbol=sector)
     fields=['代码']
+elif endpoint=='ths_names':
+    # 同花顺官方行业名和行业代码一一对应，防止跨平台名称误映射。
+    data=ak.stock_board_industry_name_ths()
+    fields=['name','code']
 elif endpoint=='ths_members':
-    # AKShare 1.20.2 has a ranking API but no industry-cons API.
-    if not hasattr(ak, 'stock_board_industry_cons_ths'):
-        raise RuntimeError('当前 AKShare 没有 stock_board_industry_cons_ths 成分股接口；排名接口可能仍正常')
-    data=ak.stock_board_industry_cons_ths(symbol=sector)
+    # AKShare 1.20.2 已无 stock_board_industry_cons_ths。
+    # 公共行业详情页可按 /code/881xxx/page/N/ 翻页；不触碰需要登录的 AJAX 接口。
+    import re,time,requests,pandas as pd
+    from bs4 import BeautifulSoup
+    if not re.fullmatch(r'[0-9]{6}',sector):
+        raise ValueError('同花顺行业必须使用6位官方板块代码')
+    sess=requests.Session()
+    headers={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36',
+             'Referer':'https://q.10jqka.com.cn/thshy/'}
+    all_codes=set()
+    total_pages=None
+    for page in range(1,101):
+        suffix='' if page==1 else 'page/'+str(page)+'/'
+        url='https://q.10jqka.com.cn/thshy/detail/code/'+sector+'/'+suffix
+        response=sess.get(url,headers=headers,timeout=12)
+        response.raise_for_status()
+        soup=BeautifulSoup(response.text,'html.parser')
+        tables=[]
+        for table in soup.select('table'):
+            title=[cell.get_text(strip=True) for cell in table.select('thead th')]
+            if '代码' in title and '名称' in title:
+                tables.append(table)
+        if len(tables)!=1:
+            raise RuntimeError('同花顺行业表格缺失或页面受限')
+        page_codes=[]
+        for tr in tables[0].select('tbody tr'):
+            cells=tr.select('td')
+            if len(cells)>=3:
+                code=cells[1].get_text(strip=True)
+                if re.fullmatch(r'[0-9]{6}',code):
+                    page_codes.append(code)
+        if not page_codes or len(page_codes)!=len(set(page_codes)):
+            raise RuntimeError('同花顺行业第'+str(page)+'页为空或有重复代码')
+        pager=soup.select_one('.page_info')
+        if pager:
+            m=re.fullmatch(r'\s*(\d+)\s*/\s*(\d+)\s*',pager.get_text(strip=True))
+            if not m:
+                raise RuntimeError('同花顺行业页码格式发生变化')
+            current_page,reported_total=map(int,m.groups())
+            if current_page!=page or not 1<=reported_total<=100:
+                raise RuntimeError('同花顺行业页码与请求不一致')
+            if total_pages is None: total_pages=reported_total
+            if reported_total!=total_pages:
+                raise RuntimeError('同花顺行业抓取时页数发生变化')
+        elif page==1 and len(page_codes)<20:
+            # 少于20只的单页板块常不显示分页栏。
+            total_pages=1
+        elif page!=total_pages:
+            raise RuntimeError('同花顺行业非末页缺少页码，拒绝不完整数据')
+        if all_codes.intersection(page_codes):
+            raise RuntimeError('同花顺行业分页重复，拒绝不完整数据')
+        all_codes.update(page_codes)
+        if total_pages is not None and page==total_pages:
+            break
+        time.sleep(0.20)
+    else:
+        raise RuntimeError('同花顺行业超过100页，未验证完整性')
+    data=pd.DataFrame({'代码':sorted(all_codes)})
     fields=['代码']
 else:
     raise ValueError('unknown endpoint')
@@ -1636,7 +1694,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
 
     @classmethod
     def _fund_request(cls,endpoint,sector='',timeout=20):
-        if endpoint not in ('em_rank','ths_rank','em_summary','em_members','ths_members'):
+        if endpoint not in ('em_rank','ths_rank','ths_names','em_summary','em_members','ths_members'):
             raise ValueError('invalid fund endpoint')
         args=[sys.executable,'-c',cls.FUND_CHILD,endpoint]
         if sector: args.append(sector)
@@ -1668,7 +1726,9 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
         errors=[]
         for endpoint,limit in endpoints:
             try:
-                frame=self._fund_request(endpoint,industry,limit)
+                source_sector=(self._ths_sector_codes.get(industry,industry)
+                               if source=='同花顺' else industry)
+                frame=self._fund_request(endpoint,source_sector,limit)
                 if frame.empty or '代码' not in frame.columns:
                     raise RuntimeError('无成分股')
                 symbols={code for value in frame['代码']
@@ -1765,6 +1825,18 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
             for rank,name,amount,stamp,src in rows
         ]
         notify(f'{source} · 行业资金排名 5/5 已获取，开始核对成分股')
+        if source=='同花顺':
+            notify('同花顺 · 查询行业名称与代码对应表…')
+            names=self._fund_request('ths_names',timeout=self.FUND_RANK_TIMEOUT)
+            if names.empty or not {'name','code'}.issubset(names.columns):
+                raise RuntimeError('同花顺行业代码表缺失')
+            self._ths_sector_codes={
+                str(row['name']).strip():str(row['code']).strip()
+                for _,row in names.iterrows()}
+            unmatched=[industry for _,industry,_,_,_ in rows
+                       if industry not in self._ths_sector_codes]
+            if unmatched:
+                raise RuntimeError('同花顺资金行业无法匹配其官方行业代码：'+str(unmatched))
         members=[]
         errors=[]
         successful=0
