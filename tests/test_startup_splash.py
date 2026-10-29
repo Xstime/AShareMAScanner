@@ -53,6 +53,21 @@ class StartupSplashTests(unittest.TestCase):
         self.assertIsNone(self.app.splash_window)
         self.assertEqual(self.root.state(),'normal')
 
+    def test_live_stage_count_and_visual_markers(self):
+        self.app._set_progress(80.0,'更新 2026-10-29 · 1/500 · 600001')
+        self.assertEqual(self.app.splash_stage_var.get(),'每日行情更新')
+        self.assertEqual(self.app.splash_step_var.get(),'第 5 / 8 阶段')
+        self.assertIn('已处理 0 / 500 只',self.app.splash_count_var.get())
+        self.assertIn('600001',self.app.splash_count_var.get())
+        self.assertEqual(self.app.splash_stage_progress_var.get(),0)
+        self.assertTrue(self.app.splash_phase_labels[0].cget('text').startswith('✓'))
+        self.assertTrue(self.app.splash_phase_labels[4].cget('text').startswith('●'))
+        self.app._set_progress(87.0,'更新 2026-10-29 · 251/500 · 600002')
+        self.assertIn('250 / 500',self.app.splash_count_var.get())
+        self.assertEqual(self.app.splash_stage_progress_var.get(),50)
+        self.app._set_progress(94,'没有新的交易日')
+        self.assertEqual(self.app.splash_stage_progress_var.get(),100)
+
     def test_failure_remains_in_splash_and_retry(self):
         self.app._busy=True
         self.app._handle_error('模拟网络异常','mock traceback')
