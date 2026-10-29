@@ -251,5 +251,22 @@ class Backend(unittest.TestCase):
         self.assertEqual(state["status"],"partial")
         self.assertNotIn("sh.600000",self.b.get_existing_codes_for_date(d))
 
+    def test_20_connections_release_windows_handle_and_rollback(self):
+        """Connections must close after both commit and rollback; Windows may then rename DB."""
+        path=self.b.db_path
+        with mod.sqlite_connection(path) as c:
+            c.execute("INSERT INTO industry_cache(code,name,industry) VALUES(?,?,?)",
+                      ("sh.600000","A","银行"))
+        with self.assertRaises(ValueError):
+            with mod.sqlite_connection(path) as c:
+                c.execute("INSERT INTO industry_cache(code,name,industry) VALUES(?,?,?)",
+                          ("sh.600001","B","银行"))
+                raise ValueError("rollback")
+        with mod.sqlite_connection(path) as c:
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM industry_cache").fetchone()[0],1)
+        moved=path.with_name("relocated.db")
+        path.rename(moved)
+        moved.rename(path)
+
 if __name__=="__main__":
     unittest.main(verbosity=2)
