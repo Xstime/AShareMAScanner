@@ -51,5 +51,7 @@ jobs:
           git add docs/pyside6-preview.png
           if ! git diff --cached --quiet; then
             git commit -m "Update PySide6 screenshot from real offscreen Qt renderer"
+            git fetch origin dev/v1.2.7-pyside6
+            git rebase origin/dev/v1.2.7-pyside6
             git push origin HEAD:dev/v1.2.7-pyside6
           fi
