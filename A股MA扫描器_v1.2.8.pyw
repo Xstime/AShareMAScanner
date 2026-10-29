@@ -1067,7 +1067,8 @@ class BaoStockBackend:
             existing = conn.execute("""
                 SELECT code
                 FROM daily
-                WHERE trade_status=1
+                WHERE trade_status=1 AND close > 0 AND close < 1.0e308
+                  AND volume IS NOT NULL AND volume >= 0 AND volume < 1.0e308
                 GROUP BY code
                 HAVING COUNT(*) >= 23
             """).fetchall()
@@ -1085,7 +1086,8 @@ class BaoStockBackend:
                 SELECT code
                 FROM daily
                 WHERE trade_date=? AND trade_status=1
-                  AND close > 0 AND volume IS NOT NULL AND volume >= 0
+                  AND close > 0 AND close < 1.0e308
+                  AND volume IS NOT NULL AND volume >= 0 AND volume < 1.0e308
             """, (trade_date,)).fetchall()
 
         return {r[0] for r in rows}
@@ -1124,6 +1126,8 @@ class BaoStockBackend:
             row = conn.execute("""
                 SELECT MAX(trade_date)
                 FROM daily
+                WHERE trade_status=1 AND close > 0 AND close < 1.0e308
+                  AND volume IS NOT NULL AND volume >= 0 AND volume < 1.0e308
             """).fetchone()
 
         return row[0] if row and row[0] else None
@@ -1166,8 +1170,8 @@ class BaoStockBackend:
                 INNER JOIN daily AS d
                     ON d.code=u.code AND d.trade_date=u.trade_date
                 WHERE u.trade_date=? AND u.trade_status=1
-                  AND d.trade_status=1 AND d.close > 0
-                  AND d.volume IS NOT NULL AND d.volume >= 0
+                  AND d.trade_status=1 AND d.close > 0 AND d.close < 1.0e308
+                  AND d.volume IS NOT NULL AND d.volume >= 0 AND d.volume < 1.0e308
             """, (trade_date,)).fetchone()[0]
 
             # 以前失败、现在已写入成功行情的项目，应自动清理队列。
@@ -1178,8 +1182,8 @@ class BaoStockBackend:
                     SELECT 1 FROM daily AS d
                     WHERE d.code=fetch_queue.code
                       AND d.trade_date=fetch_queue.trade_date
-                      AND d.trade_status=1 AND d.close > 0
-                      AND d.volume IS NOT NULL AND d.volume >= 0
+                      AND d.trade_status=1 AND d.close > 0 AND d.close < 1.0e308
+                      AND d.volume IS NOT NULL AND d.volume >= 0 AND d.volume < 1.0e308
                   )
             """, (trade_date,))
             failed = conn.execute("""
@@ -4595,16 +4599,20 @@ class ScannerWindow(QMainWindow):
     def _stock_selected(self):
         selected = self.table.selectedItems()
         if not selected:
+            self._clear_stock()
             return
         row = selected[0].row()
         if row < 0:
+            self._clear_stock()
             return
         code_item = self.table.item(row, 0)
         if code_item is None:
+            self._clear_stock()
             return
         full_code = code_item.data(Qt.ItemDataRole.UserRole)
         matching = self.filtered.loc[self.filtered["_code_full"].astype(str) == full_code]
         if matching.empty:
+            self._clear_stock()
             return
         record = matching.iloc[0]
         self.selected_stock = record
