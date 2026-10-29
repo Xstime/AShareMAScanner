@@ -4137,6 +4137,141 @@ class StockScannerApp:
         attach_sector_tip(self.tree)
         attach_sector_tip(self.sector_tree)
 
+    def _build_stock_inspector(self):
+        """右侧真实股票信息面板，与实际 Treeview 选择和本地日线数据联动。"""
+        side = self.inspector_panel
+        self._inspector_seq = 0
+        self._inspector_frame = pd.DataFrame()
+        self._inspector_signal_date = None
+        ttk.Label(side, text="股票详情", style="InspectorSubtle.TLabel"
+                  ).pack(fill="x")
+        self.inspector_name_var = tk.StringVar(value="请选择股票")
+        self.inspector_code_var = tk.StringVar(value="选择列表行即可查看走势图")
+        self.inspector_price_var = tk.StringVar(value="—")
+        self.inspector_change_var = tk.StringVar(value="")
+        ttk.Label(side, textvariable=self.inspector_name_var,
+                  style="InspectorTitle.TLabel", wraplength=220,
+                  ).pack(fill="x", pady=(10, 2))
+        ttk.Label(side, textvariable=self.inspector_code_var,
+                  style="InspectorSubtle.TLabel", wraplength=220,
+                  ).pack(fill="x")
+        tk.Label(side, textvariable=self.inspector_price_var,
+                 font=("Segoe UI", 22, "bold"), bg="#ffffff",
+                 fg="#1d2735", anchor="w").pack(fill="x", pady=(16, 2))
+        tk.Label(side, textvariable=self.inspector_change_var,
+                 font=("Segoe UI", 11, "bold"), bg="#ffffff",
+                 fg="#dc4b5a", anchor="w").pack(fill="x")
+
+        ttk.Separator(side).pack(fill="x", pady=(14, 10))
+        ttk.Label(side, text="最近 30 个有效交易日",
+                  style="InspectorSubtle.TLabel").pack(fill="x")
+        self.inspector_chart = tk.Canvas(side, height=215, bg="#ffffff",
+                                         highlightthickness=0)
+        self.inspector_chart.pack(fill="x", pady=(7, 4))
+        self.inspector_chart.bind("<Configure>", self._redraw_inspector_chart)
+        legend = ttk.Frame(side, style="Inspector.TFrame")
+        legend.pack(fill="x", pady=(0, 17))
+        for title, color in (("● 收盘", "#1d2735"), ("● MA5", "#2f6fed"),
+                             ("● MA10", "#d17b00"), ("● MA20", "#7b4ab5")):
+            tk.Label(legend, text=title, fg=color, bg="#ffffff",
+                     font=("Segoe UI", 8)).pack(side="left", padx=(0, 6))
+        ttk.Label(side, text="策略指标", style="InspectorTitle.TLabel"
+                  ).pack(fill="x", pady=(0, 9))
+        self.inspector_metric_vars = []
+        for title in ("放量倍数", "换手率", "触发日"):
+            metric = tk.StringVar(value="—")
+            line = ttk.Frame(side, style="Inspector.TFrame")
+            line.pack(fill="x", pady=5)
+            tk.Label(line, text=title, bg="#ffffff", fg="#758196",
+                     font=("Segoe UI", 10)).pack(side="left")
+            tk.Label(line, textvariable=metric, bg="#ffffff", fg="#1d2735",
+                     font=("Segoe UI", 10, "bold")).pack(side="right")
+            self.inspector_metric_vars.append(metric)
+        ttk.Separator(side).pack(fill="x", pady=(14, 11))
+        ttk.Button(side, text="查看完整走势图", command=self._open_selected_chart
+                   ).pack(fill="x", pady=(0, 7))
+        ttk.Button(side, text="信号历史", command=self._open_selected_history
+                   ).pack(fill="x")
+        self.inspector_status_var = tk.StringVar(value="数据来自本地 SQLite")
+        ttk.Label(side, textvariable=self.inspector_status_var,
+                  style="InspectorSubtle.TLabel", wraplength=220
+                  ).pack(fill="x", pady=(13, 0))
+
+    def _on_stock_selection(self, _event=None):
+        """用户换股后异步查询本地走势图，避免阻塞列表滚动和策略切换。"""
+        selected = self.tree.selection()
+        self._inspector_seq += 1
+        token = self._inspector_seq
+        self._inspector_frame = pd.DataFrame()
+        if not selected:
+            self.inspector_name_var.set("请选择股票")
+            self.inspector_code_var.set("选择列表行即可查看走势图")
+            self.inspector_price_var.set("—")
+            self.inspector_change_var.set("")
+            for var in self.inspector_metric_vars:
+                var.set("—")
+            self.inspector_status_var.set("数据来自本地 SQLite")
+            self._redraw_inspector_chart()
+            return
+        iid = selected[0]
+        tags = self.tree.item(iid, "tags")
+        if not tags:
+            return
+        code_full = str(tags[0])
+        name = str(self.tree.set(iid, "名称"))
+        code = str(self.tree.set(iid, "代码"))
+        trigger_date = str(self.tree.set(iid, "触发日"))
+        price = str(self.tree.set(iid, "收盘价"))
+        change = str(self.tree.set(iid, "当日涨幅%"))
+        volume = str(self.tree.set(iid, "放量倍数"))
+        turnover = str(self.tree.set(iid, "换手率%"))
+        self.inspector_name_var.set(name)
+        self.inspector_code_var.set(f"{code} · {self.tree.set(iid, '板块')}")
+        self.inspector_price_var.set(price)
+        self.inspector_change_var.set(f"涨幅 {change}%")
+        for var, value in zip(self.inspector_metric_vars,
+                              (f"{volume}×", f"{turnover}%", trigger_date)):
+            var.set(value)
+        self._inspector_signal_date = trigger_date
+        self.inspector_status_var.set("正在读取本地走势图…")
+        self._redraw_inspector_chart()
+        end = self.update_result.scan_date if self.update_result else trigger_date
+
+        def worker():
+            try:
+                data = self.backend.get_chart_data(code_full, end)
+                self.events.put(("inspector_done", token, data, ""))
+            except Exception as exc:
+                self.events.put(("inspector_done", token, pd.DataFrame(), str(exc)))
+        threading.Thread(target=worker, name="stock-inspector",
+                         daemon=True).start()
+
+    def _handle_inspector_done(self, token, data, error):
+        if token != self._inspector_seq:
+            return
+        self._inspector_frame = data
+        self.inspector_status_var.set(
+            f"走势图读取失败：{error[:90]}" if error else
+            ("本地暂无可绘制行情" if data.empty else "价格与均线 · 本地行情"))
+        self._redraw_inspector_chart()
+
+    def _redraw_inspector_chart(self, _event=None):
+        if not hasattr(self, "inspector_chart"):
+            return
+        canvas = self.inspector_chart
+        if self._inspector_frame.empty:
+            canvas.delete("all")
+            canvas.create_text(max(canvas.winfo_width(), 220)/2, 100,
+                               text="选择股票查看走势图", fill="#9ca3af",
+                               font=("Segoe UI", 9))
+            return
+        self._draw_series_chart(
+            canvas, self._inspector_frame,
+            {"close": "#1d2735", "MA5": "#2f6fed",
+             "MA10": "#d17b00", "MA20": "#7b4ab5"},
+            signal_date=self._inspector_signal_date,
+        )
+
     def _refresh_strategy_selection(self):
         for key, btn in self.strategy_button_by_key.items():
             btn.configure(style='SelectedNav.TButton' if key == self.current_strategy_key else 'Nav.TButton')
@@ -4433,6 +4568,10 @@ class StockScannerApp:
                     _, message = event
                     self._fund_fetch_in_progress = False
                     self._display_fund_top5(message)
+
+                elif kind == "inspector_done":
+                    _, token, data, error = event
+                    self._handle_inspector_done(token, data, error)
 
                 elif kind == "history_done":
                     _, token, frame, error = event
