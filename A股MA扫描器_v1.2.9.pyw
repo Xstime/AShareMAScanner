@@ -3971,7 +3971,12 @@ def run_tk_data_phase(backend=None, *, autostart=True):
     try:
         root.mainloop()
     finally:
-        root.destroy()
+        # Tk can already be destroyed by the OS/window manager during a stop.
+        try:
+            if root.winfo_exists():
+                root.destroy()
+        except _tk.TclError:
+            pass
     if state["aborted"] or state["success"] is None:
         return None
     return engine_backend,state["success"]
