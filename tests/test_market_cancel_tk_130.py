@@ -22,21 +22,46 @@ spec.loader.exec_module(module)
 
 OriginalTk = tk.Tk
 
-class ClosingTk(OriginalTk):
-    def protocol(self, name=None, func=None):
-        result=super().protocol(name,func)
-        if name=="WM_DELETE_WINDOW" and func:
-            # Simulate clicking X while the background work is still active.
-            self.after(450,func)
-        return result
-
 class CancelTkTests(unittest.TestCase):
     def test_second_stage_close_interrupts_without_force_killing_writer(self):
         cancelled=threading.Event()
         finished=threading.Event()
+        started=threading.Event()
         received=[]
+        class ClosingTk(OriginalTk):
+            def mainloop(self, n=0):
+                # Drive the genuine Tcl event queue deterministically under
+                # CI/Xvfb, independent of any window manager that might
+                # terminate Tk's native mainloop before autostart.
+                self._test_loop_quit = False
+                deadline = time.monotonic()+6
+                while not self._test_loop_quit and time.monotonic()<deadline:
+                    try:
+                        self.update()
+                    except tk.TclError:
+                        break
+                    time.sleep(.01)
+
+            def quit(self):
+                self._test_loop_quit = True
+                return super().quit()
+
+            def protocol(self, name=None, func=None):
+                result=super().protocol(name,func)
+                if name=="WM_DELETE_WINDOW" and func:
+                    deadline=time.monotonic()+5
+                    def click_when_running():
+                        if started.is_set():
+                            func()
+                        elif time.monotonic()<deadline:
+                            self.after(60,click_when_running)
+                        else:
+                            self.quit()
+                    self.after(250,click_when_running)
+                return result
         class Backend:
             def update_all(self, cb):
+                started.set()
                 cb(84.4,"更新 2026-10-27 · 1331/5215 · sh.603520")
                 if not cancelled.wait(6):
                     raise RuntimeError("Tk cancel request was not delivered")
