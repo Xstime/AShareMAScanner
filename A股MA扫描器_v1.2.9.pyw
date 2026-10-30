@@ -871,7 +871,8 @@ _DAY_POOL_LOGIN_MONO = 0.0
 def _day_pool_fetch(task):
     """Return raw BaoStock K-lines; the parent validates and persists them."""
     global _DAY_POOL_LOGIN_MONO
-    code, name, trade_date = task
+    code, name, trade_date = task[:3]
+    end_date = task[3] if len(task) > 3 else trade_date
     error = None
     for attempt in range(1, QUERY_RETRY + 1):
         try:
@@ -887,7 +888,7 @@ def _day_pool_fetch(task):
                 _DAY_POOL_LOGIN_MONO = time.monotonic()
             rs = bs.query_history_k_data_plus(
                 code, BaoStockBackend.HISTORY_FIELDS,
-                start_date=trade_date, end_date=trade_date,
+                start_date=trade_date, end_date=end_date,
                 frequency="d", adjustflag=ADJUST_FLAG,
             )
             if rs.error_code != "0":
@@ -2269,72 +2270,125 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
         start_p: float,
         end_p: float,
     ):
-        trade_dates = self.recent_n_trade_dates(
-            latest_date,
-            INITIAL_TRADING_DAYS,
-        )
+        trade_dates = self.recent_n_trade_dates(latest_date, INITIAL_TRADING_DAYS)
         start_date = trade_dates[0]
-
         ready_codes = self.get_history_ready_codes()
-
-        todo = latest_stocks[
-            ~latest_stocks["code"].isin(ready_codes)
-        ].copy()
+        todo = latest_stocks[~latest_stocks["code"].isin(ready_codes)].copy()
 
         if todo.empty:
             cb(end_p, "历史缓存已就绪")
             return
 
-        total = len(todo)
+        tasks = [(str(r.code), str(r.name or ""), start_date, latest_date)
+                 for r in todo.itertuples(index=False)]
+        total = len(tasks)
+        completed = set()
+        began = time.monotonic()
+        consecutive_errors = 0
 
+        def record(conn, code, name, fields=None, values=None, error=""):
+            nonlocal consecutive_errors
+            self._check_cancel(conn)
+            if code in completed:
+                return
+            try:
+                if error:
+                    raise RuntimeError(error)
+                if fields is None:
+                    df = self.query_stock_history(code, start_date, latest_date)
+                else:
+                    df = pd.DataFrame(values, columns=fields)
+                rows = self.dataframe_to_daily_rows(df, name)
+                rows = [row for row in rows if row[0] == code
+                        and start_date <= row[1] <= latest_date]
+                if not rows:
+                    raise RuntimeError("历史初始化返回空数据")
+                self.upsert_daily_rows(conn, rows)
+                self.mark_history_ready(conn, code, name)
+                consecutive_errors = 0
+            except Exception as exc:
+                consecutive_errors += 1
+                self.queue_init_failure(
+                    conn, code, name, start_date, latest_date, exc)
+            completed.add(code)
+            elapsed = time.monotonic() - began
+            eta = ""
+            if len(completed) >= 10:
+                sec = int(elapsed / len(completed) * (total-len(completed)))
+                hours, mins = divmod(sec // 60, 60)
+                eta = f" · 预计剩余 {hours}小时{mins:02d}分"
+            self.stage_progress(cb, start_p, end_p, len(completed), total,
+                                f"初始化历史 {len(completed)}/{total} · "
+                                f"{self.symbol_only(code)}{eta}")
+            if len(completed) % BATCH_SIZE == 0:
+                conn.commit()
+            if consecutive_errors >= 25:
+                conn.commit()
+                raise MarketDataUnavailable(
+                    "历史初始化连续25只股票下载失败，已安全停止；"
+                    "已获取数据仍保留，下次启动可继续")
+
+        can_parallel = (
+            total >= DAILY_PARALLEL_THRESHOLD
+            and getattr(self.query_stock_history, "__func__", None)
+                is BaoStockBackend.query_stock_history
+            and not getattr(sys, "frozen", False)
+            and os.environ.get("ASHARE_MA_FETCH_WORKERS", "3") != "1"
+        )
         with sqlite_connection(self.db_path, timeout=30) as conn:
-            for idx, r in enumerate(
-                todo.itertuples(index=False),
-                start=1,
-            ):
-                self._check_cancel(conn)
-                code = str(r.code)
-                name = str(r.name or "")
-
-                self.stage_progress(
-                    cb,
-                    start_p,
-                    end_p,
-                    idx - 1,
-                    total,
-                    f"初始化历史 {idx}/{total} · {self.symbol_only(code)}",
-                )
-
+            if can_parallel:
+                pool = None
                 try:
-                    df = self.query_stock_history(
-                        code,
-                        start_date,
-                        latest_date,
-                    )
-                    rows = self.dataframe_to_daily_rows(df, name)
-
-                    if not rows:
-                        raise RuntimeError("历史初始化返回空数据")
-
-                    self.upsert_daily_rows(conn, rows)
-                    self.mark_history_ready(conn, code, name)
-
-                except Exception as exc:
-                    self.queue_init_failure(
-                        conn,
-                        code,
-                        name,
-                        start_date,
-                        latest_date,
-                        exc,
-                    )
-
-                if idx % BATCH_SIZE == 0:
+                    workers = max(2, min(4, int(
+                        os.environ.get("ASHARE_MA_FETCH_WORKERS", str(DAILY_PARALLEL_WORKERS)))))
+                    cb(start_p, f"历史缓存 · 使用 {workers} 条独立 BaoStock 连接")
+                    pool = multiprocessing.get_context("spawn").Pool(
+                        processes=workers, maxtasksperchild=400)
+                    stream = pool.imap_unordered(_day_pool_fetch, tasks, chunksize=1)
+                    early_errors = []
+                    early_success = 0
+                    for _ in tasks:
+                        started_waiting = time.monotonic()
+                        while True:
+                            self._check_cancel(conn)
+                            try:
+                                code, name, fields, values, error = stream.next(timeout=1)
+                                break
+                            except multiprocessing.TimeoutError:
+                                if time.monotonic() - started_waiting >= DAILY_WORKER_STALL_SECONDS:
+                                    raise TimeoutError("历史 BaoStock 并行请求长期无响应")
+                        if len(completed) < 12:
+                            if error:
+                                early_errors.append(code)
+                            else:
+                                early_success += 1
+                        record(conn, code, name, fields, values, error)
+                        if len(completed) == 12 and early_success == 0:
+                            for retry_code in early_errors:
+                                completed.discard(retry_code)
+                            consecutive_errors = 0
+                            raise RuntimeError("并行历史连接全部失败")
+                    pool.close()
+                    pool.join()
+                    pool = None
+                except (MarketUpdateCancelled, MarketDataUnavailable):
                     conn.commit()
+                    raise
+                except Exception as exc:
+                    cb(start_p + (end_p-start_p)*len(completed)/total,
+                       f"并行历史初始化异常，逐股恢复剩余 {total-len(completed)} 只：{str(exc)[:80]}")
+                finally:
+                    if pool is not None:
+                        pool.terminate()
+                        pool.join()
+            for code, name, _, _ in tasks:
+                self._check_cancel(conn)
+                if code in completed:
+                    continue
+                record(conn, code, name)
+                if len(completed) % BATCH_SIZE == 0:
                     time.sleep(BATCH_PAUSE)
-
             conn.commit()
-
         cb(end_p, "历史缓存初始化完成")
 
     # -------------------- 单日增量 --------------------
