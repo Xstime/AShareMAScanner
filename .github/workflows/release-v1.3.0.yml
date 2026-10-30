@@ -1,0 +1,129 @@
+name: Publish v1.3.0 fast and safe market scanner after Windows/Linux checks
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/release-v1.3.0.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb python3-tk libegl1 libopengl0 libxkbcommon-x11-0 libxcb-cursor0
+          python -m pip install -r requirements.txt
+      - name: Compile and regression test fixed scanner plus update helper
+        run: |
+          python -m py_compile 'A股MA扫描器_v1.3.0.pyw'
+          for suite in test_spawn_isolation_130.py test_day_parallel_speed_130.py test_market_cancel_tk_130.py test_manual_self_update_130.py test_fresh_robustness_130.py test_live_sqlite_gui_130.py test_v130_full_audit.py; do
+            xvfb-run -a python -m unittest discover -s tests -p "$suite" -v
+          done
+      - name: Render actual v1.3.0 user interface
+        run: |
+          xvfb-run -a python 'A股MA扫描器_v1.3.0.pyw' --demo --screenshot /tmp/v130.png
+          python - <<'PY'
+          from PySide6.QtGui import QImage
+          image=QImage("/tmp/v130.png")
+          assert not image.isNull() and (image.width(),image.height())==(1120,840)
+          PY
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+      - name: Verify physical Windows update and old-file deletion
+        run: |
+          python -m py_compile "A股MA扫描器_v1.3.0.pyw"
+          python -m unittest discover -s tests -p "test_spawn_isolation_130.py" -v
+          python -m unittest discover -s tests -p "test_day_parallel_speed_130.py" -v
+          python -m unittest discover -s tests -p "test_manual_self_update_130.py" -v
+          python -m unittest discover -s tests -p "test_fresh_robustness_130.py" -v
+          python -m unittest discover -s tests -p "test_live_sqlite_gui_130.py" -v
+          python -m unittest discover -s tests -p "test_v130_full_audit.py" -v
+  publish:
+    needs: [linux,windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Confirm tested main and unused v1.3.0 tag
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$GITHUB_SHA"
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v1.3.0" > /dev/null 2>&1; then
+            echo "::error::v1.3.0 tag already exists; not overwriting a published version"
+            exit 1
+          fi
+      - name: Build fully source-equivalent release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output
+          cp 'A股MA扫描器_v1.3.0.pyw' output/AShareMAScanner_v1.3.0.pyw
+          python - <<'PY'
+          from zipfile import ZipFile,ZIP_DEFLATED
+          with ZipFile("output/AShareMAScanner_v1.3.0.zip","w",ZIP_DEFLATED,compresslevel=9) as z:
+              for name in ("A股MA扫描器_v1.3.0.pyw","requirements.txt","README.md","RELEASE_NOTES_v1.3.0.md"):
+                  z.write(name,name)
+          with ZipFile("output/AShareMAScanner_v1.3.0.zip") as z:
+              assert z.testzip() is None
+          PY
+          sha256sum output/*
+      - name: Create DRAFT release with both assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create v1.3.0 output/AShareMAScanner_v1.3.0.pyw \
+            output/AShareMAScanner_v1.3.0.zip \
+            --draft --title "v1.3.0 · 行情提速与安全续传" \
+            --notes-file RELEASE_NOTES_v1.3.0.md \
+            --target "$GITHUB_SHA" --repo "$GITHUB_REPOSITORY"
+      - name: Verify draft asset hashes and file sizes against tested source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,os,subprocess
+          repo=os.environ["GITHUB_REPOSITORY"]
+          published=json.loads(subprocess.check_output(["gh","api",f"repos/{repo}/releases?per_page=100"]))
+          release=next(r for r in published if r["tag_name"]=="v1.3.0")
+          assert release["draft"] is True
+          assert release["tag_name"] == "v1.3.0"
+          assets={a["name"]:a for a in release["assets"]}
+          for name in ("AShareMAScanner_v1.3.0.pyw","AShareMAScanner_v1.3.0.zip"):
+              raw=open("output/"+name,"rb").read()
+              a=assets[name]
+              assert a["size"] == len(raw)
+              assert a["digest"] == "sha256:"+hashlib.sha256(raw).hexdigest(), name
+          print("Draft file hashes and sizes verified before publication.")
+          PY
+      - name: Publish v1.3.0 as latest official version
+        run: |
+          set -euo pipefail
+          gh release edit v1.3.0 --draft=false --latest --repo "$GITHUB_REPOSITORY"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name')" = v1.3.0
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v1.3.0" --jq '.object.sha')" = "$GITHUB_SHA"
+          echo "Successfully published v1.3.0 with verified tag and assets"
