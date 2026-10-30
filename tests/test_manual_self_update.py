@@ -44,10 +44,10 @@ class UpdateTesting(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory()
         self.root=Path(self.temp.name)
         self.local=self.root/"A股MA扫描器_v1.2.9.pyw"
-        self.local.write_text("APP_VERSION = '1.2.9'\\n",encoding="utf8")
+        self.local.write_text("APP_VERSION = '1.2.9'\n",encoding="utf8")
         self.release_url="https://github.com/Xstime/AShareMAScanner/releases/download/v1.2.9/AShareMAScanner_v1.2.9.pyw"
-        self.source=b'APP_VERSION = "1.2.9"\\ndef main():\\n    return "--update-ack"\\n'
-        self.source=self.source.replace(b"\\\\n",b"\\n")
+        self.source=b'APP_VERSION = "1.2.9"\ndef main():\n    return "--update-ack"\n'
+        self.source=self.source.replace(b"\\\n",b"\n")
     def tearDown(self):self.temp.cleanup()
     def api(self,tag="v1.2.9",source=None,sha=None,size=None,url=None,draft=False):
         source=self.source if source is None else source
@@ -91,12 +91,12 @@ class UpdateTesting(unittest.TestCase):
             message,candidate=scanner.prepare_manual_update(self.local)
         self.assertIsNotNone(candidate)
         self.assertEqual(Path(candidate).read_bytes(),self.source)
-        self.assertEqual(self.local.read_text(), "APP_VERSION = '1.2.9'\\n")
+        self.assertEqual(self.local.read_text(), "APP_VERSION = '1.2.9'\n")
         candidate.unlink()
 
     def test_new_version_staged_by_content_hash_and_syntax(self):
-        new=b'APP_VERSION = "1.2.10"\\ndef main():\\n    return "--update-ack"\\n'
-        new=new.replace(b"\\\\n",b"\\n")
+        new=b'APP_VERSION = "1.2.10"\ndef main():\n    return "--update-ack"\n'
+        new=new.replace(b"\\\n",b"\n")
         url=self.release_url.replace("v1.2.9","v1.2.10")
         with patch.object(scanner.urllib.request,"urlopen",
                           side_effect=self.api(tag="v1.2.10",source=new,url=url)):
@@ -134,13 +134,13 @@ class UpdateTesting(unittest.TestCase):
                 scanner.prepare_manual_update(self.local)
 
     def test_bad_python_syntax_never_replaces_original(self):
-        bad=b'APP_VERSION = "1.2.9"\\ndef main():\\n    broken = (\\n# --update-ack\\n'
-        bad=bad.replace(b"\\\\n",b"\\n")
+        bad=b'APP_VERSION = "1.2.9"\ndef main():\n    broken = (\n# --update-ack\n'
+        bad=bad.replace(b"\\\n",b"\n")
         with patch.object(scanner.urllib.request,"urlopen",
                           side_effect=self.api(source=bad)):
             with self.assertRaisesRegex(RuntimeError,"编译"):
                 scanner.prepare_manual_update(self.local)
-        self.assertEqual(self.local.read_text(),"APP_VERSION = '1.2.9'\\n")
+        self.assertEqual(self.local.read_text(),"APP_VERSION = '1.2.9'\n")
         self.assertEqual(list(self.root.glob(".ashare-update-*")),[])
 
     def test_backup_guard_prevents_overwriting_existing_rollback(self):
@@ -183,7 +183,7 @@ import time;time.sleep(1)
         self.assertFalse(staged.exists())
 
     def test_helper_rolls_back_on_new_process_failure(self):
-        proc,old,staged,backup,ack=self.run_helper("raise RuntimeError('boot failed')\\n")
+        proc,old,staged,backup,ack=self.run_helper("raise RuntimeError('boot failed')\n")
         self.assertNotEqual(proc.returncode,0)
         self.assertEqual(old.read_text(),"old version")
         self.assertFalse(backup.exists())
