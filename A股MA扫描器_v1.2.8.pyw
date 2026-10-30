@@ -89,6 +89,7 @@ from __future__ import annotations
 
 import math
 import json
+import hashlib
 import os
 import stat
 import tempfile
@@ -100,6 +101,7 @@ import time
 import traceback
 import urllib.request
 import urllib.error
+import urllib.parse
 import webbrowser
 import subprocess
 import sys
@@ -378,6 +380,224 @@ APP_TITLE = "A股 MA 扫描器"
 APP_VERSION = "1.2.8"
 RELEASE_API = "https://api.github.com/repos/Xstime/AShareMAScanner/releases/latest"
 RELEASES_PAGE = "https://github.com/Xstime/AShareMAScanner/releases"
+
+# Manual updates are downloaded to a sibling temporary .pyw. The old file is
+# retained until the helper confirms that the replacement bootstrapped.
+MAX_UPDATE_BYTES = 4 * 1024 * 1024
+UPDATE_HELPER = r"""
+import ctypes
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+import traceback
+
+def wait_previous_process(pid):
+    if os.name == "nt":
+        kernel = ctypes.windll.kernel32
+        handle = kernel.OpenProcess(0x00100000, False, pid)
+        if handle:
+            try:
+                if kernel.WaitForSingleObject(handle, 120000) != 0:
+                    raise TimeoutError("原程序关闭超时，未替换文件")
+            finally:
+                kernel.CloseHandle(handle)
+    else:
+        end = time.monotonic() + 120
+        while time.monotonic() < end:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            except PermissionError:
+                raise RuntimeError("没有权限确认原程序退出")
+            time.sleep(.2)
+        raise TimeoutError("原程序关闭超时，未替换文件")
+
+def main():
+    parent, old, staged, backup, ack, prior = sys.argv[1:]
+    old, staged, backup, ack = map(Path, (old, staged, backup, ack))
+    child = None
+    swapped = False
+    try:
+        wait_previous_process(int(parent))
+        if not staged.is_file() or not old.is_file():
+            raise RuntimeError("更新文件或原文件已丢失，未执行替换")
+        if backup.exists():
+            raise RuntimeError("发现上一次更新遗留的旧版备份，不允许覆盖")
+        os.replace(old, backup)
+        try:
+            os.replace(staged, old)
+            swapped = True
+            flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+            child = subprocess.Popen(
+                [sys.executable, str(old), "--update-ack", str(ack),
+                 "--updated-from", prior],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, creationflags=flags,
+                cwd=str(old.parent))
+            deadline = time.monotonic() + 120
+            while time.monotonic() < deadline:
+                if ack.is_file() and ack.read_text(encoding="utf-8").strip() == "ready":
+                    backup.unlink()
+                    print("新程序已启动，旧版备份已删除", flush=True)
+                    return
+                if child.poll() is not None:
+                    raise RuntimeError("新程序未能正常启动，正在恢复旧版本")
+                time.sleep(.2)
+            raise TimeoutError("新程序启动确认超时，正在恢复旧版本")
+        except Exception:
+            if child is not None and child.poll() is None:
+                child.terminate()
+                try:
+                    child.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    child.wait()
+            if backup.exists():
+                os.replace(backup, old)
+            raise
+    except Exception:
+        traceback.print_exc()
+        raise
+    finally:
+        ack.unlink(missing_ok=True)
+        staged.unlink(missing_ok=True)
+
+if __name__ == "__main__":
+    main()
+"""
+
+
+def _github_release_document():
+    request = urllib.request.Request(RELEASE_API, headers={
+        "User-Agent": f"AShareMAScanner-updater/{APP_VERSION}",
+        "Accept": "application/vnd.github+json",
+    })
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            body = response.read(128 * 1024 + 1)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise RuntimeError(f"GitHub 响应异常（HTTP {exc.code}）") from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise RuntimeError("无法连接 GitHub，请稍后重试") from exc
+    if len(body) > 128 * 1024:
+        raise RuntimeError("GitHub 返回的数据过大")
+    try:
+        value = json.loads(body)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("GitHub 发布信息不是有效 JSON") from exc
+    if not isinstance(value, dict):
+        raise RuntimeError("GitHub 发布信息格式异常")
+    return value
+
+
+def _expected_release_asset(release, latest):
+    name = f"AShareMAScanner_v{'.'.join(map(str, latest))}.pyw"
+    assets = release.get("assets", [])
+    if not isinstance(assets, list):
+        raise RuntimeError("GitHub 发布附件列表异常")
+    matches = [asset for asset in assets
+               if isinstance(asset, dict) and asset.get("name") == name]
+    if len(matches) != 1:
+        raise RuntimeError("最新版没有可自动安装的 .pyw 源程序")
+    item = matches[0]
+    url = str(item.get("browser_download_url", ""))
+    parts = urllib.parse.urlsplit(url)
+    required_path = ("/Xstime/AShareMAScanner/releases/download/"
+                     f"v{'.'.join(map(str, latest))}/{name}")
+    if parts.scheme != "https" or parts.hostname != "github.com" or (
+            parts.path != required_path or parts.username or parts.password
+            or parts.port or parts.query or parts.fragment):
+        raise RuntimeError("GitHub 更新下载地址不可信")
+    digest = str(item.get("digest", ""))
+    if not re.fullmatch(r"sha256:[a-fA-F0-9]{64}", digest):
+        raise RuntimeError("GitHub 未提供 SHA-256 校验值，拒绝自动覆盖原程序")
+    try:
+        size = int(item.get("size", 0))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("更新文件大小异常") from exc
+    if not 0 < size <= MAX_UPDATE_BYTES:
+        raise RuntimeError("更新文件大小超出允许范围")
+    return url, digest.split(":", 1)[1].lower(), size
+
+
+def prepare_manual_update(original: Path):
+    """Called ONLY after an explicit button click; returns (message, staged_path)."""
+    release = _github_release_document()
+    if release is None or release.get("draft") or release.get("prerelease"):
+        return "尚无可用正式版本", None
+    latest = _release_version(release.get("tag_name", ""))
+    current = _release_version(APP_VERSION)
+    if latest is None or current is None:
+        raise RuntimeError("GitHub 版本号异常")
+    if latest < current:
+        return ("当前为开发或未发布版本；GitHub 最新正式版是 v"
+                + ".".join(map(str, latest)) + "，不会自动降级"), None
+    url, expected_digest, size = _expected_release_asset(release, latest)
+    if latest == current:
+        with original.open("rb") as stream:
+            local_digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        if local_digest == expected_digest:
+            return "当前已是最新正式版本（文件校验一致）", None
+    # Do not replace in place from the worker thread. Stage and verify first.
+    original = Path(original).resolve()
+    if original.suffix.lower() != ".pyw" or not original.is_file():
+        raise RuntimeError("自动更新仅支持从本地 .pyw 源文件运行")
+    backup = original.with_name(original.name + ".old-update.bak")
+    if backup.exists():
+        raise RuntimeError(f"旧版备份尚未清理：{backup.name}，为防止覆盖已取消本次更新")
+    fd, candidate = tempfile.mkstemp(prefix=".ashare-update-", suffix=".pyw",
+                                    dir=str(original.parent))
+    os.close(fd)
+    staged = Path(candidate)
+    try:
+        response_request = urllib.request.Request(url, headers={
+            "User-Agent": f"AShareMAScanner-updater/{APP_VERSION}",
+        })
+        try:
+            with urllib.request.urlopen(response_request, timeout=30) as response:
+                actual = urllib.parse.urlsplit(response.geturl())
+                if actual.scheme != "https" or not (
+                    actual.hostname == "github.com"
+                    or actual.hostname == "release-assets.githubusercontent.com"):
+                    raise RuntimeError("更新文件最终下载地址不可信")
+                hasher = hashlib.sha256()
+                total = 0
+                with staged.open("wb") as dest:
+                    while True:
+                        chunk = response.read(min(64 * 1024, MAX_UPDATE_BYTES + 1 - total))
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > MAX_UPDATE_BYTES:
+                            raise RuntimeError("更新文件超过允许大小")
+                        hasher.update(chunk)
+                        dest.write(chunk)
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise RuntimeError("更新文件下载失败") from exc
+        if total != size or hasher.hexdigest() != expected_digest:
+            raise RuntimeError("新程序的文件长度或 SHA-256 不匹配，拒绝安装")
+        source = staged.read_bytes()
+        if not re.search(rb"(?m)^APP_VERSION\s*=\s*['\"]" +
+                         re.escape(".".join(map(str, latest)).encode()) + rb"['\"]", source):
+            raise RuntimeError("下载的程序版本号与 GitHub Release 不一致")
+        if b"def main():" not in source or b"--update-ack" not in source:
+            raise RuntimeError("下载文件缺少必需的安全更新启动接口")
+        try:
+            compile(source, str(staged), "exec")
+        except (SyntaxError, ValueError) as exc:
+            raise RuntimeError("新版本源码未通过 Python 编译检查") from exc
+        os.chmod(staged, stat.S_IMODE(original.stat().st_mode))
+        return (f"已验证并下载 v{'.'.join(map(str, latest))}，即将自动替换并重启",
+                staged)
+    except Exception:
+        staged.unlink(missing_ok=True)
+        raise
+
 
 def _release_version(value: str):
     """仅比较正式发布的三段式版本号。"""
