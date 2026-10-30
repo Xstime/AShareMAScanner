@@ -171,5 +171,27 @@ class DayParallelTests(unittest.TestCase):
             state=self.backend.process_trade_date(self.trade_date,lambda *a:None,80,94)
         self.assertEqual((state["saved"],state["failed"]),(130,0))
 
+
+    def test_07_safe_stop_commits_downloaded_rows_and_resume_skips_them(self):
+        pool = FakePool(self.results())
+        def progress(value, message):
+            if "25/130" in message:
+                self.backend.cancel_update()
+        with patch.object(m.multiprocessing, "get_context", return_value=FakeContext(pool)):
+            with self.assertRaises(m.MarketUpdateCancelled):
+                self.backend.process_trade_date(self.trade_date, progress, 80, 94)
+        self.assertTrue(pool.terminated and pool.joined)
+        with m.sqlite_connection(self.backend.db_path) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM daily").fetchone()[0], 25)
+        self.backend._cancel_update_event.clear()
+        missed = []
+        def resume(code, name, date):
+            missed.append(code)
+            return [(code,date,name,10.25,1000,1,0,3.2)]
+        self.backend.fetch_exact_day_for_stock = resume
+        state = self.backend.process_trade_date(self.trade_date, lambda *_: None, 80, 94)
+        self.assertEqual((state["saved"], state["expected"], state["failed"]), (130,130,0))
+        self.assertEqual(len(missed), 105)
+
 if __name__=="__main__":
     unittest.main(verbosity=2)
