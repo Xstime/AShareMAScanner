@@ -580,21 +580,24 @@ def _download_release_asset(url, expected_size, staged, on_progress=None,
                             on_progress(0, expected_size, 0.0)
                 else:
                     raise RuntimeError(f"更新下载状态异常（HTTP {status}）")
-                with staged.open("ab" if total else "wb") as dest:
-                    while total < expected_size:
-                        _ensure_update_active(cancel_event)
-                        chunk = response.read(min(64 * 1024, expected_size - total))
-                        _ensure_update_active(cancel_event)
-                        if not chunk:
-                            raise RuntimeError("更新文件提前结束，大小与发行信息不符")
-                        total += len(chunk)
-                        if total > MAX_UPDATE_BYTES:
-                            raise RuntimeError("更新文件超过允许大小")
-                        hasher.update(chunk)
-                        dest.write(chunk)
-                        if on_progress:
-                            elapsed = max(time.monotonic() - started, 0.001)
-                            on_progress(total, expected_size, total / elapsed)
+                try:
+                    with staged.open("ab" if total else "wb") as dest:
+                        while total < expected_size:
+                            _ensure_update_active(cancel_event)
+                            chunk = response.read(min(64 * 1024, expected_size - total))
+                            _ensure_update_active(cancel_event)
+                            if not chunk:
+                                raise RuntimeError("更新文件提前结束，大小与发行信息不符")
+                            total += len(chunk)
+                            if total > MAX_UPDATE_BYTES:
+                                raise RuntimeError("更新文件超过允许大小")
+                            hasher.update(chunk)
+                            dest.write(chunk)
+                            if on_progress:
+                                elapsed = max(time.monotonic() - started, 0.001)
+                                on_progress(total, expected_size, total / elapsed)
+                except OSError as exc:
+                    raise RuntimeError("无法写入更新临时文件，请检查磁盘空间与权限") from exc
                 _ensure_update_active(cancel_event)
                 break
         except urllib.error.HTTPError as exc:
