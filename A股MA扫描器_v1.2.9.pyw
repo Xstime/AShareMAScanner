@@ -89,6 +89,7 @@ from __future__ import annotations
 
 import math
 import json
+import multiprocessing
 import hashlib
 import os
 import stat
@@ -702,9 +703,13 @@ INITIAL_TRADING_DAYS = 45
 QUERY_RETRY = 3
 RETRY_WAIT = 1.5
 
-# 全市场逐股请求做温和节流。
+# 逐股数据仍走 BaoStock 后复权接口；并行连接限定为少量独立进程，
+# 防止在一个 BaoStock 全局会话上并发访问导致数据串码。
 BATCH_SIZE = 200
 BATCH_PAUSE = 2.0
+DAILY_PARALLEL_THRESHOLD = 100
+DAILY_PARALLEL_WORKERS = 3
+DAILY_WORKER_STALL_SECONDS = 90
 
 # 长任务定期刷新 BaoStock 会话。
 SESSION_REFRESH_SECONDS = 15 * 60
@@ -857,6 +862,51 @@ def sqlite_connection(path: Path, timeout: float = 30):
             yield connection
     finally:
         connection.close()
+
+
+# Each spawned process has an isolated BaoStock socket. Never write SQLite here.
+_DAY_POOL_LOGIN_MONO = 0.0
+
+
+def _day_pool_fetch(task):
+    """Return raw BaoStock K-lines; the parent validates and persists them."""
+    global _DAY_POOL_LOGIN_MONO
+    code, name, trade_date = task
+    error = None
+    for attempt in range(1, QUERY_RETRY + 1):
+        try:
+            if (_DAY_POOL_LOGIN_MONO == 0
+                    or time.monotonic() - _DAY_POOL_LOGIN_MONO >= SESSION_REFRESH_SECONDS):
+                try:
+                    bs.logout()
+                except Exception:
+                    pass
+                response = bs.login()
+                if response.error_code != "0":
+                    raise RuntimeError(f"BaoStock 登录失败: {response.error_code} {response.error_msg}")
+                _DAY_POOL_LOGIN_MONO = time.monotonic()
+            rs = bs.query_history_k_data_plus(
+                code, BaoStockBackend.HISTORY_FIELDS,
+                start_date=trade_date, end_date=trade_date,
+                frequency="d", adjustflag=ADJUST_FLAG,
+            )
+            if rs.error_code != "0":
+                raise RuntimeError(f"{rs.error_code} {rs.error_msg}")
+            fields = list(rs.fields)
+            values = []
+            while rs.next():
+                values.append(rs.get_row_data())
+            return code, name, fields, values, ""
+        except Exception as exc:
+            error = str(exc)
+            _DAY_POOL_LOGIN_MONO = 0
+            try:
+                bs.logout()
+            except Exception:
+                pass
+            if attempt < QUERY_RETRY:
+                time.sleep(RETRY_WAIT * attempt)
+    return code, name, [], [], (error or "BaoStock 请求失败")
 
 
 class BaoStockBackend:
@@ -2323,45 +2373,96 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
 
         total = len(todo)
 
+        tasks = [(str(r.code), str(r.name or ""), trade_date)
+                 for r in todo.itertuples(index=False)]
+        finished = set()
+        started = time.monotonic()
+
+        def progress(code):
+            count = len(finished)
+            elapsed = time.monotonic() - started
+            eta_text = ""
+            if count >= 10 and elapsed > 0:
+                remaining = int(elapsed / count * (total - count))
+                hours, minutes = divmod(remaining // 60, 60)
+                eta_text = f" · 预计剩余 {hours}小时{minutes:02d}分"
+            self.stage_progress(cb, start_p, end_p, count, total,
+                                f"更新 {trade_date} · {count}/{total} · "
+                                f"{self.symbol_only(code)}{eta_text}")
+
+        def record(conn, code, name, fields=None, values=None, error=""):
+            if code in finished:
+                return
+            try:
+                if error:
+                    raise RuntimeError(error)
+                if fields is None:
+                    rows = self.fetch_exact_day_for_stock(code, name, trade_date)
+                else:
+                    raw = pd.DataFrame(values, columns=fields)
+                    rows = self.dataframe_to_daily_rows(raw, name)
+                    rows = [row for row in rows
+                            if row[0] == code and row[1] == trade_date and row[5] == 1]
+                    if not rows:
+                        raise RuntimeError("未返回目标交易日日K")
+                self.upsert_daily_rows(conn, rows)
+                self.clear_day_failure(conn, code, trade_date)
+            except Exception as exc:
+                self.queue_day_failure(conn, code, trade_date, name, exc)
+            finished.add(code)
+            progress(code)
+            if len(finished) % BATCH_SIZE == 0:
+                conn.commit()
+
+        # BaoStock has a process-global socket: thread-level parallelism is unsafe.
+        # On Windows use explicit spawn so independent sessions cannot corrupt results.
+        # Tests/mock backends and small groups stay sequential for compatibility.
+        bound_method = getattr(self.query_stock_history, "__func__", None)
+        enable_parallel = (
+            len(tasks) >= DAILY_PARALLEL_THRESHOLD
+            and bound_method is BaoStockBackend.query_stock_history
+            and not getattr(sys, "frozen", False)
+            and os.environ.get("ASHARE_MA_FETCH_WORKERS", "3") != "1"
+        )
         with sqlite_connection(self.db_path, timeout=30) as conn:
-            for idx, r in enumerate(
-                todo.itertuples(index=False),
-                start=1,
-            ):
-                code = str(r.code)
-                name = str(r.name or "")
-
-                self.stage_progress(
-                    cb,
-                    start_p,
-                    end_p,
-                    idx - 1,
-                    total,
-                    f"更新 {trade_date} · {idx}/{total} · {self.symbol_only(code)}",
-                )
-
+            if enable_parallel:
+                pool = None
                 try:
-                    rows = self.fetch_exact_day_for_stock(
-                        code,
-                        name,
-                        trade_date,
-                    )
-                    self.upsert_daily_rows(conn, rows)
-                    self.clear_day_failure(conn, code, trade_date)
-
+                    workers = max(2, min(4, int(
+                        os.environ.get("ASHARE_MA_FETCH_WORKERS", str(DAILY_PARALLEL_WORKERS)))))
+                    cb(start_p, f"{trade_date} · 开启 {workers} 条独立 BaoStock 连接")
+                    pool = multiprocessing.get_context("spawn").Pool(
+                        processes=workers, maxtasksperchild=400)
+                    stream = pool.imap_unordered(_day_pool_fetch, tasks, chunksize=1)
+                    first_errors = 0
+                    for _ in tasks:
+                        code, name, fields, values, error = stream.next(
+                            timeout=DAILY_WORKER_STALL_SECONDS)
+                        if not finished and error:
+                            first_errors += 1
+                        elif not error:
+                            first_errors = 0
+                        record(conn, code, name, fields, values, error)
+                        # If all early parallel logins fail, fall back rather
+                        # than filling thousands of failure-queue entries.
+                        if len(finished) >= 12 and first_errors >= 12:
+                            raise RuntimeError("并行 BaoStock 连接均失败")
+                    pool.close()
+                    pool.join()
+                    pool = None
                 except Exception as exc:
-                    self.queue_day_failure(
-                        conn,
-                        code,
-                        trade_date,
-                        name,
-                        exc,
-                    )
-
-                if idx % BATCH_SIZE == 0:
-                    conn.commit()
+                    cb(start_p + (end_p - start_p) * len(finished) / total,
+                       f"并行接口异常，正在顺序补抓剩余 {total-len(finished)} 只：{str(exc)[:90]}")
+                finally:
+                    if pool is not None:
+                        pool.terminate()
+                        pool.join()
+            for code, name, _ in tasks:
+                if code in finished:
+                    continue
+                record(conn, code, name)
+                if len(finished) % BATCH_SIZE == 0:
                     time.sleep(BATCH_PAUSE)
-
             conn.commit()
 
         info = self.update_day_status(trade_date)
