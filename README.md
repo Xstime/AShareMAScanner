@@ -1,14 +1,18 @@
-# AShareMAScanner v1.2.8 修复版
+# AShareMAScanner v1.2.9 · 手动触发的安全自动更新
 
-2026-10-30 已修复此前撤回版中发现的功能缺失和鲁棒性问题，并完成 Linux、Windows 回归与 BaoStock / 同花顺接口探测。正式下载以 [v1.2.8 GitHub Release](https://github.com/Xstime/AShareMAScanner/releases/tag/v1.2.8) 上的最新附件为准；**不要继续使用最初撤回的旧版文件**。
+**只有点击 PySide6 主界面的「检查更新」才会联网查询 GitHub Release**，每次启动**不会自动检查**软件版本。发现更高版本、或当前版本号相同但发行文件 SHA-256 不一致时，程序自动下载官方 `.pyw` 源文件，验证文件大小、SHA-256、Python 语法和启动参数后，退出旧进程、替换同路径程序并启动新版。新版完成基本启动确认后，更新器及时删除旧程序备份；若启动失败，将尝试恢复旧版。整个过程不触碰同级 `data/` 数据库文件。
 
-- [完整审计记录](AUDIT_DEV_v1.2.8_2026-10-30.md)
-- [跨平台回归测试](https://github.com/Xstime/AShareMAScanner/actions/runs/40925157690)
-- [真实数据源探测](https://github.com/Xstime/AShareMAScanner/actions/runs/40924344394)
+**v1.2.8 用户首次升级需要手动下载 v1.2.9。** 因为 v1.2.8 本身没有自动安装功能，只有从 v1.2.9 开始，后续版本才能通过上述流程自动替换。仅支持本地可写的单文件 `.pyw`，不支持打包 EXE、只读目录或 zip 内直接运行。
+
+- [v1.2.9 正式发行页面](https://github.com/Xstime/AShareMAScanner/releases/tag/v1.2.9)
+- [v1.2.9 更新说明](RELEASE_NOTES_v1.2.9.md)
+- 演示界面：`python A股MA扫描器_v1.2.9.pyw --demo`
+- 保留原有 `data/a_share_baostock_hfq.db`，不要删除数据库目录。
 
 ---
 
-# AShareMAScanner · A股 MA 扫描器 v1.2.8
+
+# AShareMAScanner · A股 MA 扫描器 v1.2.9
 
 **单个 Python `.pyw` 文件**，保留三个依次运行的桌面界面。无需制作、安装大型 EXE，但需要系统 Python 3.10+ 和 Tkinter。
 
@@ -24,20 +28,20 @@ Windows 配置好 Python `.pyw` 文件关联后可直接双击；通常不出现
 
 从 [GitHub Releases](https://github.com/Xstime/AShareMAScanner/releases) 下载：
 
-- `AShareMAScanner_v1.2.8.pyw`：完整的单文件源程序（可重命名为中文）。
-- `AShareMAScanner_v1.2.8.zip`：包含中文脚本、`requirements.txt` 和说明。
+- `AShareMAScanner_v1.2.9.pyw`：完整的单文件源程序（可重命名为中文）。
+- `AShareMAScanner_v1.2.9.zip`：包含中文脚本、`requirements.txt` 和说明。
 
 如果自动补库失败，可手动运行：
 
 ```bash
 python -m pip install -r requirements.txt
-python A股MA扫描器_v1.2.8.pyw
+python A股MA扫描器_v1.2.9.pyw
 ```
 
 **离线体验主界面：**
 
 ```bash
-python A股MA扫描器_v1.2.8.pyw --demo
+python A股MA扫描器_v1.2.9.pyw --demo
 ```
 
 `--demo` 仅使用明确标记的虚构股票和资金数据，不联网更新行情，主要用于查看 PySide6 的外观。
