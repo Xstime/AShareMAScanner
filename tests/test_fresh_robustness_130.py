@@ -346,14 +346,14 @@ class Backend(unittest.TestCase):
         self.assertEqual(url,mod.RELEASES_PAGE)
 
     def test_24_newer_public_release_is_detected_and_linked(self):
-        url="https://github.com/Xstime/AShareMAScanner/releases/tag/v1.3.0"
-        with self.fake_release("v1.3.0",url):
+        url="https://github.com/Xstime/AShareMAScanner/releases/tag/v1.3.1"
+        with self.fake_release("v1.3.1",url):
             status,actual=mod.fetch_latest_release()
-        self.assertIn("v1.3.0",status)
+        self.assertIn("v1.3.1",status)
         self.assertEqual(actual,url)
 
     def test_25_release_url_rejects_external_hosts(self):
-        with self.fake_release("v1.3.0","https://evil.example/install"):
+        with self.fake_release("v1.3.1","https://evil.example/install"):
             status,url=mod.fetch_latest_release()
         self.assertEqual(url,mod.RELEASES_PAGE)
 
