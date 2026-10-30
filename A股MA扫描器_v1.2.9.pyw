@@ -2434,18 +2434,23 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                     pool = multiprocessing.get_context("spawn").Pool(
                         processes=workers, maxtasksperchild=400)
                     stream = pool.imap_unordered(_day_pool_fetch, tasks, chunksize=1)
-                    first_errors = 0
+                    early_errors = []
+                    early_success = 0
                     for _ in tasks:
                         code, name, fields, values, error = stream.next(
                             timeout=DAILY_WORKER_STALL_SECONDS)
-                        if not finished and error:
-                            first_errors += 1
-                        elif not error:
-                            first_errors = 0
+                        if len(finished) < 12:
+                            if error:
+                                early_errors.append(code)
+                            else:
+                                early_success += 1
                         record(conn, code, name, fields, values, error)
-                        # If all early parallel logins fail, fall back rather
-                        # than filling thousands of failure-queue entries.
-                        if len(finished) >= 12 and first_errors >= 12:
+                        # All first 12 workers returned connection errors:
+                        # retry those 12 sequentially instead of leaving them
+                        # stuck in the failure queue.
+                        if len(finished) == 12 and early_success == 0:
+                            for retry_code in early_errors:
+                                finished.discard(retry_code)
                             raise RuntimeError("并行 BaoStock 连接均失败")
                     pool.close()
                     pool.join()
