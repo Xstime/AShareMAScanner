@@ -36,6 +36,7 @@ def query_history_k_data_plus(code,fields,start_date,end_date,frequency,adjustfl
             # Child Python imports the stub first, never contacting BaoStock.
             os.environ["PYTHONPATH"]=tmp+os.pathsep+str(pathlib.Path(__file__).parent)+(
                 os.pathsep+oldpath if oldpath else "")
+            sys.path.insert(0, tmp)
             try:
                 import _speed_spawn_loader as m
                 jobs=[(f"sh.{600000+i:06d}",f"Test{i}","2026-10-27")
@@ -47,6 +48,7 @@ def query_history_k_data_plus(code,fields,start_date,end_date,frequency,adjustfl
                 self.assertTrue(all(not error for *_,error in found),found)
                 self.assertTrue(all(raw[0][1]==code for code,_,_,raw,_ in found))
             finally:
+                sys.path.remove(tmp)
                 if oldpath is None:os.environ.pop("PYTHONPATH",None)
                 else:os.environ["PYTHONPATH"]=oldpath
 
