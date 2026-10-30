@@ -909,6 +909,10 @@ def _day_pool_fetch(task):
     return code, name, [], [], (error or "BaoStock 请求失败")
 
 
+class MarketUpdateCancelled(RuntimeError):
+    """The user requested a safe stop. Downloaded progress is committed."""
+
+
 class BaoStockBackend:
     HISTORY_FIELDS = "date,code,close,volume,tradestatus,isST,turn"
 
@@ -918,6 +922,16 @@ class BaoStockBackend:
         # 同一次运行多个策略共用只读板块K线计算，避免重复全表读取。
         self._sector_chart_cache: dict[tuple[str, str], pd.DataFrame] = {}
         self._instance_lock_file = None
+        self._cancel_update_event = threading.Event()
+
+    def cancel_update(self):
+        self._cancel_update_event.set()
+
+    def _check_cancel(self, conn=None):
+        if self._cancel_update_event.is_set():
+            if conn is not None:
+                conn.commit()
+            raise MarketUpdateCancelled("已安全停止；已保存行情，下次更新将断点续传")
 
     # -------------------- 通用 --------------------
 
@@ -2146,6 +2160,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                                 "WHERE trade_date BETWEEN ? AND ? AND trade_status=1 "
                                 "AND turnover IS NULL GROUP BY code ORDER BY code",
                                 (start, end_date)).fetchall()
+            self._check_cancel()
         for idx, (code, first, last) in enumerate(jobs, 1):
             self.stage_progress(cb, 94, 96, idx-1, len(jobs),
                                 f"补换手率 {idx}/{len(jobs)} · {self.symbol_only(code)}")
@@ -2197,6 +2212,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                 rows,
                 start=1,
             ):
+                self._check_cancel(conn)
                 self.stage_progress(
                     cb,
                     start_p,
@@ -2272,6 +2288,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                 todo.itertuples(index=False),
                 start=1,
             ):
+                self._check_cancel(conn)
                 code = str(r.code)
                 name = str(r.name or "")
 
@@ -2349,6 +2366,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
         start_p: float,
         end_p: float,
     ):
+        self._check_cancel()
         universe = self.get_day_universe(trade_date)
 
         if universe.empty:
@@ -2391,6 +2409,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                                 f"{self.symbol_only(code)}{eta_text}")
 
         def record(conn, code, name, fields=None, values=None, error=""):
+            self._check_cancel(conn)
             if code in finished:
                 return
             try:
@@ -2437,8 +2456,17 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                     early_errors = []
                     early_success = 0
                     for _ in tasks:
-                        code, name, fields, values, error = stream.next(
-                            timeout=DAILY_WORKER_STALL_SECONDS)
+                        # Poll in short intervals so the stop button remains responsive.
+                        waiting_since = time.monotonic()
+                        while True:
+                            self._check_cancel(conn)
+                            try:
+                                code, name, fields, values, error = stream.next(timeout=1)
+                                break
+                            except multiprocessing.TimeoutError:
+                                if time.monotonic() - waiting_since >= DAILY_WORKER_STALL_SECONDS:
+                                    raise TimeoutError("BaoStock 并行任务长时间无响应")
+
                         if len(finished) < 12:
                             if error:
                                 early_errors.append(code)
@@ -2455,6 +2483,9 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                     pool.close()
                     pool.join()
                     pool = None
+                except MarketUpdateCancelled:
+                    conn.commit()
+                    raise
                 except Exception as exc:
                     cb(start_p + (end_p - start_p) * len(finished) / total,
                        f"并行接口异常，正在顺序补抓剩余 {total-len(finished)} 只：{str(exc)[:90]}")
@@ -2463,6 +2494,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                         pool.terminate()
                         pool.join()
             for code, name, _ in tasks:
+                self._check_cancel(conn)
                 if code in finished:
                     continue
                 record(conn, code, name)
@@ -2493,6 +2525,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
         total = len(dates)
 
         for idx, trade_date in enumerate(dates, start=1):
+            self._check_cancel()
             s = start_p + (end_p - start_p) * ((idx - 1) / total)
             e = start_p + (end_p - start_p) * (idx / total)
 
@@ -2554,6 +2587,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
         total = len(dates)
 
         for idx, trade_date in enumerate(dates, start=1):
+            self._check_cancel()
             s = start_p + (end_p - start_p) * ((idx - 1) / total)
             e = start_p + (end_p - start_p) * (idx / total)
 
@@ -2567,6 +2601,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
     # -------------------- 启动更新 --------------------
 
     def update_all(self, cb: ProgressCallback) -> UpdateResult:
+        self._cancel_update_event.clear()
         # 数据库位置固定在程序同级 data：启动前仅做权限检查和原地修复。
         self.prepare_storage(cb)
         self.init_db()
@@ -2593,6 +2628,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                 latest_available
             )
 
+            self._check_cancel()
             # 先处理以前失败的历史初始化。
             self.retry_init_queue(
                 cb,
@@ -2600,6 +2636,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                 20,
             )
 
+            self._check_cancel()
             # 首次或有新上市股票时补历史。
             self.initialize_missing_histories(
                 latest_stocks,
@@ -2609,6 +2646,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                 66,
             )
 
+            self._check_cancel()
             # 以前中途失败的交易日优先补齐。
             self.retry_partial_dates(
                 latest_available,
@@ -2617,6 +2655,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                 80,
             )
 
+            self._check_cancel()
             # 数据库断点之后的新交易日。
             self.process_new_trade_dates(
                 latest_available,
@@ -2625,8 +2664,10 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                 94,
             )
 
+            self._check_cancel()
             turnover_warning = self.backfill_turnover(latest_available, cb)
 
+            self._check_cancel()
             # 行业分类用于全部策略的板块联动。
             self.refresh_industry_cache(
                 latest_stocks,
@@ -2635,6 +2676,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                 97,
             )
 
+            self._check_cancel()
             cb(98, "校验最新交易日完整性")
 
             # 确保 latest_available 至少建立 day_status。
