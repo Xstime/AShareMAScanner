@@ -1,0 +1,126 @@
+name: Publish v1.2.9 after manual-updater integration checks
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/release-v1.2.9.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb python3-tk libegl1 libopengl0 libxkbcommon-x11-0 libxcb-cursor0
+          python -m pip install -r requirements.txt
+      - name: Compile and regression test fixed scanner plus update helper
+        run: |
+          python -m py_compile 'A股MA扫描器_v1.2.9.pyw' 'A股MA扫描器_v1.2.8.pyw'
+          for suite in test_manual_self_update.py test_fresh_robustness.py test_live_sqlite_gui.py test_v128_full_audit.py test_ths_top5_only.py; do
+            xvfb-run -a python -m unittest discover -s tests -p "$suite" -v
+          done
+      - name: Render actual v1.2.9 user interface
+        run: |
+          xvfb-run -a python 'A股MA扫描器_v1.2.9.pyw' --demo --screenshot /tmp/v129.png
+          python - <<'PY'
+          from PySide6.QtGui import QImage
+          image=QImage("/tmp/v129.png")
+          assert not image.isNull() and (image.width(),image.height())==(1120,840)
+          PY
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+      - name: Verify physical Windows update and old-file deletion
+        run: |
+          python -m py_compile "A股MA扫描器_v1.2.9.pyw"
+          python -m unittest discover -s tests -p "test_manual_self_update.py" -v
+          python -m unittest discover -s tests -p "test_fresh_robustness.py" -v
+          python -m unittest discover -s tests -p "test_live_sqlite_gui.py" -v
+  publish:
+    needs: [linux,windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Confirm tested main and unused v1.2.9 tag
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$GITHUB_SHA"
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v1.2.9" > /dev/null 2>&1; then
+            echo "::error::v1.2.9 tag already exists; not overwriting a published version"
+            exit 1
+          fi
+      - name: Build fully source-equivalent release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output
+          cp 'A股MA扫描器_v1.2.9.pyw' output/AShareMAScanner_v1.2.9.pyw
+          python - <<'PY'
+          from zipfile import ZipFile,ZIP_DEFLATED
+          with ZipFile("output/AShareMAScanner_v1.2.9.zip","w",ZIP_DEFLATED,compresslevel=9) as z:
+              for name in ("A股MA扫描器_v1.2.9.pyw","requirements.txt","README.md","RELEASE_NOTES_v1.2.9.md"):
+                  z.write(name,name)
+          with ZipFile("output/AShareMAScanner_v1.2.9.zip") as z:
+              assert z.testzip() is None
+          PY
+          sha256sum output/*
+      - name: Create DRAFT release with both assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create v1.2.9 output/AShareMAScanner_v1.2.9.pyw \
+            output/AShareMAScanner_v1.2.9.zip \
+            --draft --title "v1.2.9 · 手动触发自动更新" \
+            --notes-file RELEASE_NOTES_v1.2.9.md \
+            --target "$GITHUB_SHA" --repo "$GITHUB_REPOSITORY"
+      - name: Verify draft asset hashes and file sizes against tested source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,os,subprocess
+          repo=os.environ["GITHUB_REPOSITORY"]
+          release=json.loads(subprocess.check_output(["gh","api",f"repos/{repo}/releases/tags/v1.2.9"]))
+          assert release["draft"] is True
+          assert release["tag_name"] == "v1.2.9"
+          assets={a["name"]:a for a in release["assets"]}
+          for name in ("AShareMAScanner_v1.2.9.pyw","AShareMAScanner_v1.2.9.zip"):
+              raw=open("output/"+name,"rb").read()
+              a=assets[name]
+              assert a["size"] == len(raw)
+              assert a["digest"] == "sha256:"+hashlib.sha256(raw).hexdigest(), name
+          tag=json.loads(subprocess.check_output(["gh","api",f"repos/{repo}/git/ref/tags/v1.2.9"]))
+          assert tag["object"]["sha"] == os.environ["GITHUB_SHA"]
+          print("Both assets, tag SHA, and release draft verified.")
+          PY
+      - name: Publish v1.2.9 as latest official version
+        run: |
+          set -euo pipefail
+          gh release edit v1.2.9 --draft=false --latest --repo "$GITHUB_REPOSITORY"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name')" = v1.2.9
+          echo "Successfully published v1.2.9"
