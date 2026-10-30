@@ -1,0 +1,28 @@
+name: Dev read-only real BaoStock parallel speed probe
+on:
+  push:
+    branches: [dev/v1.2.9-market-speed-fix]
+    paths:
+      - 'tests/live_parallel_probe.py'
+      - '.github/workflows/dev-v129-live-speed-probe.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  live-benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Setup dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libegl1 libopengl0 libxkbcommon-x11-0 libxcb-cursor0 python3-tk
+          python -m pip install -r requirements.txt
+      - name: Live BaoStock 12-stock serial and three-process comparison
+        run: python tests/live_parallel_probe.py
