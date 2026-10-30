@@ -1,0 +1,64 @@
+name: Test release candidate v1.3.0
+on:
+  push:
+    branches: [release/v1.3.0]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Tk, Qt dependencies and Python libraries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb python3-tk libegl1 libopengl0 libxkbcommon-x11-0 libxcb-cursor0
+          python -m pip install -r requirements.txt
+      - name: Compile and run v1.3.0 functional/robustness tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile "A股MA扫描器_v1.3.0.pyw"
+          for suite in test_spawn_isolation_130.py test_day_parallel_speed_130.py test_market_cancel_tk_130.py test_fresh_robustness_130.py test_live_sqlite_gui_130.py test_v130_full_audit.py test_manual_self_update_130.py; do
+            QT_QPA_PLATFORM=offscreen xvfb-run -a python -m unittest discover -s tests -p "$suite" -v
+          done
+      - name: Render actual v1.3.0 main GUI at 1120x840
+        run: |
+          QT_QPA_PLATFORM=offscreen xvfb-run -a python "A股MA扫描器_v1.3.0.pyw" --demo --screenshot /tmp/v130.png
+          python - <<'PY'
+          from PySide6.QtGui import QImage
+          image=QImage("/tmp/v130.png")
+          assert not image.isNull() and (image.width(),image.height())==(1120,840)
+          print("v1.3.0 actual Qt GUI verified")
+          PY
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Native Windows version 1.3.0 regression tests
+        shell: pwsh
+        run: |
+          python -m py_compile "A股MA扫描器_v1.3.0.pyw"
+          python -m unittest discover -s tests -p "test_spawn_isolation_130.py" -v
+          python -m unittest discover -s tests -p "test_day_parallel_speed_130.py" -v
+          python -m unittest discover -s tests -p "test_fresh_robustness_130.py" -v
+          python -m unittest discover -s tests -p "test_live_sqlite_gui_130.py" -v
+          python -m unittest discover -s tests -p "test_v130_full_audit.py" -v
+          python -m unittest discover -s tests -p "test_manual_self_update_130.py" -v
