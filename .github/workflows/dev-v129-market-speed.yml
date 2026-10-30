@@ -1,0 +1,50 @@
+name: Dev v1.2.9 market download speed and correctness
+on:
+  push:
+    branches: [dev/v1.2.9-market-speed-fix]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb python3-tk libegl1 libopengl0 libxkbcommon-x11-0 libxcb-cursor0
+          pip install -r requirements.txt
+      - name: Compile and regression test
+        run: |
+          python -m py_compile "A股MA扫描器_v1.2.9.pyw"
+          for suite in test_day_parallel_speed.py test_fresh_robustness.py test_live_sqlite_gui.py test_v128_full_audit.py test_ths_top5_only.py; do
+            QT_QPA_PLATFORM=offscreen xvfb-run -a python -m unittest discover -s tests -p "$suite" -v
+          done
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Compile and regression test
+        shell: pwsh
+        run: |
+          python -m py_compile "A股MA扫描器_v1.2.9.pyw"
+          python -m unittest discover -s tests -p "test_day_parallel_speed.py" -v
+          python -m unittest discover -s tests -p "test_fresh_robustness.py" -v
+          python -m unittest discover -s tests -p "test_live_sqlite_gui.py" -v
+          python -m unittest discover -s tests -p "test_v128_full_audit.py" -v
