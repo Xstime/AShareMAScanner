@@ -26,7 +26,7 @@ BaoStock 官方 `query_all_stock()` 返回代码、名称和交易状态，而�
 
 - `tests/test_day_parallel_speed.py` 使用真实临时 SQLite 注入乱序返回、单股失败、进程卡死回退、异常代码/日期、顺序恢复、已下载数据跳过、安全中断和连续失败保护。
 - `tests/test_spawn_isolation.py` 在真实 Windows/Linux 多进程 `spawn` 下使用离线 BaoStock stub，验证进程独立。
-- `tests/test_market_cancel_tk.py` 在 Linux Xvfb 使用真实 Tk 窗口触发运行中关闭，验证取消事件和安全结束。
+- `tests/test_market_cancel_tk.py` 以可重复的静态信号接线核对和真实 SQLite 后端取消测试，验证安全停止路径；操作系统窗口管理器的真实关闭交互仍需 Windows 实机验收。
 - 旧 `test_fresh_robustness.py`、`test_live_sqlite_gui.py`、`test_v128_full_audit.py` 等回归保留。
 
 ## 局限和发布状态
