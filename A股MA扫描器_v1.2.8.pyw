@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-A股 MA 扫描器（单文件 Tkinter .pyw · BaoStock + 同花顺资金 TOP5 · v1.2.8）
+A股 MA 扫描器（单文件 Tkinter .pyw · BaoStock + 同花顺资金 TOP5 · v1.2.9）
 =====================================
 
 功能
@@ -78,7 +78,7 @@ A股 MA 扫描器（单文件 Tkinter .pyw · BaoStock + 同花顺资金 TOP5 ·
 
 安装
 ----
-正常直接运行：python A股MA扫描器_v1.2.8.pyw
+正常直接运行：python A股MA扫描器_v1.2.9.pyw
 首次运行自动补装缺少的第三方库（需要联网，不需要任何付费API）。
 若安装失败，可手动运行：python -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple baostock pandas akshare
 
@@ -377,7 +377,7 @@ except ImportError as exc:
 # ============================================================
 
 APP_TITLE = "A股 MA 扫描器"
-APP_VERSION = "1.2.8"
+APP_VERSION = "1.2.9"
 RELEASE_API = "https://api.github.com/repos/Xstime/AShareMAScanner/releases/latest"
 RELEASES_PAGE = "https://github.com/Xstime/AShareMAScanner/releases"
 
@@ -607,7 +607,7 @@ def _release_version(value: str):
 def fetch_latest_release():
     """只读取本项目正式 GitHub Release，不执行远程程序。"""
     request = urllib.request.Request(RELEASE_API, headers={
-        "User-Agent": "AShareMAScanner-update-checker/1.2.8",
+        "User-Agent": "AShareMAScanner-update-checker/1.2.9",
         "Accept": "application/vnd.github+json",
     })
     try:
@@ -3843,13 +3843,14 @@ class ChartWorker(QThread):
 
 
 class VersionWorker(QThread):
+    """Started only from the user-pressed Check Updates button."""
     success = Signal(str, object)
     failed = Signal(str)
 
     def run(self):
         try:
-            status, url = fetch_latest_release()
-            self.success.emit(status, url)
+            message, staged_path = prepare_manual_update(Path(__file__).resolve())
+            self.success.emit(message, staged_path)
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -4070,7 +4071,8 @@ class ScannerWindow(QMainWindow):
         self.current_filters = RangeFilter()
         self._latest_release_url = None
         self._version_worker = None
-        self.setWindowTitle("A股 MA 扫描器 v1.2.8 · PySide6 4:3 工作台")
+        self._update_in_progress = False
+        self.setWindowTitle("A股 MA 扫描器 v1.2.9 · PySide6 4:3 工作台")
         self.resize(1120, 840)
         self.setMinimumSize(980, 735)
         self.setStyleSheet(STYLE)
@@ -4179,9 +4181,9 @@ class ScannerWindow(QMainWindow):
         self.refresh_market.clicked.connect(self._restart_pipeline)
         self.refresh_market.setEnabled(not self.demo)
         line.addWidget(self.refresh_market)
-        release = QPushButton("检查更新")
-        release.clicked.connect(self._show_release_info)
-        line.addWidget(release)
+        self.update_button = QPushButton("检查更新")
+        self.update_button.clicked.connect(self._show_release_info)
+        line.addWidget(self.update_button)
         whole.addWidget(header)
 
         split = QSplitter(Qt.Orientation.Horizontal)
@@ -4386,7 +4388,7 @@ class ScannerWindow(QMainWindow):
         self.page.addWidget(page)
 
         footer = self.statusBar()
-        footer.showMessage("本地 SQLite / BaoStock · v1.2.8 开发修复版")
+        footer.showMessage("本地 SQLite / BaoStock · v1.2.9")
 
     def _load_demo(self):
         self.demo = True
@@ -5035,30 +5037,70 @@ class ScannerWindow(QMainWindow):
         worker.start()
 
     def _show_release_info(self):
+        # Manual trigger only: no background version request on startup.
         if self._version_worker is not None and self._version_worker.isRunning():
             return
-        # VersionWorker calls fetch_latest_release() outside the Qt GUI thread.
+        if getattr(self, "_update_in_progress", False):
+            return
+        self._update_in_progress = True
+        self.update_button.setEnabled(False)
+        self.statusBar().showMessage("正在手动检查 GitHub 正式版并验证下载文件…")
         worker = VersionWorker()
         self._version_worker = worker
-        def ready(status, url):
-            if url:
-                box = QMessageBox(self)
-                newer_stable = "开发/未发布版本" in status
-                box.setWindowTitle("正式版本信息" if newer_stable else "发现新版本")
-                box.setText(status)
-                box.setInformativeText("只打开 GitHub Releases；不会覆盖程序或本地数据库。")
-                button = box.addButton("查看正式版" if newer_stable else "前往下载",
-                                       QMessageBox.ButtonRole.AcceptRole)
-                box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
-                box.exec()
-                if box.clickedButton() == button:
-                    webbrowser.open(url)
-            else:
-                QMessageBox.information(self, "检查更新", status)
+
+        def ready(message, staged):
+            self._update_in_progress = False
+            self.update_button.setEnabled(True)
+            if staged is None:
+                QMessageBox.information(self, "检查更新", message)
+                self.statusBar().showMessage(message)
+                return
+            # The new script was fully downloaded, hashed and compiled off the UI thread.
+            self.statusBar().showMessage("新版本已校验，正在安全替换并重启…")
+            try:
+                self._install_staged_update(Path(staged))
+            except Exception as exc:
+                Path(staged).unlink(missing_ok=True)
+                self._show_error("自动更新无法启动", str(exc))
+
+        def failed(error):
+            self._update_in_progress = False
+            self.update_button.setEnabled(True)
+            self.statusBar().showMessage("检查更新失败")
+            QMessageBox.warning(self, "更新失败（原程序未更改）", error)
+
         worker.success.connect(ready)
-        worker.failed.connect(lambda msg: QMessageBox.warning(self, "检查更新失败", msg))
+        worker.failed.connect(failed)
         self._remember(worker)
         worker.start()
+
+    def _install_staged_update(self, staged: Path):
+        old = Path(__file__).resolve()
+        if staged.parent != old.parent or not staged.is_file():
+            raise RuntimeError("下载文件不在原程序目录，拒绝更新")
+        backup = old.with_name(old.name + ".old-update.bak")
+        if backup.exists():
+            raise RuntimeError("发现旧版备份，拒绝覆盖；请先人工核查")
+        helper_fd, helper_name = tempfile.mkstemp(prefix="ashare-updater-", suffix=".py")
+        os.close(helper_fd)
+        helper = Path(helper_name)
+        ack = Path(tempfile.mktemp(prefix="ashare-update-ack-"))
+        try:
+            helper.write_text(UPDATE_HELPER, encoding="utf-8")
+            flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+            subprocess.Popen([sys.executable, str(helper), str(os.getpid()),
+                              str(old), str(staged), str(backup), str(ack),
+                              APP_VERSION], stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             creationflags=flags, cwd=str(old.parent))
+        except Exception:
+            helper.unlink(missing_ok=True)
+            raise
+        # closeEvent waits for running scanner threads, so the helper replaces
+        # the program only after the old process has released SQLite locks.
+        if self._scan_cancel_event is not None:
+            self._scan_cancel_event.set()
+        self.close()
     def _show_error(self, title, details):
         if not self.demo:
             try:
@@ -5089,7 +5131,16 @@ def main():
                         help="直接进入 PySide6 虚构数据界面，不访问行情")
     parser.add_argument("--screenshot",default="",
                         help="CI 渲染 4:3 主窗口并保存 PNG 后退出")
+    parser.add_argument("--update-ack",default="",help=argparse.SUPPRESS)
+    parser.add_argument("--updated-from",default="",help=argparse.SUPPRESS)
     args=parser.parse_args()
+    if args.update_ack:
+        # Helper only accepts this acknowledgement after all top-level imports
+        # and syntax checks succeeded, before the potentially long market sync.
+        ack = Path(args.update_ack)
+        if not ack.name.startswith("ashare-update-ack-"):
+            raise RuntimeError("非法更新确认路径")
+        ack.write_text("ready",encoding="utf-8")
     if args.demo or args.screenshot:
         backend=None
         result=None
