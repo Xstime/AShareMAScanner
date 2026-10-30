@@ -29,36 +29,37 @@ class CancelTkTests(unittest.TestCase):
         started=threading.Event()
         received=[]
         class ClosingTk(OriginalTk):
-            def mainloop(self, n=0):
-                # Drive the genuine Tcl event queue deterministically under
-                # CI/Xvfb, independent of any window manager that might
-                # terminate Tk's native mainloop before autostart.
-                self._test_loop_quit = False
-                deadline = time.monotonic()+6
-                while not self._test_loop_quit and time.monotonic()<deadline:
-                    try:
-                        self.update()
-                    except tk.TclError:
-                        break
-                    time.sleep(.01)
+            def after(self, milliseconds, func=None, *args):
+                if func is not None and getattr(func, "__name__", "") == "start":
+                    self._test_start = func
+                return super().after(milliseconds, func, *args)
+
+            def protocol(self, name=None, func=None):
+                if name == "WM_DELETE_WINDOW" and func:
+                    self._test_close = func
+                return super().protocol(name,func)
 
             def quit(self):
                 self._test_loop_quit = True
                 return super().quit()
 
-            def protocol(self, name=None, func=None):
-                result=super().protocol(name,func)
-                if name=="WM_DELETE_WINDOW" and func:
-                    deadline=time.monotonic()+5
-                    def click_when_running():
-                        if started.is_set():
-                            func()
-                        elif time.monotonic()<deadline:
-                            self.after(60,click_when_running)
-                        else:
-                            self.quit()
-                    self.after(250,click_when_running)
-                return result
+            def mainloop(self, n=0):
+                # Exercise the actual Tk event handlers. Invoke scheduled
+                # start and WM_DELETE deterministically, without relying on
+                # Xvfb/Tcl timers or a window manager in CI.
+                self._test_loop_quit = False
+                assert hasattr(self, "_test_start"), "Tk autostart not installed"
+                assert hasattr(self, "_test_close"), "Tk close protocol not installed"
+                self._test_start()
+                assert started.wait(2), "Tk worker never entered update_all"
+                self._test_close()
+                limit=time.monotonic()+3
+                while not self._test_loop_quit and time.monotonic()<limit:
+                    try:
+                        self.update()
+                    except tk.TclError:
+                        break
+                    time.sleep(.01)
         class Backend:
             def update_all(self, cb):
                 started.set()
