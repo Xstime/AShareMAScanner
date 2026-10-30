@@ -464,6 +464,7 @@ def main():
     finally:
         ack.unlink(missing_ok=True)
         staged.unlink(missing_ok=True)
+        Path(__file__).unlink(missing_ok=True)
 
 if __name__ == "__main__":
     main()
@@ -5084,7 +5085,10 @@ class ScannerWindow(QMainWindow):
         helper_fd, helper_name = tempfile.mkstemp(prefix="ashare-updater-", suffix=".py")
         os.close(helper_fd)
         helper = Path(helper_name)
-        ack = Path(tempfile.mktemp(prefix="ashare-update-ack-"))
+        ack_fd, ack_name = tempfile.mkstemp(prefix="ashare-update-ack-")
+        os.close(ack_fd)
+        ack = Path(ack_name)
+        ack.unlink()
         try:
             helper.write_text(UPDATE_HELPER, encoding="utf-8")
             flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
