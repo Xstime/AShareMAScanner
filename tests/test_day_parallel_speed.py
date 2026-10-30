@@ -213,5 +213,55 @@ class DayParallelTests(unittest.TestCase):
         status = self.backend.process_trade_date(self.trade_date, lambda *_: None, 80, 94)
         self.assertEqual((status["saved"], status["failed"]), (130,0))
 
+    def test_09_first_install_fetches_45_history_days_in_parallel(self):
+        days=pd.bdate_range(end=self.trade_date,periods=45).strftime("%Y-%m-%d").tolist()
+        self.backend.recent_n_trade_dates=lambda end,n:days[-n:]
+        result=[]
+        for rec in self.universe.itertuples(index=False):
+            result.append((rec.code,rec.name,
+                ["date","code","close","volume","tradestatus","isST","turn"],
+                [[day,rec.code,"10.0","1000","1","0","3.5"] for day in days],""))
+        pool=FakePool(list(reversed(result)))
+        with patch.object(m.multiprocessing,"get_context",return_value=FakeContext(pool)):
+            self.backend.initialize_missing_histories(
+                self.universe,self.trade_date,lambda *a:None,20,66)
+        self.assertTrue(pool.closed and pool.joined)
+        with m.sqlite_connection(self.backend.db_path) as c:
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM daily").fetchone()[0],130*45)
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM stock_state WHERE history_ready=1").fetchone()[0],130)
+        with patch.object(m.multiprocessing,"get_context",side_effect=AssertionError("duplicate fetch")):
+            self.backend.initialize_missing_histories(
+                self.universe,self.trade_date,lambda *a:None,20,66)
+
+    def test_10_history_partial_failure_does_not_mark_missing_stock_ready(self):
+        days=pd.bdate_range(end=self.trade_date,periods=45).strftime("%Y-%m-%d").tolist()
+        self.backend.recent_n_trade_dates=lambda end,n:days[-n:]
+        errors_code="sh.600005"
+        result=[]
+        for rec in self.universe.itertuples(index=False):
+            err="isolated BaoStock failure" if rec.code==errors_code else ""
+            result.append((rec.code,rec.name,
+                ["date","code","close","volume","tradestatus","isST","turn"],
+                [[day,rec.code,"10.0","1000","1","0","3.5"] for day in days],err))
+        pool=FakePool(result)
+        with patch.object(m.multiprocessing,"get_context",return_value=FakeContext(pool)):
+            self.backend.initialize_missing_histories(
+                self.universe,self.trade_date,lambda *a:None,20,66)
+        with m.sqlite_connection(self.backend.db_path) as c:
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM init_queue").fetchone()[0],1)
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM stock_state WHERE history_ready=1").fetchone()[0],129)
+        fetched=[]
+        def rescue(code,start,end):
+            fetched.append(code)
+            return pd.DataFrame([dict(date=day,code=code,close="10.0",volume="1000",
+                  tradestatus="1",isST="0",turn="3.5") for day in days])
+        self.backend.query_stock_history=rescue
+        self.backend.initialize_missing_histories(
+            self.universe,self.trade_date,lambda *a:None,20,66)
+        self.assertEqual(fetched,[errors_code])
+        with m.sqlite_connection(self.backend.db_path) as c:
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM init_queue").fetchone()[0],0)
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM daily").fetchone()[0],130*45)
+
 if __name__=="__main__":
     unittest.main(verbosity=2)
