@@ -527,9 +527,103 @@ def _expected_release_asset(release, latest):
     return url, digest.split(":", 1)[1].lower(), size
 
 
-def prepare_manual_update(original: Path):
-    """Called ONLY after an explicit button click; returns (message, staged_path)."""
+class UpdateDownloadCancelled(Exception):
+    """The user cancelled an in-flight update before installation."""
+
+
+def _ensure_update_active(cancel_event):
+    if cancel_event is not None and cancel_event.is_set():
+        raise UpdateDownloadCancelled("已取消更新下载")
+
+
+def _download_release_asset(url, expected_size, staged, on_progress=None,
+                            on_status=None, cancel_event=None):
+    """Stream with no overall deadline; resume after transient socket timeouts.
+
+    urllib's timeout is a per-socket inactivity guard, NOT a total download
+    deadline. The progress window remains responsive and cancellation is
+    checked at least after a socket operation/retry delay. Retried requests
+    use a validated HTTP Range response or restart cleanly if not supported.
+    """
+    hasher = hashlib.sha256()
+    total = 0
+    started = time.monotonic()
+    retry_count = 0
+    while total < expected_size:
+        _ensure_update_active(cancel_event)
+        headers = {"User-Agent": f"AShareMAScanner-updater/{APP_VERSION}"}
+        if total:
+            headers["Range"] = f"bytes={total}-"
+        request = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                actual = urllib.parse.urlsplit(response.geturl())
+                if actual.scheme != "https" or actual.hostname not in (
+                        "github.com", "release-assets.githubusercontent.com"):
+                    raise RuntimeError("更新文件最终下载地址不可信")
+                status = getattr(response, "status", 200)
+                if total and status == 206:
+                    content_range = getattr(response, "headers", {}).get(
+                        "Content-Range", "")
+                    match = re.fullmatch(r"bytes (\\d+)-(\\d+)/(\\d+)", content_range)
+                    if (not match or int(match.group(1)) != total
+                            or int(match.group(3)) != expected_size
+                            or int(match.group(2)) < total):
+                        raise RuntimeError("断点续传区间不可信，拒绝合并更新文件")
+                elif status == 200:
+                    # Some GitHub endpoints ignore Range. Do not append a full
+                    # response to old bytes; restart the verified download.
+                    if total:
+                        total = 0
+                        hasher = hashlib.sha256()
+                        if on_progress:
+                            on_progress(0, expected_size, 0.0)
+                else:
+                    raise RuntimeError(f"更新下载状态异常（HTTP {status}）")
+                with staged.open("ab" if total else "wb") as dest:
+                    while total < expected_size:
+                        _ensure_update_active(cancel_event)
+                        chunk = response.read(min(64 * 1024, expected_size - total))
+                        _ensure_update_active(cancel_event)
+                        if not chunk:
+                            raise RuntimeError("更新文件提前结束，大小与发行信息不符")
+                        total += len(chunk)
+                        if total > MAX_UPDATE_BYTES:
+                            raise RuntimeError("更新文件超过允许大小")
+                        hasher.update(chunk)
+                        dest.write(chunk)
+                        if on_progress:
+                            elapsed = max(time.monotonic() - started, 0.001)
+                            on_progress(total, expected_size, total / elapsed)
+                _ensure_update_active(cancel_event)
+                break
+        except urllib.error.HTTPError as exc:
+            # 403/404 and other HTTP failures require user-visible diagnosis,
+            # not an endless retry loop.
+            raise RuntimeError(f"GitHub 下载响应异常（HTTP {exc.code}）") from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            _ensure_update_active(cancel_event)
+            retry_count += 1
+            if on_status:
+                on_status(f"下载连接中断，正在重连（第 {retry_count} 次）…")
+            # No overall deadline or arbitrary retry-count limit. The user may
+            # cancel, and the 30s socket timeout prevents an uninterruptible
+            # network read.
+            pause = min(retry_count, 5)
+            if cancel_event is not None:
+                if cancel_event.wait(pause):
+                    raise UpdateDownloadCancelled("已取消更新下载") from exc
+            else:
+                time.sleep(pause)
+    return hasher.hexdigest()
+
+
+def prepare_manual_update(original: Path, on_update_found=None,
+                          on_progress=None, on_status=None, cancel_event=None):
+    """Explicit update check, verified download and staging; no auto-install."""
+    _ensure_update_active(cancel_event)
     release = _github_release_document()
+    _ensure_update_active(cancel_event)
     if release is None or release.get("draft") or release.get("prerelease"):
         return "尚无可用正式版本", None
     latest = _release_version(release.get("tag_name", ""))
@@ -545,47 +639,34 @@ def prepare_manual_update(original: Path):
             local_digest = hashlib.file_digest(stream, "sha256").hexdigest()
         if local_digest == expected_digest:
             return "当前已是最新正式版本（文件校验一致）", None
-    # Do not replace in place from the worker thread. Stage and verify first.
+
     original = Path(original).resolve()
     if original.suffix.lower() != ".pyw" or not original.is_file():
         raise RuntimeError("自动更新仅支持从本地 .pyw 源文件运行")
     backup = original.with_name(original.name + ".old-update.bak")
     if backup.exists():
         raise RuntimeError(f"旧版备份尚未清理：{backup.name}，为防止覆盖已取消本次更新")
+    _ensure_update_active(cancel_event)
+    if on_update_found:
+        on_update_found("v" + ".".join(map(str, latest)), size)
+    _ensure_update_active(cancel_event)
     fd, candidate = tempfile.mkstemp(prefix=".ashare-update-", suffix=".pyw",
-                                    dir=str(original.parent))
+                                     dir=str(original.parent))
     os.close(fd)
     staged = Path(candidate)
     try:
-        response_request = urllib.request.Request(url, headers={
-            "User-Agent": f"AShareMAScanner-updater/{APP_VERSION}",
-        })
-        try:
-            with urllib.request.urlopen(response_request, timeout=30) as response:
-                actual = urllib.parse.urlsplit(response.geturl())
-                if actual.scheme != "https" or not (
-                    actual.hostname == "github.com"
-                    or actual.hostname == "release-assets.githubusercontent.com"):
-                    raise RuntimeError("更新文件最终下载地址不可信")
-                hasher = hashlib.sha256()
-                total = 0
-                with staged.open("wb") as dest:
-                    while True:
-                        chunk = response.read(min(64 * 1024, MAX_UPDATE_BYTES + 1 - total))
-                        if not chunk:
-                            break
-                        total += len(chunk)
-                        if total > MAX_UPDATE_BYTES:
-                            raise RuntimeError("更新文件超过允许大小")
-                        hasher.update(chunk)
-                        dest.write(chunk)
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            raise RuntimeError("更新文件下载失败") from exc
-        if total != size or hasher.hexdigest() != expected_digest:
-            raise RuntimeError("新程序的文件长度或 SHA-256 不匹配，拒绝安装")
+        digest = _download_release_asset(url, size, staged, on_progress=on_progress,
+                                         on_status=on_status, cancel_event=cancel_event)
+        _ensure_update_active(cancel_event)
+        if digest != expected_digest:
+            raise RuntimeError("新程序的 SHA-256 不匹配，拒绝安装")
+        if staged.stat().st_size != size:
+            raise RuntimeError("新程序的文件长度不匹配，拒绝安装")
+        if on_status:
+            on_status("下载完成，正在验证文件完整性与 Python 语法…")
         source = staged.read_bytes()
-        if not re.search(rb"(?m)^APP_VERSION\s*=\s*['\"]" +
-                         re.escape(".".join(map(str, latest)).encode()) + rb"['\"]", source):
+        if not re.search(rb"(?m)^APP_VERSION\\s*=\\s*['\\\"]" +
+                         re.escape(".".join(map(str, latest)).encode()) + rb"['\\\"]", source):
             raise RuntimeError("下载的程序版本号与 GitHub Release 不一致")
         if b"def main():" not in source or b"--update-ack" not in source:
             raise RuntimeError("下载文件缺少必需的安全更新启动接口")
@@ -593,6 +674,7 @@ def prepare_manual_update(original: Path):
             compile(source, str(staged), "exec")
         except (SyntaxError, ValueError) as exc:
             raise RuntimeError("新版本源码未通过 Python 编译检查") from exc
+        _ensure_update_active(cancel_event)
         os.chmod(staged, stat.S_IMODE(original.stat().st_mode))
         return (f"已验证并下载 v{'.'.join(map(str, latest))}，即将自动替换并重启",
                 staged)
@@ -4088,16 +4170,43 @@ class ChartWorker(QThread):
 
 
 class VersionWorker(QThread):
-    """Started only from the user-pressed Check Updates button."""
+    """Check on demand; notify the GUI before streaming the asset."""
+    update_found = Signal(str, int)
+    progress = Signal(int, int, float)
+    status = Signal(str)
     success = Signal(str, object)
     failed = Signal(str)
+    cancelled = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self.cancel_event = threading.Event()
+
+    def cancel_download(self):
+        self.cancel_event.set()
 
     def run(self):
         try:
-            message, staged_path = prepare_manual_update(Path(__file__).resolve())
-            self.success.emit(message, staged_path)
+            message, staged_path = prepare_manual_update(
+                Path(__file__).resolve(),
+                on_update_found=self.update_found.emit,
+                on_progress=self.progress.emit,
+                on_status=self.status.emit,
+                cancel_event=self.cancel_event,
+            )
+            if self.cancel_event.is_set():
+                if staged_path is not None:
+                    Path(staged_path).unlink(missing_ok=True)
+                self.cancelled.emit()
+            else:
+                self.success.emit(message, staged_path)
+        except UpdateDownloadCancelled:
+            self.cancelled.emit()
         except Exception as exc:
-            self.failed.emit(str(exc))
+            if self.cancel_event.is_set():
+                self.cancelled.emit()
+            else:
+                self.failed.emit(str(exc))
 
 
 class HistoryWorker(QThread):
@@ -4317,6 +4426,7 @@ class ScannerWindow(QMainWindow):
         self._latest_release_url = None
         self._version_worker = None
         self._update_in_progress = False
+        self._download_dialog = None
         self.setWindowTitle("A股 MA 扫描器 v1.3.0 · PySide6 4:3 工作台")
         self.resize(1120, 840)
         self.setMinimumSize(980, 735)
@@ -4342,6 +4452,8 @@ class ScannerWindow(QMainWindow):
         # No QThread can be destroyed while it is still running.
         if self._scan_cancel_event is not None:
             self._scan_cancel_event.set()
+        if self._version_worker is not None and self._version_worker.isRunning():
+            self._version_worker.cancel_download()
         if any(worker.isRunning() for worker in self.workers):
             event.ignore()
             self.statusBar().showMessage("后台任务尚未结束，完成后自动关闭…")
@@ -5282,26 +5394,88 @@ class ScannerWindow(QMainWindow):
         worker.start()
 
     def _show_release_info(self):
-        # Manual trigger only: no background version request on startup.
+        # Manual trigger only: no automatic network request at startup.
         if self._version_worker is not None and self._version_worker.isRunning():
             return
         if getattr(self, "_update_in_progress", False):
             return
         self._update_in_progress = True
         self.update_button.setEnabled(False)
-        self.statusBar().showMessage("正在手动检查 GitHub 正式版并验证下载文件…")
+        self.statusBar().showMessage("正在检查 GitHub 正式版本…")
         worker = VersionWorker()
         self._version_worker = worker
+        self._download_dialog = None
 
-        def ready(message, staged):
+        def show_download(version, size):
+            # A window appears only if a newer/repaired release needs download.
+            if self._download_dialog is not None:
+                return
+            dialog = QDialog(self)
+            dialog.setWindowTitle(f"正在下载更新 · {version}")
+            dialog.setWindowModality(Qt.WindowModality.WindowModal)
+            dialog.setMinimumWidth(440)
+            layout = QVBoxLayout(dialog)
+            title = QLabel(f"发现可用更新 {version}，正在下载正式发行文件")
+            title.setWordWrap(True)
+            layout.addWidget(title)
+            bar = QProgressBar()
+            bar.setRange(0, 1000)
+            bar.setValue(0)
+            layout.addWidget(bar)
+            downloaded = QLabel(f"已下载 0 KB / {size / 1024:.1f} KB · 0.0%")
+            layout.addWidget(downloaded)
+            speed = QLabel("当前速度：等待响应…")
+            layout.addWidget(speed)
+            state = QLabel("不限制总下载时长；连接中断后自动续传或重试")
+            state.setWordWrap(True)
+            layout.addWidget(state)
+            cancel_button = QPushButton("取消下载")
+            layout.addWidget(cancel_button)
+
+            def request_cancel():
+                worker.cancel_download()
+                cancel_button.setEnabled(False)
+                state.setText("正在取消并清理临时文件…")
+
+            cancel_button.clicked.connect(request_cancel)
+            dialog.rejected.connect(worker.cancel_download)
+            self._download_dialog = dialog
+            self._download_ui = (bar, downloaded, speed, state)
+            dialog.show()
+
+        def update_progress(received, size, bytes_per_second):
+            if self._download_dialog is None:
+                return
+            bar, downloaded, speed, state = self._download_ui
+            percent = received * 100.0 / size if size else 0.0
+            bar.setValue(min(1000, round(percent * 10)))
+            downloaded.setText(
+                f"已下载 {received / 1024:.1f} KB / {size / 1024:.1f} KB · {percent:.1f}%"
+            )
+            speed.setText(f"平均速度：{bytes_per_second / 1024:.1f} KB/s")
+            state.setText("正在下载…（不限制总下载时长）")
+
+        def update_status(message):
+            if self._download_dialog is not None:
+                self._download_ui[3].setText(message)
+            self.statusBar().showMessage(message)
+
+        def finish_ui():
+            if self._download_dialog is not None:
+                self._download_dialog.accept()
+                self._download_dialog = None
+                self._download_ui = None
             self._update_in_progress = False
             self.update_button.setEnabled(True)
+
+        def ready(message, staged):
+            finish_ui()
             if staged is None:
                 QMessageBox.information(self, "检查更新", message)
                 self.statusBar().showMessage(message)
                 return
-            # The new script was fully downloaded, hashed and compiled off the UI thread.
-            self.statusBar().showMessage("新版本已校验，正在安全替换并重启…")
+            # Download, SHA-256 verification and compile ran outside the UI thread.
+            self.statusBar().showMessage("更新已校验，正在安全替换并重启…")
             try:
                 self._install_staged_update(Path(staged))
             except Exception as exc:
@@ -5309,13 +5483,20 @@ class ScannerWindow(QMainWindow):
                 self._show_error("自动更新无法启动", str(exc))
 
         def failed(error):
-            self._update_in_progress = False
-            self.update_button.setEnabled(True)
+            finish_ui()
             self.statusBar().showMessage("检查更新失败")
             QMessageBox.warning(self, "更新失败（原程序未更改）", error)
 
+        def cancelled():
+            finish_ui()
+            self.statusBar().showMessage("已取消下载，原程序未更改")
+
+        worker.update_found.connect(show_download)
+        worker.progress.connect(update_progress)
+        worker.status.connect(update_status)
         worker.success.connect(ready)
         worker.failed.connect(failed)
+        worker.cancelled.connect(cancelled)
         self._remember(worker)
         worker.start()
 
