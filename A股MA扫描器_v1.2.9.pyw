@@ -3796,7 +3796,8 @@ def run_tk_data_phase(backend=None, *, autostart=True):
     controls=_tk.Frame(footer,bg="#ffffff")
     controls.pack(side="right")
     messages=queue.Queue()
-    state={"running":False,"success":None,"start":time.monotonic(),"aborted":False}
+    state={"running":False,"success":None,"start":time.monotonic(),
+           "aborted":False,"cancel_requested":False}
     stages=[
         ("检查环境与交易日",0,12),("失败数据补抓",12,20),
         ("历史行情缓存",20,66),("缺失交易日补齐",66,80),
@@ -3811,20 +3812,26 @@ def run_tk_data_phase(backend=None, *, autostart=True):
         log.configure(state="disabled")
     def abort():
         if state["running"]:
-            _messagebox.showinfo(
-                "数据更新尚未完成",
-                "为避免中断 SQLite 数据库写入，请等待当前抓取结束后退出。",
-                parent=root)
+            if not state["cancel_requested"]:
+                state["cancel_requested"] = True
+                engine_backend.cancel_update()
+                stage_var.set("正在安全停止更新…")
+                task_var.set("正在结束 BaoStock 请求并提交已完成的数据，不会删除数据库")
+                append("用户请求取消：保存已获取行情，停止后可下次断点续传")
+                exit_button.configure(text="正在停止…", state="disabled")
             return
         state["aborted"]=True
         root.quit()
     root.protocol("WM_DELETE_WINDOW",abort)
-    _ttk.Button(controls,text="退出",command=abort).pack(side="right")
+    exit_button=_ttk.Button(controls,text="退出 / 安全停止",command=abort)
+    exit_button.pack(side="right")
     retry=_ttk.Button(controls,text="重新抓取",command=lambda:start())
     retry.pack(side="right",padx=(0,10))
     def start():
         if state["running"]:return
         state["running"]=True
+        state["cancel_requested"]=False
+        exit_button.configure(text="退出 / 安全停止", state="normal")
         state["start"]=time.monotonic()
         retry.configure(state="disabled")
         progress.set(0)
@@ -3836,6 +3843,8 @@ def run_tk_data_phase(backend=None, *, autostart=True):
                 result=engine_backend.update_all(
                     lambda value,message: messages.put(("progress",float(value),str(message))))
                 messages.put(("success",result))
+            except MarketUpdateCancelled as exc:
+                messages.put(("cancelled",str(exc)))
             except Exception:
                 messages.put(("failure",traceback.format_exc()))
         threading.Thread(target=work,daemon=True,name="tk-market-update").start()
@@ -3867,8 +3876,16 @@ def run_tk_data_phase(backend=None, *, autostart=True):
                 append("准备关闭 Tkinter 并进入 PySide6 主工作台")
                 root.after(160,root.quit)
                 return
+            elif kind=="cancelled":
+                state["running"]=False
+                state["aborted"]=True
+                stage_var.set("已安全停止 · 已保存下载进度")
+                append(event[1])
+                root.after(160,root.quit)
+                return
             elif kind=="failure":
                 state["running"]=False
+                exit_button.configure(text="退出", state="normal")
                 stage_var.set("更新失败 · 可重试")
                 task_var.set(event[1].splitlines()[-1][:180])
                 counter_var.set("未进入主界面；旧数据仍保留")
