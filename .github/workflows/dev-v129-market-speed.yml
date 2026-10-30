@@ -24,7 +24,7 @@ jobs:
       - name: Compile and regression test
         run: |
           python -m py_compile "A股MA扫描器_v1.2.9.pyw"
-          for suite in test_day_parallel_speed.py test_fresh_robustness.py test_live_sqlite_gui.py test_v128_full_audit.py test_ths_top5_only.py; do
+          for suite in test_spawn_isolation.py test_day_parallel_speed.py test_fresh_robustness.py test_live_sqlite_gui.py test_v128_full_audit.py test_ths_top5_only.py; do
             QT_QPA_PLATFORM=offscreen xvfb-run -a python -m unittest discover -s tests -p "$suite" -v
           done
   windows:
@@ -44,6 +44,7 @@ jobs:
         shell: pwsh
         run: |
           python -m py_compile "A股MA扫描器_v1.2.9.pyw"
+          python -m unittest discover -s tests -p "test_spawn_isolation.py" -v
           python -m unittest discover -s tests -p "test_day_parallel_speed.py" -v
           python -m unittest discover -s tests -p "test_fresh_robustness.py" -v
           python -m unittest discover -s tests -p "test_live_sqlite_gui.py" -v
