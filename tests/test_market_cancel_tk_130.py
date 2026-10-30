@@ -48,7 +48,9 @@ class CancelTkTests(unittest.TestCase):
 
             def protocol(self, name=None, func=None):
                 result=super().protocol(name,func)
-                if name=="WM_DELETE_WINDOW" and func:
+                # Tk.__init__ registers its own default destroy handler first.
+                # Only simulate the later application-specific safe abort handler.
+                if name=="WM_DELETE_WINDOW" and getattr(func,"__name__","")=="abort":
                     deadline=time.monotonic()+5
                     def click_when_running():
                         if started.is_set():
