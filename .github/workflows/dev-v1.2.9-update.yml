@@ -1,0 +1,63 @@
+name: v1.2.9 manual self-updater integration
+on:
+  push:
+    branches: [dev/manual-self-update]
+    paths:
+      - 'A股MA扫描器_v1.2.9.pyw'
+      - 'tests/test_manual_self_update.py'
+      - '.github/workflows/dev-v1.2.9-update.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb python3-tk libegl1 libopengl0 libxkbcommon-x11-0 libxcb-cursor0
+          python -m pip install -r requirements.txt
+      - name: Compile old and new source
+        run: python -m py_compile 'A股MA扫描器_v1.2.8.pyw' 'A股MA扫描器_v1.2.9.pyw'
+      - name: Actual updater subprocess and integrity tests
+        run: xvfb-run -a python -m unittest discover -s tests -p 'test_manual_self_update.py' -v
+      - name: Existing app regression
+        run: |
+          for suite in test_fresh_robustness.py test_live_sqlite_gui.py test_v128_full_audit.py test_ths_top5_only.py; do
+            xvfb-run -a python -m unittest discover -s tests -p "$suite" -v
+          done
+      - name: Render new 1.2.9 UI
+        run: |
+          xvfb-run -a python 'A股MA扫描器_v1.2.9.pyw' --demo --screenshot /tmp/v129.png
+          python - <<'PY'
+          from PySide6.QtGui import QImage
+          image = QImage("/tmp/v129.png")
+          assert not image.isNull()
+          assert (image.width(),image.height()) == (1120,840)
+          PY
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+      - run: python -m py_compile "A股MA扫描器_v1.2.8.pyw" "A股MA扫描器_v1.2.9.pyw"
+      - name: Real Windows parent-child self-update and rollback
+        run: python -m unittest discover -s tests -p "test_manual_self_update.py" -v
+      - name: Windows data and GUI regression
+        run: |
+          python -m unittest discover -s tests -p "test_fresh_robustness.py" -v
+          python -m unittest discover -s tests -p "test_live_sqlite_gui.py" -v
