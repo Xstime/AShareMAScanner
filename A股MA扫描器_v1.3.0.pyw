@@ -693,76 +693,6 @@ def ma_convergence_up_metrics(frame: pd.DataFrame, pos: int,
         return None
     return current
 
-
-def chip_peak_breakout_metrics(frame: pd.DataFrame, pos: int, lookback: int = 45):
-    """Estimated chip-peak breakout based on *daily closes and turnover*.
-
-    This is a transparent proxy, NOT actual intraday transaction cost
-    distribution or proprietary Level-2 brokerage chip data. The peak is
-    calculated using strictly preceding sessions: no look-ahead bias.
-    The day-by-day turnover rate replaces that fraction of older chips.
-    The surviving window is renormalized; history before it is unknown.
-
-    Return (estimated_peak, concentration_pct, breakout_pct, profitable_pct).
-    """
-    if pos < 25 or pos >= len(frame):
-        return None
-    history = frame.iloc[max(0, pos - lookback):pos]
-    samples = []
-    for row in history.itertuples(index=False):
-        try:
-            price = float(getattr(row, "close"))
-            turnover = float(getattr(row, "turnover"))
-        except (AttributeError, ValueError, TypeError):
-            continue
-        if (not math.isfinite(price) or price <= 0
-                or not math.isfinite(turnover) or not 0 <= turnover <= 100):
-            continue
-        samples.append((price, turnover / 100.0))
-    if len(samples) < 25:
-        return None
-
-    survival = 1.0
-    weighted = []
-    for price, share in reversed(samples):
-        if share:
-            weighted.append((price, survival * share))
-        survival *= 1.0 - share
-    total = sum(weight for _, weight in weighted)
-    if total < 0.08:
-        return None
-
-    # Smooth daily-close spikes within 1.8% to locate the dominant cluster.
-    center = None
-    best_mass = -1.0
-    for candidate, _ in weighted:
-        mass = sum(weight for price, weight in weighted
-                   if abs(price / candidate - 1.0) <= 0.018)
-        if mass > best_mass:
-            center, best_mass = candidate, mass
-    cluster = [(price, weight) for price, weight in weighted
-               if abs(price / center - 1.0) <= 0.018]
-    peak = sum(price * weight for price, weight in cluster) / sum(
-        weight for _, weight in cluster)
-    concentration = sum(weight for price, weight in weighted
-                        if abs(price / peak - 1.0) <= 0.05) / total
-    if concentration < 0.45:
-        return None
-
-    try:
-        previous = float(frame.iloc[pos - 1]["close"])
-        current = float(frame.iloc[pos]["close"])
-    except (ValueError, TypeError, KeyError):
-        return None
-    threshold = peak * 1.03
-    if not (math.isfinite(previous) and math.isfinite(current)
-            and previous > 0 and previous <= threshold and current > threshold):
-        return None
-    profitable = sum(weight for price, weight in weighted
-                     if price < current) / total
-    return (peak, concentration * 100.0,
-            (current / peak - 1.0) * 100.0, profitable * 100.0)
-
 MA_WINDOWS = (5, 10, 20)
 VOLUME_AVG_DAYS = 5
 VOLUME_RATIO = 1.5
@@ -2948,8 +2878,6 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                             )
                     elif strategy == "ma_convergence_up":
                         match = pos >= 22 and ma_convergence_up_metrics(g, pos) is not None
-                    elif strategy == "chip_peak_breakout":
-                        match = chip_peak_breakout_metrics(g, pos) is not None
                     elif pos >= 20 and prev["close"] > 0:
                         if strategy.startswith("breakout_ma"):
                             ma = 'MA' + strategy.replace('breakout_ma', '')
@@ -2966,14 +2894,6 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                         payload = {"_code_full": code, "代码": self.symbol_only(code),
                             "名称": row["name"], "触发日": row["trade_date"], "收盘价": row["close"],
                             "放量倍数": ratio, "换手率%": row.get("turnover")}
-                        if strategy == "chip_peak_breakout":
-                            peak, concentration, break_pct, profitable = chip_peak_breakout_metrics(g, pos)
-                            payload.update({
-                                "估算筹码峰价": round(peak, 3),
-                                "峰附近筹码占比%": round(concentration, 2),
-                                "突破峰价幅度%": round(break_pct, 2),
-                                "估算获利筹码%": round(profitable, 2),
-                            })
                         if strategy == "ma_convergence_up":
                             old_gap, new_gap, gain = ma_convergence_up_metrics(g, pos)
                             payload.update({"昨日粘合度%": round(old_gap, 3),
@@ -3196,7 +3116,6 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                     6 if strategy == "volume_turnover"
                     else 7 if strategy == "ma5_turn_up"
                     else 23 if strategy == "ma_convergence_up"
-                    else 26 if strategy == "chip_peak_breakout"
                     else 21
                 )
                 if len(sub) < minimum_bars:
@@ -3216,24 +3135,6 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                         "当日涨幅%": round(float(change), 2),
                         "放量倍数": round(float(today["volume"] / today["VOL5_PREV"]), 2),
                         "换手率%": round(float(today["turnover"]), 3), "_code_full": code,
-                    })
-
-                elif strategy == "chip_peak_breakout":
-                    estimate = chip_peak_breakout_metrics(sub, len(sub) - 1)
-                    if estimate is None or prev["close"] <= 0:
-                        continue
-                    peak, concentration, break_pct, profitable = estimate
-                    change = (today["close"] / prev["close"] - 1) * 100
-                    result.append({
-                        "代码": self.symbol_only(code), "名称": str(today["name"] or ""),
-                        "板块": industry_map.get(code, "未分类"), "触发日": signal_date,
-                        "收盘价": round(float(today["close"]), 2),
-                        "当日涨幅%": round(float(change), 2),
-                        "估算筹码峰价": round(peak, 3),
-                        "峰附近筹码占比%": round(concentration, 2),
-                        "突破峰价幅度%": round(break_pct, 2),
-                        "估算获利筹码%": round(profitable, 2),
-                        "_code_full": code,
                     })
 
                 elif strategy.startswith("breakout_ma"):
@@ -3455,11 +3356,6 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
         elif strategy == "ma5_turn_up":
             out = out.sort_values(
                 ["触发日", "MA5上拐幅度%", "当日涨幅%"],
-                ascending=[False, False, False],
-            )
-        elif strategy == "chip_peak_breakout":
-            out = out.sort_values(
-                ["触发日", "峰附近筹码占比%", "突破峰价幅度%"],
                 ascending=[False, False, False],
             )
         elif strategy == "ma_convergence_up":
@@ -3734,9 +3630,6 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
         previous_trade_date: Optional[str],
         filters: Optional[RangeFilter] = None,
     ) -> str:
-        # A sector index has no meaningful per-share turnover/cost distribution.
-        if strategy == "chip_peak_breakout":
-            return "仅个股适用"
         data = self.get_sector_chart_data(
             sector_name,
             target_date,
@@ -4116,7 +4009,6 @@ STRATEGIES = [
     ("ma5_turn_up", "MA5 拐头向上", "趋势信号"),
     ("ma_convergence_up", "均线粘合向上", "趋势信号"),
     ("volume_turnover", "放量 + 换手率", "量价分析"),
-    ("chip_peak_breakout", "估算筹码峰突破", "筹码分析"),
 ]
 PHASES = [
     ("环境检查", 0, 12), ("失败补抓", 12, 20),
@@ -4351,11 +4243,6 @@ def sample_data(strategy):
             "板块": industry, "收盘价": price, "当日涨幅%": pct,
             "放量倍数": vol, "换手率%": turnover, "触发日": "2026-10-29",
         })
-        if strategy == "chip_peak_breakout":
-            rows[-1].update({"估算筹码峰价": round(price / 1.05, 2),
-                             "峰附近筹码占比%": 61.2,
-                             "突破峰价幅度%": 5.0,
-                             "估算获利筹码%": 91.5})
     return pd.DataFrame(rows)
 
 
@@ -5060,9 +4947,7 @@ class ScannerWindow(QMainWindow):
         self.hit_count.setText(f"命中 {len(self.filtered)} 只")
         self.result_info.setText(
             "模拟数据 · 非真实行情" if self.demo else
-            (f"股票结果 {len(self.filtered)} 只 · {self.update_result.scan_date if self.update_result else '—'}"
-             + (" · 筹码峰为收盘价/换手率估算，非真实逐笔筹码"
-                if self.current_key == "chip_peak_breakout" else ""))
+            f"股票结果 {len(self.filtered)} 只 · {self.update_result.scan_date if self.update_result else '—'}"
         )
     def _draw_table(self):
         # Like v1.2.6, show metrics particular to the active strategy.
@@ -5071,9 +4956,6 @@ class ScannerWindow(QMainWindow):
             columns = common + ["放量倍数", "换手率%"]
         elif self.current_key == "ma5_turn_up":
             columns = common + ["MA5", "昨日MA5", "MA5上拐幅度%", "放量倍数", "换手率%"]
-        elif self.current_key == "chip_peak_breakout":
-            columns = common + ["估算筹码峰价", "峰附近筹码占比%",
-                                "突破峰价幅度%", "估算获利筹码%", "放量倍数", "换手率%"]
         elif self.current_key == "ma_convergence_up":
             columns = common + ["MA5", "MA10", "MA20", "昨日粘合度%",
                                 "今日发散度%", "发散增加百分点", "放量倍数", "换手率%"]
