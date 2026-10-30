@@ -913,6 +913,10 @@ class MarketUpdateCancelled(RuntimeError):
     """The user requested a safe stop. Downloaded progress is committed."""
 
 
+class MarketDataUnavailable(RuntimeError):
+    """Consecutive market source errors; stop instead of retrying thousands of stocks."""
+
+
 class BaoStockBackend:
     HISTORY_FIELDS = "date,code,close,volume,tradestatus,isST,turn"
 
@@ -2395,6 +2399,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                  for r in todo.itertuples(index=False)]
         finished = set()
         started = time.monotonic()
+        consecutive_errors = 0
 
         def progress(code):
             count = len(finished)
@@ -2409,6 +2414,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                                 f"{self.symbol_only(code)}{eta_text}")
 
         def record(conn, code, name, fields=None, values=None, error=""):
+            nonlocal consecutive_errors
             self._check_cancel(conn)
             if code in finished:
                 return
@@ -2426,10 +2432,17 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                         raise RuntimeError("未返回目标交易日日K")
                 self.upsert_daily_rows(conn, rows)
                 self.clear_day_failure(conn, code, trade_date)
+                consecutive_errors = 0
             except Exception as exc:
+                consecutive_errors += 1
                 self.queue_day_failure(conn, code, trade_date, name, exc)
             finished.add(code)
             progress(code)
+            if consecutive_errors >= 25:
+                conn.commit()
+                raise MarketDataUnavailable(
+                    "连续25只股票请求失败，已停止以防长时间无效重试；"
+                    "数据已保存，下次联网正常后继续抓取")
             if len(finished) % BATCH_SIZE == 0:
                 conn.commit()
 
@@ -2483,7 +2496,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                     pool.close()
                     pool.join()
                     pool = None
-                except MarketUpdateCancelled:
+                except (MarketUpdateCancelled, MarketDataUnavailable):
                     conn.commit()
                     raise
                 except Exception as exc:
