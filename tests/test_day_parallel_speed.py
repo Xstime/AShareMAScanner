@@ -184,6 +184,8 @@ class DayParallelTests(unittest.TestCase):
         with m.sqlite_connection(self.backend.db_path) as conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM daily").fetchone()[0], 25)
         self.backend._cancel_update_event.clear()
+        # Ensure resume stays offline; only the saved-row logic is being tested.
+        self.backend.query_stock_history = lambda *a, **k: None
         missed = []
         def resume(code, name, date):
             missed.append(code)
