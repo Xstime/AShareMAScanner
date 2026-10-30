@@ -193,5 +193,25 @@ class DayParallelTests(unittest.TestCase):
         self.assertEqual((state["saved"], state["expected"], state["failed"]), (130,130,0))
         self.assertEqual(len(missed), 105)
 
+    def test_08_network_outage_circuit_breaker_prevents_unbounded_stock_retries(self):
+        data = self.results()
+        # First 10 are valid, followed by 30 continuous network failures.
+        broken = [(*item[:4], "network down" if 10 <= n < 45 else item[4])
+                  for n, item in enumerate(data)]
+        pool = FakePool(broken)
+        with patch.object(m.multiprocessing, "get_context", return_value=FakeContext(pool)):
+            with self.assertRaises(m.MarketDataUnavailable):
+                self.backend.process_trade_date(self.trade_date, lambda *_: None, 80, 94)
+        self.assertTrue(pool.terminated and pool.joined)
+        with m.sqlite_connection(self.backend.db_path) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM daily").fetchone()[0], 10)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM fetch_queue").fetchone()[0], 25)
+        # Next launch with healthy source resumes every missing stock without duplication.
+        self.backend.query_stock_history = lambda *a, **k: None
+        self.backend.fetch_exact_day_for_stock = lambda code, name, date: [
+            (code,date,name,10.25,1000,1,0,3.2)]
+        status = self.backend.process_trade_date(self.trade_date, lambda *_: None, 80, 94)
+        self.assertEqual((status["saved"], status["failed"]), (130,0))
+
 if __name__=="__main__":
     unittest.main(verbosity=2)
