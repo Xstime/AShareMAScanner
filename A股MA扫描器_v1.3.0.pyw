@@ -596,6 +596,10 @@ def _download_release_asset(url, expected_size, staged, on_progress=None,
                             if on_progress:
                                 elapsed = max(time.monotonic() - started, 0.001)
                                 on_progress(total, expected_size, total / elapsed)
+                except (TimeoutError, ConnectionError, urllib.error.URLError):
+                    # Socket failures must be handled by the outer resumable
+                    # download loop rather than reported as local disk errors.
+                    raise
                 except OSError as exc:
                     raise RuntimeError("无法写入更新临时文件，请检查磁盘空间与权限") from exc
                 _ensure_update_active(cancel_event)
