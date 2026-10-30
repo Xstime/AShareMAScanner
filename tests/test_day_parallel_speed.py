@@ -191,6 +191,7 @@ class DayParallelTests(unittest.TestCase):
             missed.append(code)
             return [(code,date,name,10.25,1000,1,0,3.2)]
         self.backend.fetch_exact_day_for_stock = resume
+        self.backend.query_stock_history = lambda *args: None  # explicit sequential resume
         state = self.backend.process_trade_date(self.trade_date, lambda *_: None, 80, 94)
         self.assertEqual((state["saved"], state["expected"], state["failed"]), (130,130,0))
         self.assertEqual(len(missed), 105)
