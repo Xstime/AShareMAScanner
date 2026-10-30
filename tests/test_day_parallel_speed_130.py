@@ -66,6 +66,11 @@ class FakeContext:
 
 class DayParallelTests(unittest.TestCase):
     def setUp(self):
+        # The fake pool raises immediately; shorten only the test's stall
+        # deadline so a simulated dead worker does not consume 90 seconds.
+        old_stall = m.DAILY_WORKER_STALL_SECONDS
+        m.DAILY_WORKER_STALL_SECONDS = .15
+        self.addCleanup(setattr, m, "DAILY_WORKER_STALL_SECONDS", old_stall)
         self.tmp = tempfile.TemporaryDirectory()
         self.backend = m.BaoStockBackend(Path(self.tmp.name)/"market.db")
         self.backend.init_db()
