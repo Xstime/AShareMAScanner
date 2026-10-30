@@ -184,11 +184,14 @@ class DayParallelTests(unittest.TestCase):
         with m.sqlite_connection(self.backend.db_path) as conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM daily").fetchone()[0], 25)
         self.backend._cancel_update_event.clear()
+        # Ensure resume stays offline; only the saved-row logic is being tested.
+        self.backend.query_stock_history = lambda *a, **k: None
         missed = []
         def resume(code, name, date):
             missed.append(code)
             return [(code,date,name,10.25,1000,1,0,3.2)]
         self.backend.fetch_exact_day_for_stock = resume
+        self.backend.query_stock_history = lambda *args: None  # explicit sequential resume
         state = self.backend.process_trade_date(self.trade_date, lambda *_: None, 80, 94)
         self.assertEqual((state["saved"], state["expected"], state["failed"]), (130,130,0))
         self.assertEqual(len(missed), 105)
