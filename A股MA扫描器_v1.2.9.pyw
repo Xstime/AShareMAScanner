@@ -3878,7 +3878,14 @@ def run_tk_data_phase(backend=None, *, autostart=True):
                              if lo<=value<hi),len(stages)-1)
                 stage_var.set(f"阶段 {active+1}/8 · {stages[active][0]}")
                 task_var.set(message)
-                counter_var.set(message[:84])
+                match = re.search(r"(\d+)\s*/\s*(\d+)", message)
+                if match and int(match.group(2)) > 0:
+                    complete, total = map(int, match.groups())
+                    counter_var.set(
+                        f"本阶段已处理 {complete:,}/{total:,} 只"
+                        f"（{100 * complete / total:.1f}%）")
+                else:
+                    counter_var.set(message[:84])
                 append(message)
             elif kind=="success":
                 state["running"]=False
