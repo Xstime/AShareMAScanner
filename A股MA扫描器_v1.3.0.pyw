@@ -565,7 +565,7 @@ def _download_release_asset(url, expected_size, staged, on_progress=None,
                 if total and status == 206:
                     content_range = getattr(response, "headers", {}).get(
                         "Content-Range", "")
-                    match = re.fullmatch(r"bytes (\\d+)-(\\d+)/(\\d+)", content_range)
+                    match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", content_range)
                     if (not match or int(match.group(1)) != total
                             or int(match.group(3)) != expected_size
                             or int(match.group(2)) < total):
@@ -665,8 +665,8 @@ def prepare_manual_update(original: Path, on_update_found=None,
         if on_status:
             on_status("下载完成，正在验证文件完整性与 Python 语法…")
         source = staged.read_bytes()
-        if not re.search(rb"(?m)^APP_VERSION\\s*=\\s*['\\\"]" +
-                         re.escape(".".join(map(str, latest)).encode()) + rb"['\\\"]", source):
+        if not re.search(rb"(?m)^APP_VERSION\s*=\s*['\"]" +
+                         re.escape(".".join(map(str, latest)).encode()) + rb"['\"]", source):
             raise RuntimeError("下载的程序版本号与 GitHub Release 不一致")
         if b"def main():" not in source or b"--update-ack" not in source:
             raise RuntimeError("下载文件缺少必需的安全更新启动接口")
