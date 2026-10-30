@@ -105,7 +105,8 @@ jobs:
           python - <<'PY'
           import hashlib,json,os,subprocess
           repo=os.environ["GITHUB_REPOSITORY"]
-          release=json.loads(subprocess.check_output(["gh","api",f"repos/{repo}/releases/tags/v1.2.9"]))
+          published=json.loads(subprocess.check_output(["gh","api",f"repos/{repo}/releases?per_page=100"]))
+          release=next(r for r in published if r["tag_name"]=="v1.2.9")
           assert release["draft"] is True
           assert release["tag_name"] == "v1.2.9"
           assets={a["name"]:a for a in release["assets"]}
@@ -114,13 +115,12 @@ jobs:
               a=assets[name]
               assert a["size"] == len(raw)
               assert a["digest"] == "sha256:"+hashlib.sha256(raw).hexdigest(), name
-          tag=json.loads(subprocess.check_output(["gh","api",f"repos/{repo}/git/ref/tags/v1.2.9"]))
-          assert tag["object"]["sha"] == os.environ["GITHUB_SHA"]
-          print("Both assets, tag SHA, and release draft verified.")
+          print("Draft file hashes and sizes verified before publication.")
           PY
       - name: Publish v1.2.9 as latest official version
         run: |
           set -euo pipefail
           gh release edit v1.2.9 --draft=false --latest --repo "$GITHUB_REPOSITORY"
           test "$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name')" = v1.2.9
-          echo "Successfully published v1.2.9"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v1.2.9" --jq '.object.sha')" = "$GITHUB_SHA"
+          echo "Successfully published v1.2.9 with verified tag and assets"
