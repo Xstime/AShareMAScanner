@@ -70,7 +70,8 @@ class GuiParityAudit(unittest.TestCase):
         self.assertEqual(len(self.w.buttons),7)
         self.assertEqual(len(self.w.fund_cards),5)
     def test_real_update_check_button(self):
-        self.assertIn("fetch_latest_release(",inspect.getsource(m.ScannerWindow._show_release_info))
+        self.assertIn("VersionWorker()",inspect.getsource(m.ScannerWindow._show_release_info))
+        self.assertIn("prepare_manual_update(",inspect.getsource(m.VersionWorker.run))
     def test_four_parameter_bounds(self):
         self.w._select_strategy("volume_turnover")
         self.assertGreaterEqual(len(self.w.volume_options.findChildren(QLineEdit)),4)
