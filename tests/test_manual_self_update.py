@@ -167,6 +167,11 @@ class UpdateTesting(unittest.TestCase):
         proc=subprocess.run([sys.executable,str(helper),"999999",str(old),
             str(staged),str(backup),str(ack),"1.2.8"],
             stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=12)
+        # The helper deliberately starts a fresh app process that outlives it.
+        # This synthetic app sleeps briefly after ACK. Wait for it to release
+        # its Windows working-directory handle before TemporaryDirectory cleanup.
+        import time
+        time.sleep(1.5)
         return proc,old,staged,backup,ack
 
     def test_helper_replaces_and_deletes_old_after_new_ack(self):
