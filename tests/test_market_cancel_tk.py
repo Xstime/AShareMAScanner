@@ -29,6 +29,23 @@ class CancelTkTests(unittest.TestCase):
         started=threading.Event()
         received=[]
         class ClosingTk(OriginalTk):
+            def mainloop(self, n=0):
+                # Drive the genuine Tcl event queue deterministically under
+                # CI/Xvfb, independent of any window manager that might
+                # terminate Tk's native mainloop before autostart.
+                self._test_loop_quit = False
+                deadline = time.monotonic()+6
+                while not self._test_loop_quit and time.monotonic()<deadline:
+                    try:
+                        self.update()
+                    except tk.TclError:
+                        break
+                    time.sleep(.01)
+
+            def quit(self):
+                self._test_loop_quit = True
+                return super().quit()
+
             def protocol(self, name=None, func=None):
                 result=super().protocol(name,func)
                 if name=="WM_DELETE_WINDOW" and func:
