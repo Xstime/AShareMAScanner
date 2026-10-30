@@ -1,0 +1,28 @@
+name: Dev read-only real BaoStock historical K-line probe
+on:
+  push:
+    branches: [dev/v1.2.9-market-speed-fix]
+    paths:
+      - 'tests/live_history_probe.py'
+      - '.github/workflows/dev-v129-live-history-probe.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  historical-market:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libegl1 libopengl0 libxkbcommon-x11-0 libxcb-cursor0 python3-tk
+          python -m pip install -r requirements.txt
+      - name: Real isolated 45-day BaoStock history probe
+        run: python tests/live_history_probe.py
