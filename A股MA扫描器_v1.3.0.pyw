@@ -527,110 +527,9 @@ def _expected_release_asset(release, latest):
     return url, digest.split(":", 1)[1].lower(), size
 
 
-class UpdateDownloadCancelled(Exception):
-    """The user cancelled an in-flight update before installation."""
-
-
-def _ensure_update_active(cancel_event):
-    if cancel_event is not None and cancel_event.is_set():
-        raise UpdateDownloadCancelled("已取消更新下载")
-
-
-def _download_release_asset(url, expected_size, staged, on_progress=None,
-                            on_status=None, cancel_event=None):
-    """Stream with no overall deadline; resume after transient socket timeouts.
-
-    urllib's timeout is a per-socket inactivity guard, NOT a total download
-    deadline. The progress window remains responsive and cancellation is
-    checked at least after a socket operation/retry delay. Retried requests
-    use a validated HTTP Range response or restart cleanly if not supported.
-    """
-    hasher = hashlib.sha256()
-    total = 0
-    started = time.monotonic()
-    retry_count = 0
-    while total < expected_size:
-        _ensure_update_active(cancel_event)
-        headers = {"User-Agent": f"AShareMAScanner-updater/{APP_VERSION}"}
-        if total:
-            headers["Range"] = f"bytes={total}-"
-        request = urllib.request.Request(url, headers=headers)
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                actual = urllib.parse.urlsplit(response.geturl())
-                if actual.scheme != "https" or actual.hostname not in (
-                        "github.com", "release-assets.githubusercontent.com"):
-                    raise RuntimeError("更新文件最终下载地址不可信")
-                status = getattr(response, "status", 200)
-                if total and status == 206:
-                    content_range = getattr(response, "headers", {}).get(
-                        "Content-Range", "")
-                    match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", content_range)
-                    if (not match or int(match.group(1)) != total
-                            or int(match.group(3)) != expected_size
-                            or int(match.group(2)) < total):
-                        raise RuntimeError("断点续传区间不可信，拒绝合并更新文件")
-                elif status == 200:
-                    # Some GitHub endpoints ignore Range. Do not append a full
-                    # response to old bytes; restart the verified download.
-                    if total:
-                        total = 0
-                        hasher = hashlib.sha256()
-                        if on_progress:
-                            on_progress(0, expected_size, 0.0)
-                else:
-                    raise RuntimeError(f"更新下载状态异常（HTTP {status}）")
-                try:
-                    with staged.open("ab" if total else "wb") as dest:
-                        while total < expected_size:
-                            _ensure_update_active(cancel_event)
-                            chunk = response.read(min(64 * 1024, expected_size - total))
-                            _ensure_update_active(cancel_event)
-                            if not chunk:
-                                raise RuntimeError("更新文件提前结束，大小与发行信息不符")
-                            total += len(chunk)
-                            if total > MAX_UPDATE_BYTES:
-                                raise RuntimeError("更新文件超过允许大小")
-                            hasher.update(chunk)
-                            dest.write(chunk)
-                            if on_progress:
-                                elapsed = max(time.monotonic() - started, 0.001)
-                                on_progress(total, expected_size, total / elapsed)
-                except (TimeoutError, ConnectionError, urllib.error.URLError):
-                    # Socket failures must be handled by the outer resumable
-                    # download loop rather than reported as local disk errors.
-                    raise
-                except OSError as exc:
-                    raise RuntimeError("无法写入更新临时文件，请检查磁盘空间与权限") from exc
-                _ensure_update_active(cancel_event)
-                break
-        except urllib.error.HTTPError as exc:
-            # 403/404 and other HTTP failures require user-visible diagnosis,
-            # not an endless retry loop.
-            raise RuntimeError(f"GitHub 下载响应异常（HTTP {exc.code}）") from exc
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            _ensure_update_active(cancel_event)
-            retry_count += 1
-            if on_status:
-                on_status(f"下载连接中断，正在重连（第 {retry_count} 次）…")
-            # No overall deadline or arbitrary retry-count limit. The user may
-            # cancel, and the 30s socket timeout prevents an uninterruptible
-            # network read.
-            pause = min(retry_count, 5)
-            if cancel_event is not None:
-                if cancel_event.wait(pause):
-                    raise UpdateDownloadCancelled("已取消更新下载") from exc
-            else:
-                time.sleep(pause)
-    return hasher.hexdigest()
-
-
-def prepare_manual_update(original: Path, on_update_found=None,
-                          on_progress=None, on_status=None, cancel_event=None):
-    """Explicit update check, verified download and staging; no auto-install."""
-    _ensure_update_active(cancel_event)
+def prepare_manual_update(original: Path):
+    """Called ONLY after an explicit button click; returns (message, staged_path)."""
     release = _github_release_document()
-    _ensure_update_active(cancel_event)
     if release is None or release.get("draft") or release.get("prerelease"):
         return "尚无可用正式版本", None
     latest = _release_version(release.get("tag_name", ""))
@@ -646,31 +545,44 @@ def prepare_manual_update(original: Path, on_update_found=None,
             local_digest = hashlib.file_digest(stream, "sha256").hexdigest()
         if local_digest == expected_digest:
             return "当前已是最新正式版本（文件校验一致）", None
-
+    # Do not replace in place from the worker thread. Stage and verify first.
     original = Path(original).resolve()
     if original.suffix.lower() != ".pyw" or not original.is_file():
         raise RuntimeError("自动更新仅支持从本地 .pyw 源文件运行")
     backup = original.with_name(original.name + ".old-update.bak")
     if backup.exists():
         raise RuntimeError(f"旧版备份尚未清理：{backup.name}，为防止覆盖已取消本次更新")
-    _ensure_update_active(cancel_event)
-    if on_update_found:
-        on_update_found("v" + ".".join(map(str, latest)), size)
-    _ensure_update_active(cancel_event)
     fd, candidate = tempfile.mkstemp(prefix=".ashare-update-", suffix=".pyw",
-                                     dir=str(original.parent))
+                                    dir=str(original.parent))
     os.close(fd)
     staged = Path(candidate)
     try:
-        digest = _download_release_asset(url, size, staged, on_progress=on_progress,
-                                         on_status=on_status, cancel_event=cancel_event)
-        _ensure_update_active(cancel_event)
-        if digest != expected_digest:
-            raise RuntimeError("新程序的 SHA-256 不匹配，拒绝安装")
-        if staged.stat().st_size != size:
-            raise RuntimeError("新程序的文件长度不匹配，拒绝安装")
-        if on_status:
-            on_status("下载完成，正在验证文件完整性与 Python 语法…")
+        response_request = urllib.request.Request(url, headers={
+            "User-Agent": f"AShareMAScanner-updater/{APP_VERSION}",
+        })
+        try:
+            with urllib.request.urlopen(response_request, timeout=30) as response:
+                actual = urllib.parse.urlsplit(response.geturl())
+                if actual.scheme != "https" or not (
+                    actual.hostname == "github.com"
+                    or actual.hostname == "release-assets.githubusercontent.com"):
+                    raise RuntimeError("更新文件最终下载地址不可信")
+                hasher = hashlib.sha256()
+                total = 0
+                with staged.open("wb") as dest:
+                    while True:
+                        chunk = response.read(min(64 * 1024, MAX_UPDATE_BYTES + 1 - total))
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > MAX_UPDATE_BYTES:
+                            raise RuntimeError("更新文件超过允许大小")
+                        hasher.update(chunk)
+                        dest.write(chunk)
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise RuntimeError("更新文件下载失败") from exc
+        if total != size or hasher.hexdigest() != expected_digest:
+            raise RuntimeError("新程序的文件长度或 SHA-256 不匹配，拒绝安装")
         source = staged.read_bytes()
         if not re.search(rb"(?m)^APP_VERSION\s*=\s*['\"]" +
                          re.escape(".".join(map(str, latest)).encode()) + rb"['\"]", source):
@@ -681,7 +593,6 @@ def prepare_manual_update(original: Path, on_update_found=None,
             compile(source, str(staged), "exec")
         except (SyntaxError, ValueError) as exc:
             raise RuntimeError("新版本源码未通过 Python 编译检查") from exc
-        _ensure_update_active(cancel_event)
         os.chmod(staged, stat.S_IMODE(original.stat().st_mode))
         return (f"已验证并下载 v{'.'.join(map(str, latest))}，即将自动替换并重启",
                 staged)
@@ -781,107 +692,6 @@ def ma_convergence_up_metrics(frame: pd.DataFrame, pos: int,
     if signal_on(pos - 1) is not None:
         return None
     return current
-
-
-# This estimates limit-up using post-adjusted DAILY CLOSES, NOT certified
-# exchange closing-limit prices or intraday limit-up order-book data.
-FIRST_BOARD_OFFSETS = (3, 4, 5)    # market trading days ago
-FIRST_BOARD_LOOKBACK = 30          # completed stock trading sessions before board
-FIRST_BOARD_CLEAR_DAYS = 20        # no prior limit-up during these trading sessions
-FIRST_BOARD_LOW_POSITION = 0.35   # lower 35% of preceding 30-session close range
-FIRST_BOARD_VOLUME_RATIO = 1.5    # event volume vs previous 5-session mean
-
-
-def is_approx_limit_up(previous_close, close, code: str) -> bool:
-    """Daily-close proxy for the 10% or 20% A-share closing price limit."""
-    try:
-        before, current = float(previous_close), float(close)
-    except (TypeError, ValueError):
-        return False
-    if not all(math.isfinite(x) and x > 0 for x in (before, current)):
-        return False
-    symbol = str(code).split(".")[-1]
-    if symbol.startswith(("300", "301", "688")):
-        lo, hi = .195, .206
-    elif symbol.startswith(("600", "601", "603", "605",
-                            "000", "001", "002", "003")):
-        lo, hi = .097, .106
-    else:
-        return False
-    return lo <= current / before - 1.0 <= hi
-
-
-def low_first_board_metrics(frame: pd.DataFrame, pos: int, code: str,
-                            market_dates) -> Optional[dict]:
-    """Find a first-board candidate from 3–5 MARKET sessions earlier.
-
-    Uses only history no later than frame[pos]. 'First board' means no
-    approximate limit-up in the prior 20 valid stock sessions.
-    """
-    if (pos < FIRST_BOARD_LOOKBACK + min(FIRST_BOARD_OFFSETS)
-            or pos >= len(frame)):
-        return None
-    calendar = [str(x) for x in market_dates]
-    current_date = str(frame.iloc[pos]["trade_date"])
-    try:
-        calendar_pos = calendar.index(current_date)
-    except ValueError:
-        return None
-    stock_pos = {str(frame.iloc[i]["trade_date"]): i for i in range(pos + 1)}
-    for days_ago in FIRST_BOARD_OFFSETS:
-        calendar_index = calendar_pos - days_ago
-        if calendar_index < 0:
-            continue
-        event_pos = stock_pos.get(calendar[calendar_index])
-        if event_pos is None or event_pos < FIRST_BOARD_LOOKBACK:
-            continue
-        event = frame.iloc[event_pos]
-        name = str(event.get("name", "") or "").strip().upper()
-        if str(event.get("is_st", "0")) in ("1", "1.0") or name.lstrip("*").startswith("ST"):
-            continue
-        previous = frame.iloc[event_pos - 1]
-        if not is_approx_limit_up(previous["close"], event["close"], code):
-            continue
-        # Disallow two-board, three-board, and any limit-up within 20 sessions.
-        if any(is_approx_limit_up(frame.iloc[i - 1]["close"],
-                                  frame.iloc[i]["close"], code)
-               for i in range(event_pos - FIRST_BOARD_CLEAR_DAYS, event_pos)):
-            continue
-        prices = pd.to_numeric(
-            frame.iloc[event_pos - FIRST_BOARD_LOOKBACK:event_pos]["close"],
-            errors="coerce")
-        if len(prices) != FIRST_BOARD_LOOKBACK or prices.isna().any():
-            continue
-        bottom, top = float(prices.min()), float(prices.max())
-        if not (math.isfinite(bottom) and math.isfinite(top)
-                and bottom > 0 and top > bottom):
-            continue
-        previous_close = float(previous["close"])
-        location = (previous_close - bottom) / (top - bottom)
-        if not 0 <= location <= FIRST_BOARD_LOW_POSITION:
-            continue
-        prior_volumes = pd.to_numeric(
-            frame.iloc[event_pos - 5:event_pos]["volume"], errors="coerce")
-        if len(prior_volumes) != 5 or prior_volumes.isna().any():
-            continue
-        mean_volume = float(prior_volumes.mean())
-        if not math.isfinite(mean_volume) or mean_volume <= 0:
-            continue
-        ratio = float(event["volume"]) / mean_volume
-        if not math.isfinite(ratio) or ratio < FIRST_BOARD_VOLUME_RATIO:
-            continue
-        current_close = float(frame.iloc[pos]["close"])
-        event_close = float(event["close"])
-        return {
-            "首板日期": str(event["trade_date"]),
-            "距今交易日": days_ago,
-            "首板涨幅%": (event_close / previous_close - 1) * 100,
-            "首板放量倍数": ratio,
-            "首板前30日位置%": location * 100,
-            "现价较首板%": (current_close / event_close - 1) * 100,
-        }
-    return None
-
 
 MA_WINDOWS = (5, 10, 20)
 VOLUME_AVG_DAYS = 5
@@ -3043,10 +2853,6 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
             raw = pd.read_sql_query("SELECT * FROM daily WHERE code=? AND trade_date<=? ORDER BY trade_date",
                                     conn, params=(code, end_date))
         if not raw.empty:
-            with sqlite_connection(self.db_path, timeout=30) as conn:
-                calendar = [r[0] for r in conn.execute(
-                    "SELECT DISTINCT trade_date FROM daily WHERE trade_date<=? "
-                    "ORDER BY trade_date", (end_date,)).fetchall()]
             g = self._prepare_group(raw)
             results = {key: [] for key, _, _ in STRATEGIES}
             for pos in range(1, len(g)):
@@ -3072,8 +2878,6 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                             )
                     elif strategy == "ma_convergence_up":
                         match = pos >= 22 and ma_convergence_up_metrics(g, pos) is not None
-                    elif strategy == "low_first_board":
-                        match = low_first_board_metrics(g, pos, code, calendar) is not None
                     elif pos >= 20 and prev["close"] > 0:
                         if strategy.startswith("breakout_ma"):
                             ma = 'MA' + strategy.replace('breakout_ma', '')
@@ -3090,10 +2894,6 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                         payload = {"_code_full": code, "代码": self.symbol_only(code),
                             "名称": row["name"], "触发日": row["trade_date"], "收盘价": row["close"],
                             "放量倍数": ratio, "换手率%": row.get("turnover")}
-                        if strategy == "low_first_board":
-                            details = low_first_board_metrics(g, pos, code, calendar)
-                            payload.update({k: round(v, 3) if isinstance(v, float) else v
-                                            for k, v in details.items()})
                         if strategy == "ma_convergence_up":
                             old_gap, new_gap, gain = ma_convergence_up_metrics(g, pos)
                             payload.update({"昨日粘合度%": round(old_gap, 3),
@@ -3270,7 +3070,6 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
         if df.empty:
             return pd.DataFrame()
 
-        market_dates = sorted(df["trade_date"].astype(str).unique().tolist())
         result = []
         daily_metrics = {}
 
@@ -3317,7 +3116,6 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                     6 if strategy == "volume_turnover"
                     else 7 if strategy == "ma5_turn_up"
                     else 23 if strategy == "ma_convergence_up"
-                    else 34 if strategy == "low_first_board"
                     else 21
                 )
                 if len(sub) < minimum_bars:
@@ -3337,25 +3135,6 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                         "当日涨幅%": round(float(change), 2),
                         "放量倍数": round(float(today["volume"] / today["VOL5_PREV"]), 2),
                         "换手率%": round(float(today["turnover"]), 3), "_code_full": code,
-                    })
-
-                elif strategy == "low_first_board":
-                    # Screen TODAY for a qualifying event 3–5 market days ago.
-                    metrics = low_first_board_metrics(
-                        sub, len(sub) - 1, code, market_dates)
-                    if metrics is None or float(prev["close"]) <= 0:
-                        continue
-                    change = (float(today["close"]) / float(prev["close"]) - 1) * 100
-                    result.append({
-                        "代码": self.symbol_only(code),
-                        "名称": str(today["name"] or ""),
-                        "板块": industry_map.get(code, "未分类"),
-                        "触发日": signal_date,
-                        "收盘价": round(float(today["close"]), 2),
-                        "当日涨幅%": round(float(change), 2),
-                        **{k: round(v, 3) if isinstance(v, float) else v
-                           for k, v in metrics.items()},
-                        "_code_full": code,
                     })
 
                 elif strategy.startswith("breakout_ma"):
@@ -3579,8 +3358,6 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                 ["触发日", "MA5上拐幅度%", "当日涨幅%"],
                 ascending=[False, False, False],
             )
-        elif strategy == "low_first_board":
-            out = out.sort_values(["距今交易日", "首板放量倍数"], ascending=[True, False])
         elif strategy == "ma_convergence_up":
             out = out.sort_values(
                 ["触发日", "发散增加百分点", "当日涨幅%"],
@@ -3853,9 +3630,6 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
         previous_trade_date: Optional[str],
         filters: Optional[RangeFilter] = None,
     ) -> str:
-        # An industry index cannot have an individual-stock first limit-up.
-        if strategy == "low_first_board":
-            return "仅个股适用"
         data = self.get_sector_chart_data(
             sector_name,
             target_date,
@@ -4235,7 +4009,6 @@ STRATEGIES = [
     ("ma5_turn_up", "MA5 拐头向上", "趋势信号"),
     ("ma_convergence_up", "均线粘合向上", "趋势信号"),
     ("volume_turnover", "放量 + 换手率", "量价分析"),
-    ("low_first_board", "低位首板放量（3～5日）", "量价分析"),
 ]
 PHASES = [
     ("环境检查", 0, 12), ("失败补抓", 12, 20),
@@ -4315,43 +4088,16 @@ class ChartWorker(QThread):
 
 
 class VersionWorker(QThread):
-    """Check on demand; notify the GUI before streaming the asset."""
-    update_found = Signal(str, int)
-    progress = Signal(int, int, float)
-    status = Signal(str)
+    """Started only from the user-pressed Check Updates button."""
     success = Signal(str, object)
     failed = Signal(str)
-    cancelled = Signal()
-
-    def __init__(self):
-        super().__init__()
-        self.cancel_event = threading.Event()
-
-    def cancel_download(self):
-        self.cancel_event.set()
 
     def run(self):
         try:
-            message, staged_path = prepare_manual_update(
-                Path(__file__).resolve(),
-                on_update_found=self.update_found.emit,
-                on_progress=self.progress.emit,
-                on_status=self.status.emit,
-                cancel_event=self.cancel_event,
-            )
-            if self.cancel_event.is_set():
-                if staged_path is not None:
-                    Path(staged_path).unlink(missing_ok=True)
-                self.cancelled.emit()
-            else:
-                self.success.emit(message, staged_path)
-        except UpdateDownloadCancelled:
-            self.cancelled.emit()
+            message, staged_path = prepare_manual_update(Path(__file__).resolve())
+            self.success.emit(message, staged_path)
         except Exception as exc:
-            if self.cancel_event.is_set():
-                self.cancelled.emit()
-            else:
-                self.failed.emit(str(exc))
+            self.failed.emit(str(exc))
 
 
 class HistoryWorker(QThread):
@@ -4497,12 +4243,6 @@ def sample_data(strategy):
             "板块": industry, "收盘价": price, "当日涨幅%": pct,
             "放量倍数": vol, "换手率%": turnover, "触发日": "2026-10-29",
         })
-        if strategy == "low_first_board":
-            rows[-1].update({
-                "首板日期": "2026-10-26", "距今交易日": 3,
-                "首板涨幅%": 10.0, "首板放量倍数": 2.2,
-                "首板前30日位置%": 18.0, "现价较首板%": 2.1,
-            })
     return pd.DataFrame(rows)
 
 
@@ -4577,7 +4317,6 @@ class ScannerWindow(QMainWindow):
         self._latest_release_url = None
         self._version_worker = None
         self._update_in_progress = False
-        self._download_dialog = None
         self.setWindowTitle("A股 MA 扫描器 v1.3.0 · PySide6 4:3 工作台")
         self.resize(1120, 840)
         self.setMinimumSize(980, 735)
@@ -4603,8 +4342,6 @@ class ScannerWindow(QMainWindow):
         # No QThread can be destroyed while it is still running.
         if self._scan_cancel_event is not None:
             self._scan_cancel_event.set()
-        if self._version_worker is not None and self._version_worker.isRunning():
-            self._version_worker.cancel_download()
         if any(worker.isRunning() for worker in self.workers):
             event.ignore()
             self.statusBar().showMessage("后台任务尚未结束，完成后自动关闭…")
@@ -5210,18 +4947,13 @@ class ScannerWindow(QMainWindow):
         self.hit_count.setText(f"命中 {len(self.filtered)} 只")
         self.result_info.setText(
             "模拟数据 · 非真实行情" if self.demo else
-            (f"股票结果 {len(self.filtered)} 只 · {self.update_result.scan_date if self.update_result else '—'}"
-             + (" · 仅由后复权收盘涨幅近似识别首板，非交易所封板记录"
-                if self.current_key == "low_first_board" else ""))
+            f"股票结果 {len(self.filtered)} 只 · {self.update_result.scan_date if self.update_result else '—'}"
         )
     def _draw_table(self):
         # Like v1.2.6, show metrics particular to the active strategy.
         common = ["代码", "名称", "板块", "触发日", "收盘价", "当日涨幅%"]
         if self.current_key == "volume_turnover":
             columns = common + ["放量倍数", "换手率%"]
-        elif self.current_key == "low_first_board":
-            columns = common + ["首板日期", "距今交易日", "首板涨幅%",
-                                "首板放量倍数", "首板前30日位置%", "现价较首板%"]
         elif self.current_key == "ma5_turn_up":
             columns = common + ["MA5", "昨日MA5", "MA5上拐幅度%", "放量倍数", "换手率%"]
         elif self.current_key == "ma_convergence_up":
@@ -5240,7 +4972,7 @@ class ScannerWindow(QMainWindow):
         for row_number, (_, record) in enumerate(self.filtered.iterrows()):
             for column, key in enumerate(columns):
                 raw = record.get(key)
-                if key in ("代码", "名称", "板块", "触发日", "首板日期"):
+                if key in ("代码", "名称", "板块", "触发日"):
                     value = str(raw) if raw is not None and not pd.isna(raw) else "—"
                 else:
                     value = value_text(raw)
@@ -5550,88 +5282,26 @@ class ScannerWindow(QMainWindow):
         worker.start()
 
     def _show_release_info(self):
-        # Manual trigger only: no automatic network request at startup.
+        # Manual trigger only: no background version request on startup.
         if self._version_worker is not None and self._version_worker.isRunning():
             return
         if getattr(self, "_update_in_progress", False):
             return
         self._update_in_progress = True
         self.update_button.setEnabled(False)
-        self.statusBar().showMessage("正在检查 GitHub 正式版本…")
+        self.statusBar().showMessage("正在手动检查 GitHub 正式版并验证下载文件…")
         worker = VersionWorker()
         self._version_worker = worker
-        self._download_dialog = None
-
-        def show_download(version, size):
-            # A window appears only if a newer/repaired release needs download.
-            if self._download_dialog is not None:
-                return
-            dialog = QDialog(self)
-            dialog.setWindowTitle(f"正在下载更新 · {version}")
-            dialog.setWindowModality(Qt.WindowModality.WindowModal)
-            dialog.setMinimumWidth(440)
-            layout = QVBoxLayout(dialog)
-            title = QLabel(f"发现可用更新 {version}，正在下载正式发行文件")
-            title.setWordWrap(True)
-            layout.addWidget(title)
-            bar = QProgressBar()
-            bar.setRange(0, 1000)
-            bar.setValue(0)
-            layout.addWidget(bar)
-            downloaded = QLabel(f"已下载 0 KB / {size / 1024:.1f} KB · 0.0%")
-            layout.addWidget(downloaded)
-            speed = QLabel("当前速度：等待响应…")
-            layout.addWidget(speed)
-            state = QLabel("不限制总下载时长；连接中断后自动续传或重试")
-            state.setWordWrap(True)
-            layout.addWidget(state)
-            cancel_button = QPushButton("取消下载")
-            layout.addWidget(cancel_button)
-
-            def request_cancel():
-                worker.cancel_download()
-                cancel_button.setEnabled(False)
-                state.setText("正在取消并清理临时文件…")
-
-            cancel_button.clicked.connect(request_cancel)
-            dialog.rejected.connect(worker.cancel_download)
-            self._download_dialog = dialog
-            self._download_ui = (bar, downloaded, speed, state)
-            dialog.show()
-
-        def update_progress(received, size, bytes_per_second):
-            if self._download_dialog is None:
-                return
-            bar, downloaded, speed, state = self._download_ui
-            percent = received * 100.0 / size if size else 0.0
-            bar.setValue(min(1000, round(percent * 10)))
-            downloaded.setText(
-                f"已下载 {received / 1024:.1f} KB / {size / 1024:.1f} KB · {percent:.1f}%"
-            )
-            speed.setText(f"平均速度：{bytes_per_second / 1024:.1f} KB/s")
-            state.setText("正在下载…（不限制总下载时长）")
-
-        def update_status(message):
-            if self._download_dialog is not None:
-                self._download_ui[3].setText(message)
-            self.statusBar().showMessage(message)
-
-        def finish_ui():
-            if self._download_dialog is not None:
-                self._download_dialog.accept()
-                self._download_dialog = None
-                self._download_ui = None
-            self._update_in_progress = False
-            self.update_button.setEnabled(True)
 
         def ready(message, staged):
-            finish_ui()
+            self._update_in_progress = False
+            self.update_button.setEnabled(True)
             if staged is None:
                 QMessageBox.information(self, "检查更新", message)
                 self.statusBar().showMessage(message)
                 return
-            # Download, SHA-256 verification and compile ran outside the UI thread.
-            self.statusBar().showMessage("更新已校验，正在安全替换并重启…")
+            # The new script was fully downloaded, hashed and compiled off the UI thread.
+            self.statusBar().showMessage("新版本已校验，正在安全替换并重启…")
             try:
                 self._install_staged_update(Path(staged))
             except Exception as exc:
@@ -5639,20 +5309,13 @@ class ScannerWindow(QMainWindow):
                 self._show_error("自动更新无法启动", str(exc))
 
         def failed(error):
-            finish_ui()
+            self._update_in_progress = False
+            self.update_button.setEnabled(True)
             self.statusBar().showMessage("检查更新失败")
             QMessageBox.warning(self, "更新失败（原程序未更改）", error)
 
-        def cancelled():
-            finish_ui()
-            self.statusBar().showMessage("已取消下载，原程序未更改")
-
-        worker.update_found.connect(show_download)
-        worker.progress.connect(update_progress)
-        worker.status.connect(update_status)
         worker.success.connect(ready)
         worker.failed.connect(failed)
-        worker.cancelled.connect(cancelled)
         self._remember(worker)
         worker.start()
 
