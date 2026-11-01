@@ -1,0 +1,84 @@
+name: macOS Tk shutdown regression (development only)
+on:
+  push:
+    branches: [fix/macos-tk-shutdown-20261101]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 25
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Check Python 3.12 and Tk availability
+        run: |
+          python - <<'PY'
+          import sys,tkinter
+          print(sys.version)
+          print('Tcl',tkinter.Tcl().eval('info patchlevel'))
+          PY
+      - name: Verify Tk lifetime, macOS font and Python source
+        run: |
+          python -m py_compile 'A股MA扫描器_v1.3.1.pyw'
+          python -m unittest discover -s tests -p 'test_macos_tk_cleanup_131.py' -v
+      - name: Run actual macOS Tk window then create Qt application
+        run: python -u tests/test_macos_tk_cleanup_131.py --tk-smoke
+      - name: Smoke 4:3 desktop GUI in Qt offscreen mode
+        run: |
+          python 'A股MA扫描器_v1.3.1.pyw' --demo --screenshot "$RUNNER_TEMP/macos-v131.png"
+          python - <<'PY'
+          import os
+          from PySide6.QtGui import QImage
+          image = QImage(os.environ['RUNNER_TEMP'] + '/macos-v131.png')
+          assert (image.width(), image.height()) == (1120, 840)
+          print('macOS Qt UI screenshot confirmed')
+          PY
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+      - name: Tk lifetime regression and existing source tests
+        shell: pwsh
+        run: |
+          python -m py_compile "A股MA扫描器_v1.3.1.pyw"
+          python -m unittest discover -s tests -p "test_macos_tk_cleanup_131.py" -v
+          python -m unittest discover -s tests -p "test_low_first_board_131.py" -v
+          python -m unittest discover -s tests -p "test_manual_self_update_131.py" -v
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb python3-tk libegl1 libopengl0 libxkbcommon-x11-0 libxcb-cursor0
+          python -m pip install -r requirements.txt
+      - name: Tcl and actual Tk window / Qt transition tests
+        run: |
+          python -m py_compile 'A股MA扫描器_v1.3.1.pyw'
+          python -m unittest discover -s tests -p 'test_macos_tk_cleanup_131.py' -v
+          xvfb-run -a python -u tests/test_macos_tk_cleanup_131.py --tk-smoke
+          xvfb-run -a python -m unittest discover -s tests -p 'test_v131_full_audit.py' -v
