@@ -3017,6 +3017,9 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
         self.prepare_storage(cb)
         self.init_db()
         self._sector_chart_cache.clear()
+        # A new market-data refresh invalidates the immutable per-session
+        # prepared-price cache; signal-history writes do not.
+        self._scan_prepared_cache = None
 
         cb(1, "连接 BaoStock")
         self.login()
