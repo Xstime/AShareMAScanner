@@ -90,6 +90,19 @@ class MirrorUpdaterTests(unittest.TestCase):
                 "size": len(self.program) if size is None else size,
                 "browser_download_url": url,
                 "upstream_download_url": self.gurl if upstream is None else upstream,
+            }, {
+                "name": f"AShareMAScanner_{tag}.zip",
+                "digest": "sha256:" + hashlib.sha256(b"synthetic ZIP").hexdigest(),
+                "size": len(b"synthetic ZIP"),
+                "browser_download_url": (
+                    f"{m.MIRROR_BASE}/files/"
+                    f"{hashlib.sha256(b'synthetic ZIP').hexdigest()}/"
+                    f"AShareMAScanner_{tag}.zip"
+                ),
+                "upstream_download_url": (
+                    f"https://github.com/Xstime/AShareMAScanner/releases/download/"
+                    f"{tag}/AShareMAScanner_{tag}.zip"
+                ),
             }],
         }).encode()
 
