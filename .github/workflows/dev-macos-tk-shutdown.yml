@@ -28,13 +28,13 @@ jobs:
           PY
       - name: Verify Tk lifetime, macOS font and Python source
         run: |
-          python -m py_compile 'A股MA扫描器_v1.3.1.pyw'
-          python -m unittest discover -s tests -p 'test_macos_tk_cleanup_131.py' -v
+          python -m py_compile 'A股MA扫描器_v1.3.2.pyw'
+          python -m unittest discover -s tests -p 'test_macos_tk_cleanup_132.py' -v
       - name: Run actual macOS Tk window then create Qt application
-        run: python -u tests/test_macos_tk_cleanup_131.py --tk-smoke
+        run: python -u tests/test_macos_tk_cleanup_132.py --tk-smoke
       - name: Smoke 4:3 desktop GUI in Qt offscreen mode
         run: |
-          python 'A股MA扫描器_v1.3.1.pyw' --demo --screenshot "$RUNNER_TEMP/macos-v131.png"
+          python 'A股MA扫描器_v1.3.2.pyw' --demo --screenshot "$RUNNER_TEMP/macos-v131.png"
           python - <<'PY'
           import os
           from PySide6.QtGui import QImage
@@ -57,8 +57,8 @@ jobs:
       - name: Tk lifetime regression and existing source tests
         shell: pwsh
         run: |
-          python -m py_compile "A股MA扫描器_v1.3.1.pyw"
-          python -m unittest discover -s tests -p "test_macos_tk_cleanup_131.py" -v
+          python -m py_compile "A股MA扫描器_v1.3.2.pyw"
+          python -m unittest discover -s tests -p "test_macos_tk_cleanup_132.py" -v
           python -m unittest discover -s tests -p "test_low_first_board_131.py" -v
           python -m unittest discover -s tests -p "test_manual_self_update_131.py" -v
   linux:
@@ -78,7 +78,7 @@ jobs:
           python -m pip install -r requirements.txt
       - name: Tcl and actual Tk window / Qt transition tests
         run: |
-          python -m py_compile 'A股MA扫描器_v1.3.1.pyw'
-          python -m unittest discover -s tests -p 'test_macos_tk_cleanup_131.py' -v
-          xvfb-run -a python -u tests/test_macos_tk_cleanup_131.py --tk-smoke
+          python -m py_compile 'A股MA扫描器_v1.3.2.pyw'
+          python -m unittest discover -s tests -p 'test_macos_tk_cleanup_132.py' -v
+          xvfb-run -a python -u tests/test_macos_tk_cleanup_132.py --tk-smoke
           xvfb-run -a python -m unittest discover -s tests -p 'test_v131_full_audit.py' -v
