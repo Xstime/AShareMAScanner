@@ -1,14 +1,9 @@
-name: Sync official Release to VPS mirror (OIDC)
+name: Manually sync official Release to VPS mirror (OIDC)
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/sync-mirror.yml'
-      - 'scripts/sync_mirror.py'
-  workflow_run:
-    workflows: ["Publish v1.3.2 after Linux Windows macOS verification"]
-    types: [completed]
+# The v1.3.2 release workflow itself awaits sync confirmation.
+# Separate automatic workflow_run would duplicate POST /publish and race
+# the sync_request_id check. This remains a manual recovery entrypoint.
 permissions:
   contents: read
 jobs:
