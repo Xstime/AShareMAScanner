@@ -8,25 +8,26 @@ A股 MA 扫描器（单文件 Tkinter .pyw · BaoStock + 同花顺资金 TOP5 ·
 - Tkinter 依赖检测与行情更新，PySide6 4:3 三栏主界面。
 - 每次启动先显示独立加载窗口，检查并增量更新 BaoStock 行情完成后才打开选股界面。
 - 更新过程中显示“当前任务 + 百分比进度”，策略按钮与参数输入框保持禁用。
-- 七个策略：
+- 八种策略：
     1) 放量突破 MA5
     2) 放量突破 MA10
     3) 放量突破 MA20
     4) MA5 上穿 MA10
-    5) 放量 + 换手率筛选（可输入上下限，最大值留空为无上限）
-    6) MA5 拐头向上：今天MA5>昨日MA5，昨日MA5<=前日MA5
-    7) 均线粘合向上：昨日MA5/10/20偏离度≤2%，今日全线上升、MA5>MA10>MA20并向上发散，且仅首次触发
+    5) MA5 拐头向上：今天MA5>昨日MA5，昨日MA5<=前日MA5
+    6) 均线粘合向上：昨日MA5/10/20偏离度≤2%，今日全线上升、MA5>MA10>MA20并向上发散，且仅首次触发
+    7) 放量 + 换手率筛选（可输入上下限，最大值留空为无上限）
+    8) 低位首板放量（3～5日）：以收盘涨幅近似识别疑似首板
 - 个股结果仅显示最新市场交易日触发，所有策略均显示放量倍数与换手率。
 - MA5拐头策略不以价格上穿MA5、放量或换手率作为附加门槛。
-- 七种策略支持行业板块同规则判断、单击板块筛选、双击查看当前策略的板块走势及历史信号。
-- PySide6 主界面采用左侧七策略、中央筛选与结果、右侧个股详情三栏布局。
-- 第5策略修改参数后，重新点击筛选策略按钮生效。
+- 现有策略支持行业板块同规则判断、单击板块筛选、双击查看当前策略的板块走势及历史信号。
+- PySide6 主界面采用左侧八策略、中央筛选与结果、右侧个股详情三栏布局。
+- 放量换手率策略修改参数后，重新点击筛选策略按钮生效。
 - 策略扫描期间可直接切换其他策略；旧扫描自动取消，以最后一次点击为准。
 - 切换策略时立即清空旧板块过滤和旧个股结果，避免新策略标题配上旧策略数据。
 - 结果直接显示在 GUI 表格中，点击表头可排序。
-- 七个策略都提供行业板块结果，并判断板块本身是否触发当前策略。
+- 适用于行业的策略都提供行业板块结果，并判断板块本身是否触发当前策略。
 - GUI 采用更简洁的浅色极简排版，接近 Apple 风格。
-- 第5策略板块图增加放量倍数和等权换手率曲线。
+- 放量换手率策略板块图增加放量倍数和等权换手率曲线。
 - 双击板块只显示当前所选策略需要的均线：突破MA5/10/20分别显示对应均线，MA5上穿MA10显示MA5与MA10。
 - 双击股票弹出最近 30 个有效交易日的收盘价、MA5、MA10、MA20 走势图。
 - 信号历史追踪（含本地回算与参数记录）。
@@ -35,7 +36,7 @@ A股 MA 扫描器（单文件 Tkinter .pyw · BaoStock + 同花顺资金 TOP5 ·
 - 结果支持代码/名称、市场、行业、涨幅范围快捷过滤。
 - 近5日同花顺行业资金净流入 TOP5 仅展示行业排名与金额，不抓成分股、不按榜单筛选股票。
 - 资金排名仅通过 AKShare 的同花顺五日行业排行获取；保留失败前的同花顺缓存。
-- 资金接口故障不影响七个选股策略，禁止用未验证的板块名称猜测股票。
+- 资金接口故障不影响八种选股策略，禁止用未验证的板块名称猜测股票。
 - 启动时自动检测并安装缺失的 pandas、baostock、akshare；优先清华镜像，失败改用官方 PyPI。
 - 无 Excel 导出，无数据库位置按钮。
 - 数据库始终固定在程序同级 data/a_share_baostock_hfq.db，不迁移、不清空数据。
@@ -267,7 +268,7 @@ def _bootstrap_dependencies():
             return False, ("运行所需依赖安装失败。请检查网络及pip，然后重试。\n\n"
                            + message + "\n\n手动命令：\npython -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple pandas baostock akshare")
         if optional:
-            return True, ("AKShare自动安装失败；原有七个选股策略仍可使用，"
+            return True, ("AKShare自动安装失败；全部八种选股策略仍可使用，"
                           "但资金 TOP5 暂不可用。\n\n" + message
                           + "\n\n可稍后重试：python -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple akshare")
         return True, ""
@@ -2362,7 +2363,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
 
 
     def refresh_fund_top5(self,force=False,progress=None):
-        """单数据源：失败保留旧榜单，不影响独立的七种选股策略。"""
+        """单数据源：失败保留旧榜单，不影响八种选股策略。"""
         notify=progress or (lambda _:None)
         previous,_=self.load_fund_top5()
         now=datetime.now(CST)
@@ -2532,7 +2533,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
         with sqlite_connection(self.db_path, timeout=30) as conn:
             missing = conn.execute("SELECT COUNT(*) FROM daily WHERE trade_date BETWEEN ? AND ? "
                                    "AND trade_status=1 AND turnover IS NULL", (start, end_date)).fetchone()[0]
-        return (f"近期有 {missing} 条换手率缺失，第5策略结果可能不完整；下次启动继续补抓。"
+        return (f"近期有 {missing} 条换手率缺失，放量换手率策略结果可能不完整；下次启动继续补抓。"
                 if missing else "")
 
     # -------------------- 历史初始化 --------------------
@@ -4320,7 +4321,8 @@ def _run_tk_data_phase_inner(backend=None, *, autostart=True):
         def work():
             try:
                 result=engine_backend.update_all(
-                    lambda value,message: messages.put(("progress",float(value),str(message))))
+                    lambda value,message: messages.put(
+                        ("progress",min(99.0,float(value)),str(message))))
                 # TOP5 refresh is exclusive to stage 2, before Qt is launched.
                 # Network errors do not invalidate market data or old TOP5 cache.
                 messages.put(("progress",99.0,"检查近5日行业资金排名"))
