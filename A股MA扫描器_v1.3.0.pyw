@@ -3043,6 +3043,10 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
             raw = pd.read_sql_query("SELECT * FROM daily WHERE code=? AND trade_date<=? ORDER BY trade_date",
                                     conn, params=(code, end_date))
         if not raw.empty:
+            with sqlite_connection(self.db_path, timeout=30) as conn:
+                calendar = [r[0] for r in conn.execute(
+                    "SELECT DISTINCT trade_date FROM daily WHERE trade_date<=? "
+                    "ORDER BY trade_date", (end_date,)).fetchall()]
             g = self._prepare_group(raw)
             results = {key: [] for key, _, _ in STRATEGIES}
             for pos in range(1, len(g)):
@@ -3068,6 +3072,8 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                             )
                     elif strategy == "ma_convergence_up":
                         match = pos >= 22 and ma_convergence_up_metrics(g, pos) is not None
+                    elif strategy == "low_first_board":
+                        match = low_first_board_metrics(g, pos, code, calendar) is not None
                     elif pos >= 20 and prev["close"] > 0:
                         if strategy.startswith("breakout_ma"):
                             ma = 'MA' + strategy.replace('breakout_ma', '')
@@ -3084,6 +3090,10 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                         payload = {"_code_full": code, "代码": self.symbol_only(code),
                             "名称": row["name"], "触发日": row["trade_date"], "收盘价": row["close"],
                             "放量倍数": ratio, "换手率%": row.get("turnover")}
+                        if strategy == "low_first_board":
+                            details = low_first_board_metrics(g, pos, code, calendar)
+                            payload.update({k: round(v, 3) if isinstance(v, float) else v
+                                            for k, v in details.items()})
                         if strategy == "ma_convergence_up":
                             old_gap, new_gap, gain = ma_convergence_up_metrics(g, pos)
                             payload.update({"昨日粘合度%": round(old_gap, 3),
@@ -3843,6 +3853,9 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
         previous_trade_date: Optional[str],
         filters: Optional[RangeFilter] = None,
     ) -> str:
+        # An industry index cannot have an individual-stock first limit-up.
+        if strategy == "low_first_board":
+            return "仅个股适用"
         data = self.get_sector_chart_data(
             sector_name,
             target_date,
@@ -4484,6 +4497,12 @@ def sample_data(strategy):
             "板块": industry, "收盘价": price, "当日涨幅%": pct,
             "放量倍数": vol, "换手率%": turnover, "触发日": "2026-10-29",
         })
+        if strategy == "low_first_board":
+            rows[-1].update({
+                "首板日期": "2026-10-26", "距今交易日": 3,
+                "首板涨幅%": 10.0, "首板放量倍数": 2.2,
+                "首板前30日位置%": 18.0, "现价较首板%": 2.1,
+            })
     return pd.DataFrame(rows)
 
 
@@ -5191,13 +5210,18 @@ class ScannerWindow(QMainWindow):
         self.hit_count.setText(f"命中 {len(self.filtered)} 只")
         self.result_info.setText(
             "模拟数据 · 非真实行情" if self.demo else
-            f"股票结果 {len(self.filtered)} 只 · {self.update_result.scan_date if self.update_result else '—'}"
+            (f"股票结果 {len(self.filtered)} 只 · {self.update_result.scan_date if self.update_result else '—'}"
+             + (" · 仅由后复权收盘涨幅近似识别首板，非交易所封板记录"
+                if self.current_key == "low_first_board" else ""))
         )
     def _draw_table(self):
         # Like v1.2.6, show metrics particular to the active strategy.
         common = ["代码", "名称", "板块", "触发日", "收盘价", "当日涨幅%"]
         if self.current_key == "volume_turnover":
             columns = common + ["放量倍数", "换手率%"]
+        elif self.current_key == "low_first_board":
+            columns = common + ["首板日期", "距今交易日", "首板涨幅%",
+                                "首板放量倍数", "首板前30日位置%", "现价较首板%"]
         elif self.current_key == "ma5_turn_up":
             columns = common + ["MA5", "昨日MA5", "MA5上拐幅度%", "放量倍数", "换手率%"]
         elif self.current_key == "ma_convergence_up":
@@ -5216,7 +5240,7 @@ class ScannerWindow(QMainWindow):
         for row_number, (_, record) in enumerate(self.filtered.iterrows()):
             for column, key in enumerate(columns):
                 raw = record.get(key)
-                if key in ("代码", "名称", "板块", "触发日"):
+                if key in ("代码", "名称", "板块", "触发日", "首板日期"):
                     value = str(raw) if raw is not None and not pd.isna(raw) else "—"
                 else:
                     value = value_text(raw)
