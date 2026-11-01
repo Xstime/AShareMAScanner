@@ -37,13 +37,57 @@ jobs:
           image=QImage('/tmp/concept-v132.png')
           assert not image.isNull() and (image.width(),image.height())==(1120,840)
           PY
+      - name: Render actual concept index tab (offline demo)
+        run: |
+          xvfb-run -a python - <<'PY'
+          import os,sys,types,importlib.util
+          from importlib.machinery import SourceFileLoader
+          os.environ["QT_QPA_PLATFORM"]="offscreen"
+          sys.modules.setdefault("baostock",types.ModuleType("baostock"))
+          loader=SourceFileLoader("concept_gui_preview","A股MA扫描器_v1.3.2.pyw")
+          spec=importlib.util.spec_from_loader(loader.name,loader)
+          module=importlib.util.module_from_spec(spec)
+          sys.modules[spec.name]=module
+          spec.loader.exec_module(module)
+          from PySide6.QtWidgets import QApplication
+          app=QApplication([])
+          win=module.ScannerWindow(demo=True)
+          win.show()
+          win.sector_type.setCurrentIndex(1)
+          win.concept_rows=[
+             {"name":"机器人概念","code":"300816","close":3810.54,"status":"今日触发","date":"2026-10-30"},
+             {"name":"人工智能","code":"300100","close":2391.12,"status":"昨日触发","date":"2026-10-29"},
+             {"name":"阿里巴巴概念","code":"301558","close":1865.11,"status":"未触发","date":"2026-10-30"},
+          ]
+          win._render_concepts()
+          win.concept_status.setText("概念预览 · 示例数据，不代表真实信号")
+          app.processEvents()
+          assert win.grab().save("/tmp/concept-tab-v132.png")
+          win.close()
+          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: ths-concept-ma5-ui
-          path: /tmp/concept-v132.png
+          path: |
+            /tmp/concept-v132.png
+            /tmp/concept-tab-v132.png
           if-no-files-found: ignore
           retention-days: 7
+  live_ths:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+      - name: Read actual THS concept directory and index MA5
+        run: python -u tests/live_smoke_ths_concept_ma5_132.py
   windows:
     runs-on: windows-latest
     timeout-minutes: 20
