@@ -4417,7 +4417,7 @@ def run_tk_data_phase(backend=None, *, autostart=True):
 # ============================================================
 import argparse
 try:
-    from PySide6.QtCore import Qt, QThread, QTimer, Signal
+    from PySide6.QtCore import Qt, QPointF, QThread, QTimer, Signal
     from PySide6.QtGui import QColor, QFont, QPainter, QPen
     from PySide6.QtWidgets import (
         QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QFrame,
@@ -4721,6 +4721,29 @@ def sample_chart(price, seed=1):
     return f
 
 
+class ChevronComboBox(QComboBox):
+    """Draw a crisp vector chevron; Qt's border-triangle QSS became a dash.
+
+    Keep native popup behavior and accessibility. Only the arrow glyph is
+    custom-painted, avoiding platform-specific native style artifacts.
+    """
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        pen = QPen(QColor("#64748b"))
+        pen.setWidthF(1.6)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        cx = float(self.width() - 16)
+        cy = float(self.height()) / 2.0
+        painter.drawLine(QPointF(cx - 4, cy - 2), QPointF(cx, cy + 2))
+        painter.drawLine(QPointF(cx, cy + 2), QPointF(cx + 4, cy - 2))
+        painter.end()
+
+
 STYLE = """
 QMainWindow, QWidget#appRoot { background: #f6f7fa; color: #222938; }
 QLabel { color: #222938; background: transparent; }
@@ -4748,10 +4771,7 @@ QLineEdit:focus, QComboBox:focus { border-color: #4c99e8; }
 QComboBox { padding-right: 28px; }
 QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: top right;
                        width: 26px; border: 0; background: transparent; }
-QComboBox::down-arrow { image: none; width: 0; height: 0;
-                        border-left: 4px solid transparent;
-                        border-right: 4px solid transparent;
-                        border-top: 5px solid #718096; }
+QComboBox::down-arrow { image: none; width: 0; height: 0; border: 0; }
 QTableWidget { background: white; border: 1px solid #e4e8f0; border-radius: 10px;
                gridline-color: #edf0f5; alternate-background-color: #fafbfd;
                selection-background-color: #e5f1ff; selection-color: #185eae; }
@@ -5003,11 +5023,11 @@ class ScannerWindow(QMainWindow):
         self.query.setPlaceholderText("搜索股票代码 / 名称")
         self.query.textChanged.connect(self.apply_filters)
         search.addWidget(self.query, 3)
-        self.market = QComboBox()
+        self.market = ChevronComboBox()
         self.market.addItems(["全部市场", "主板", "创业板", "科创板"])
         self.market.currentIndexChanged.connect(self.apply_filters)
         search.addWidget(self.market, 2)
-        self.industry = QComboBox()
+        self.industry = ChevronComboBox()
         self.industry.addItem("全部行业")
         self.industry.currentIndexChanged.connect(self.apply_filters)
         search.addWidget(self.industry, 2)
