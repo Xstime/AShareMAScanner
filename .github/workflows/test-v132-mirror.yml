@@ -20,7 +20,7 @@ jobs:
       - name: Install Qt/Tk and Python dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq xvfb python3-tk libegl1 libopengl0 libxkbcommon-x11-0 libxcb-cursor0
+          sudo apt-get install -y -qq xvfb python3-tk libegl1 libopengl0 libxkbcommon-x11-0 libxcb-cursor0 fonts-noto-cjk
           python -m pip install -r requirements.txt
       - name: Run mirror and old-version regressions
         run: |
