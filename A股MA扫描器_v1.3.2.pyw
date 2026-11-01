@@ -481,6 +481,15 @@ MIRROR_PORT = 8443
 REPO_FULL_NAME = "Xstime/AShareMAScanner"
 
 
+class UpdateDownloadCancelled(Exception):
+    """A user-initiated cancellation never triggers an alternate download."""
+
+
+def _ensure_update_active(cancel_event):
+    if cancel_event is not None and cancel_event.is_set():
+        raise UpdateDownloadCancelled("已取消")
+
+
 class UpdateNetworkError(RuntimeError):
     """Transport/availability failure, eligible for official GitHub fallback."""
 
