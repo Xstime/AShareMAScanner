@@ -14,7 +14,7 @@ import pandas as pd
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.modules.setdefault("baostock", types.ModuleType("baostock"))
-app = Path(__file__).resolve().parents[1] / "A股MA扫描器_v1.3.0.pyw"
+app = Path(__file__).resolve().parents[1] / "A股MA扫描器_v1.3.1.pyw"
 loader = SourceFileLoader("low_first_board_under_test", str(app))
 spec = importlib.util.spec_from_loader(loader.name, loader)
 scanner = importlib.util.module_from_spec(spec)
