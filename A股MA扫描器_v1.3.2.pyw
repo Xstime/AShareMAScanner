@@ -5632,110 +5632,121 @@ class ScannerWindow(QMainWindow):
         worker.start()
 
     def _show_release_info(self):
-        # Manual trigger only: no automatic network request at startup.
-        if self._version_worker is not None and self._version_worker.isRunning():
-            return
+        """One calm, cancellable PySide6 window, only on an explicit click."""
         if getattr(self, "_update_in_progress", False):
+            return
+        if self._version_worker is not None and self._version_worker.isRunning():
             return
         self._update_in_progress = True
         self.update_button.setEnabled(False)
-        self.statusBar().showMessage("正在检查 GitHub 正式版本…")
         worker = VersionWorker()
         self._version_worker = worker
-        self._download_dialog = None
+        dialog = QDialog(self)
+        dialog.setWindowTitle("软件更新")
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        dialog.setFixedWidth(370)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(26, 26, 26, 20)
+        layout.setSpacing(15)
+        status = QLabel("正在检查更新")
+        status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(status)
+        bar = QProgressBar()
+        bar.setTextVisible(False)
+        bar.setRange(0, 0)
+        bar.setFixedHeight(5)
+        layout.addWidget(bar)
+        percent = QLabel("")
+        percent.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(percent)
+        action = QPushButton("取消")
+        layout.addWidget(action)
+        self._download_dialog = dialog
+        self._download_ui = (bar, percent, status)
+        done = {"closed": False}
 
-        def show_download(version, size):
-            # A window appears only if a newer/repaired release needs download.
-            if self._download_dialog is not None:
-                return
-            dialog = QDialog(self)
-            dialog.setWindowTitle(f"正在下载更新 · {version}")
-            dialog.setWindowModality(Qt.WindowModality.WindowModal)
-            dialog.setMinimumWidth(440)
-            layout = QVBoxLayout(dialog)
-            title = QLabel(f"发现可用更新 {version}，正在下载正式发行文件")
-            title.setWordWrap(True)
-            layout.addWidget(title)
-            bar = QProgressBar()
-            bar.setRange(0, 1000)
-            bar.setValue(0)
-            layout.addWidget(bar)
-            downloaded = QLabel(f"已下载 0 KB / {size / 1024:.1f} KB · 0.0%")
-            layout.addWidget(downloaded)
-            speed = QLabel("当前速度：等待响应…")
-            layout.addWidget(speed)
-            state = QLabel("不限制总下载时长；连接中断后自动续传或重试")
-            state.setWordWrap(True)
-            layout.addWidget(state)
-            cancel_button = QPushButton("取消下载")
-            layout.addWidget(cancel_button)
-
-            def request_cancel():
+        def request_cancel():
+            if not done["closed"]:
                 worker.cancel_download()
-                cancel_button.setEnabled(False)
-                state.setText("正在取消并清理临时文件…")
+                action.setEnabled(False)
+                status.setText("正在取消")
 
-            cancel_button.clicked.connect(request_cancel)
-            dialog.rejected.connect(worker.cancel_download)
-            self._download_dialog = dialog
-            self._download_ui = (bar, downloaded, speed, state)
-            dialog.show()
-
-        def update_progress(received, size, bytes_per_second):
-            if self._download_dialog is None:
+        def finish(text, *, keep_open=True):
+            if done["closed"]:
                 return
-            bar, downloaded, speed, state = self._download_ui
-            percent = received * 100.0 / size if size else 0.0
-            bar.setValue(min(1000, round(percent * 10)))
-            downloaded.setText(
-                f"已下载 {received / 1024:.1f} KB / {size / 1024:.1f} KB · {percent:.1f}%"
-            )
-            speed.setText(f"平均速度：{bytes_per_second / 1024:.1f} KB/s")
-            state.setText("正在下载…（不限制总下载时长）")
-
-        def update_status(message):
-            if self._download_dialog is not None:
-                self._download_ui[3].setText(message)
-            self.statusBar().showMessage(message)
-
-        def finish_ui():
-            if self._download_dialog is not None:
-                self._download_dialog.accept()
-                self._download_dialog = None
-                self._download_ui = None
+            done["closed"] = True
             self._update_in_progress = False
             self.update_button.setEnabled(True)
+            status.setText(text)
+            bar.setRange(0, 1000)
+            if text == "已是最新版本":
+                bar.setValue(1000)
+            percent.setText("")
+            action.setEnabled(True)
+            action.setText("关闭")
+            try:
+                action.clicked.disconnect(request_cancel)
+            except (RuntimeError, TypeError):
+                pass
+            action.clicked.connect(dialog.accept)
+            self.statusBar().showMessage(text)
+            if not keep_open:
+                dialog.accept()
 
-        def ready(message, staged):
-            finish_ui()
-            if staged is None:
-                QMessageBox.information(self, "检查更新", message)
-                self.statusBar().showMessage(message)
+        action.clicked.connect(request_cancel)
+        dialog.rejected.connect(request_cancel)
+        dialog.finished.connect(lambda _result: setattr(self, "_download_dialog", None))
+
+        def on_found(version, size):
+            status.setText("正在下载更新")
+            bar.setRange(0, 1000)
+            bar.setValue(0)
+            percent.setText("0%")
+
+        def on_progress(received, size, speed):
+            if done["closed"]:
                 return
-            # Download, SHA-256 verification and compile ran outside the UI thread.
-            self.statusBar().showMessage("更新已校验，正在安全替换并重启…")
+            status.setText("正在下载更新")
+            bar.setValue(min(1000, round(1000 * received / size)) if size else 0)
+            percent.setText(f"{100 * received / size:.1f}%" if size else "")
+
+        def on_status(message):
+            if done["closed"]:
+                return
+            if "验证" in message:
+                status.setText("正在验证")
+                percent.setText("")
+                bar.setRange(0, 0)
+            else:
+                status.setText("正在下载更新")
+
+        def on_ready(message, staged):
+            if staged is None:
+                finish("已是最新版本" if "最新" in message else message)
+                return
+            status.setText("正在验证")
+            finish("正在安装更新", keep_open=False)
             try:
                 self._install_staged_update(Path(staged))
-            except Exception as exc:
+            except Exception:
                 Path(staged).unlink(missing_ok=True)
-                self._show_error("自动更新无法启动", str(exc))
+                QMessageBox.warning(self, "软件更新", "暂时无法更新")
 
-        def failed(error):
-            finish_ui()
-            self.statusBar().showMessage("检查更新失败")
-            QMessageBox.warning(self, "更新失败（原程序未更改）", error)
+        def on_failure(message):
+            # Deliberately do not render a traceback, URL, secret or log.
+            finish("暂时无法更新")
 
-        def cancelled():
-            finish_ui()
-            self.statusBar().showMessage("已取消下载，原程序未更改")
+        def on_cancelled():
+            finish("已取消更新")
 
-        worker.update_found.connect(show_download)
-        worker.progress.connect(update_progress)
-        worker.status.connect(update_status)
-        worker.success.connect(ready)
-        worker.failed.connect(failed)
-        worker.cancelled.connect(cancelled)
+        worker.update_found.connect(on_found)
+        worker.progress.connect(on_progress)
+        worker.status.connect(on_status)
+        worker.success.connect(on_ready)
+        worker.failed.connect(on_failure)
+        worker.cancelled.connect(on_cancelled)
         self._remember(worker)
+        dialog.show()
         worker.start()
 
     def _install_staged_update(self, staged: Path):
