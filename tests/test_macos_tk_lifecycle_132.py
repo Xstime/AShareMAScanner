@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.modules.setdefault("baostock", types.ModuleType("baostock"))
-file = Path(__file__).resolve().parents[1] / "A股MA扫描器_v1.3.1.pyw"
+file = Path(__file__).resolve().parents[1] / "A股MA扫描器_v1.3.2.pyw"
 loader = SourceFileLoader("v131_tk_cocoa_lifecycle_test", str(file))
 spec = importlib.util.spec_from_loader(loader.name, loader)
 module = importlib.util.module_from_spec(spec)
