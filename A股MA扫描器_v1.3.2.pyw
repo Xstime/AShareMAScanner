@@ -521,10 +521,14 @@ class UpdateIntegrityError(RuntimeError):
 
 
 def _trusted_update_url(url, source, *, tag="", name="", digest="", redirect=False):
-    if not isinstance(url, str):
+    if not isinstance(url, str) or "#" in url:
         return False
     try:
         p = urllib.parse.urlsplit(url)
+        # Even an empty ? query is forbidden for canonical metadata and files.
+        if "?" in url and not (source == "github" and redirect and
+                               p.hostname == "release-assets.githubusercontent.com"):
+            return False
         if (p.scheme != "https" or p.username is not None or p.password is not None
                 or not p.hostname or p.fragment):
             return False
@@ -593,7 +597,9 @@ def _expected_release_asset(release, latest, source="github"):
     if release.get("draft") is not False or release.get("prerelease") is not False:
         raise UpdateIntegrityError("更新清单不是正式发布版本")
     if source == "mirror":
-        if (release.get("schema_version") != 1 or release.get("repository") != REPO_FULL_NAME
+        if (type(release.get("schema_version")) is not int
+                or release.get("schema_version") != 1
+                or release.get("repository") != REPO_FULL_NAME
                 or release.get("tag_name") != tag
                 or not isinstance(release.get("id"), (str, int))
                 or not isinstance(release.get("sync_request_id"), str)
