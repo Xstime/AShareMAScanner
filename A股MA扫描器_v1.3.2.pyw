@@ -4443,6 +4443,253 @@ try:
 except Exception as exc:
     _dependency_import_error('PySide6 / Qt',exc)
 
+
+# 同花顺概念指数使用其自身的真实日线，不使用 BaoStock 行业等权指数。
+# 概念 K 线单次请求可能超过 30 秒，始终在独立 QThread 中串行执行。
+CONCEPT_CACHE_PATH = DATA_DIR / "ths_concept_indices.json"
+CONCEPT_CACHE_SCHEMA = 1
+CONCEPT_HISTORY_DAYS = 110
+
+
+def concept_index_frame(bars):
+    """Validated, chronologically ordered THS concept index close series."""
+    if not isinstance(bars, list):
+        return pd.DataFrame()
+    rows = []
+    for row in bars[-90:]:
+        if not isinstance(row, dict):
+            continue
+        day = str(row.get("trade_date", ""))
+        try:
+            price = float(row.get("close"))
+        except (TypeError, ValueError):
+            continue
+        if (not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day)
+                or not math.isfinite(price) or price <= 0):
+            continue
+        rows.append({"trade_date": day, "close": price})
+    if not rows:
+        return pd.DataFrame()
+    result = (pd.DataFrame(rows).drop_duplicates("trade_date", keep="last")
+              .sort_values("trade_date").reset_index(drop=True))
+    result["MA5"] = result["close"].rolling(5).mean()
+    return result
+
+
+def concept_ma5_status(bars, target_date, previous_date=None):
+    """No stale bar can trigger today. Signal uses real THS concept closes."""
+    frame = concept_index_frame(bars)
+    if len(frame) < 7:
+        return "数据不足"
+    end_date = str(frame.iloc[-1]["trade_date"])
+    allowed = {str(target_date): "今日触发"}
+    if previous_date:
+        allowed[str(previous_date)] = "昨日触发"
+    if end_date not in allowed:
+        return "数据待更新"
+    ma = frame["MA5"]
+    if (math.isfinite(float(ma.iloc[-1]))
+            and math.isfinite(float(ma.iloc[-2]))
+            and math.isfinite(float(ma.iloc[-3]))
+            and ma.iloc[-1] > ma.iloc[-2]
+            and ma.iloc[-2] <= ma.iloc[-3]):
+        return allowed[end_date]
+    return "未触发"
+
+
+class ConceptIndexService:
+    """Standalone JSON cache; never changes the user's SQLite stock tables."""
+
+    def __init__(self, cache_path=CONCEPT_CACHE_PATH):
+        self.path = Path(cache_path)
+
+    def load(self):
+        try:
+            if not self.path.is_file() or self.path.stat().st_size > 12 * 1024 * 1024:
+                return {"schema": CONCEPT_CACHE_SCHEMA, "catalog": [],
+                        "catalog_day": "", "indices": {}}
+            with self.path.open("r", encoding="utf-8") as handle:
+                value = json.load(handle)
+            if (not isinstance(value, dict)
+                    or value.get("schema") != CONCEPT_CACHE_SCHEMA
+                    or not isinstance(value.get("catalog"), list)
+                    or not isinstance(value.get("indices"), dict)):
+                raise ValueError("invalid concept cache")
+            return value
+        except (OSError, ValueError, UnicodeDecodeError):
+            return {"schema": CONCEPT_CACHE_SCHEMA, "catalog": [],
+                    "catalog_day": "", "indices": {}}
+
+    def save(self, cache):
+        # Atomic replace: a crash never leaves half-written index history.
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fd, name = tempfile.mkstemp(
+            prefix=".concept-indices-", suffix=".json", dir=str(self.path.parent))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(cache, stream, ensure_ascii=False, separators=(",", ":"))
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(name, self.path)
+        finally:
+            Path(name).unlink(missing_ok=True)
+
+    @staticmethod
+    def _fetch_catalog():
+        import akshare as ak
+        result = ak.stock_board_concept_name_ths()
+        if result is None or result.empty or not {"name", "code"}.issubset(result.columns):
+            raise RuntimeError("同花顺概念目录暂不可用")
+        catalog = []
+        seen = set()
+        for _, row in result.iterrows():
+            name = str(row["name"]).strip()
+            code = str(row["code"]).strip()
+            if (not name or len(name) > 70 or not re.fullmatch(r"\d{6}", code)
+                    or code in seen):
+                continue
+            seen.add(code)
+            catalog.append({"name": name, "code": code})
+        if len(catalog) < 20:
+            raise RuntimeError("同花顺概念目录数量异常")
+        return catalog
+
+    @staticmethod
+    def _fetch_history(name, target_date):
+        import akshare as ak
+        end = str(target_date).replace("-", "")
+        start = (datetime.strptime(str(target_date), "%Y-%m-%d")
+                 - timedelta(days=CONCEPT_HISTORY_DAYS)).strftime("%Y%m%d")
+        result = ak.stock_board_concept_index_ths(
+            symbol=name, start_date=start, end_date=end)
+        if (result is None or result.empty
+                or not {"日期", "收盘价"}.issubset(result.columns)):
+            raise RuntimeError("概念历史日线为空或格式变化")
+        rows = [{"trade_date": str(day)[:10], "close": price}
+                for day, price in zip(result["日期"], result["收盘价"])]
+        frame = concept_index_frame(rows)
+        if len(frame) < 7:
+            raise RuntimeError("概念指数有效历史日线不足七日")
+        return [{"trade_date": row["trade_date"], "close": float(row["close"])}
+                for _, row in frame.tail(75).iterrows()]
+
+    @staticmethod
+    def summary(cache, target_date, previous_date):
+        catalog = cache.get("catalog", [])
+        indices = cache.get("indices", {})
+        rows = []
+        for concept in catalog:
+            if not isinstance(concept, dict):
+                continue
+            code = str(concept.get("code", ""))
+            name = str(concept.get("name", ""))
+            payload = indices.get(code, {})
+            bars = payload.get("bars", []) if isinstance(payload, dict) else []
+            frame = concept_index_frame(bars)
+            date = str(frame.iloc[-1]["trade_date"]) if not frame.empty else ""
+            close = round(float(frame.iloc[-1]["close"]), 2) if not frame.empty else None
+            status = concept_ma5_status(bars, target_date, previous_date)
+            if not bars:
+                status = "等待扫描"
+            rows.append({"code": code, "name": name, "close": close,
+                         "status": status, "date": date})
+        rank = {"今日触发": 0, "昨日触发": 1, "未触发": 2,
+                "数据待更新": 3, "数据不足": 4, "等待扫描": 5}
+        rows.sort(key=lambda x: (rank.get(x["status"], 9), x["name"]))
+        return rows
+
+    def run(self, target_date, previous_date, report, cancelled):
+        """Iterate without parallel requests. Persist each successful concept."""
+        cache = self.load()
+        target_date = str(target_date)
+        today = datetime.now(CST).strftime("%Y-%m-%d")
+        if (not cache.get("catalog")
+                or cache.get("catalog_day") != today):
+            if not cancelled.is_set():
+                try:
+                    catalog = self._fetch_catalog()
+                    cache["catalog"] = catalog
+                    cache["catalog_day"] = today
+                    # Keep old code-keyed prices; changed names will refresh.
+                    self.save(cache)
+                except Exception:
+                    if not cache["catalog"]:
+                        report([], "概念目录暂不可用")
+                        return
+        catalog = cache["catalog"]
+        if not catalog:
+            report([], "概念目录为空")
+            return
+        indices = cache["indices"]
+        missing = []
+        for item in catalog:
+            code = str(item.get("code", ""))
+            existing = indices.get(code, {})
+            bars = existing.get("bars", []) if isinstance(existing, dict) else []
+            fresh = (bool(bars) and str(bars[-1].get("trade_date", "")) == target_date)
+            # Empty/stale results fetched once per target date; skip on restart.
+            attempted = isinstance(existing, dict) and existing.get("attempted") == target_date
+            if not fresh and not attempted:
+                missing.append(item)
+        total = len(missing)
+        report(self.summary(cache, target_date, previous_date),
+               f"已缓存 {len(catalog) - total}/{len(catalog)} · 本轮待检查 {total}")
+        failures = 0
+        for n, item in enumerate(missing, start=1):
+            if cancelled.is_set():
+                break
+            code = item["code"]
+            previous = indices.get(code, {})
+            old_bars = previous.get("bars", []) if isinstance(previous, dict) else []
+            try:
+                bars = self._fetch_history(item["name"], target_date)
+                # An upstream truncated / stale response must not overwrite
+                # newer known-good cached history.
+                if (not old_bars or
+                        str(bars[-1]["trade_date"]) >= str(old_bars[-1]["trade_date"])):
+                    old_bars = bars
+            except Exception:
+                failures += 1
+            indices[code] = {"bars": old_bars, "attempted": target_date}
+            try:
+                self.save(cache)
+            except OSError:
+                report(self.summary(cache, target_date, previous_date),
+                       "概念缓存无法写入，请检查磁盘空间")
+                return
+            if n == 1 or n % 5 == 0 or n == total:
+                report(self.summary(cache, target_date, previous_date),
+                       f"概念扫描 {n}/{total} · 失败 {failures}")
+            if failures >= 8 and not any(
+                    indices.get(x["code"], {}).get("bars") for x in missing[:n]):
+                report(self.summary(cache, target_date, previous_date),
+                       "概念数据源暂不可用，已停止连续请求")
+                break
+            if cancelled.wait(0.20):
+                break
+        report(self.summary(cache, target_date, previous_date),
+               "已暂停，可继续扫描" if cancelled.is_set()
+               else f"本轮扫描完成 · {len(catalog)} 个概念（失败 {failures}）")
+
+
+class ConceptScanWorker(QThread):
+    changed = Signal(object, str)
+
+    def __init__(self, service, target_date, previous_date):
+        super().__init__()
+        self.service, self.target_date, self.previous_date = (
+            service, target_date, previous_date)
+        self.stop_event = threading.Event()
+
+    def run(self):
+        try:
+            self.service.run(self.target_date, self.previous_date,
+                             self.changed.emit, self.stop_event)
+        except Exception:
+            self.changed.emit([], "概念扫描暂不可用")
+
+
+
 BEIJING = timezone(timedelta(hours=8))
 STRATEGIES = [
     ("breakout_ma5", "突破 MA5", "均线突破"),
