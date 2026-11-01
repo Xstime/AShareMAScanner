@@ -88,6 +88,7 @@ macOS 若使用 Homebrew Python 且缺少 Tkinter，可安装对应版本的 pyt
 from __future__ import annotations
 
 import math
+import gc
 import json
 import multiprocessing
 import hashlib
@@ -112,6 +113,21 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Optional
+
+# ============================================================
+# macOS: finalize all unreachable Tk/Tcl objects on the main UI thread.
+# Tk StringVar/DoubleVar __del__ calls into Tcl. If garbage collection first
+# runs on a Qt/BaoStock worker thread after Tk quits, macOS can abort with
+# "Tcl_AsyncDelete: async handler deleted by the wrong thread".
+# ============================================================
+def _collect_finished_tk_on_main_thread():
+    if threading.current_thread() is not threading.main_thread():
+        raise RuntimeError("Tkinter 必须在 Python 主线程创建与清理")
+    # Run after the Tk phase frame has returned and released its local Vars.
+    # A second collection handles callback/widget reference cycles.
+    gc.collect()
+    gc.collect()
+
 
 # ============================================================
 # 启动依赖自检：只在直接运行 .py / .pyw 时执行
@@ -321,15 +337,30 @@ def _bootstrap_dependencies():
                 return
         root.after(150, poll)
 
-    threading.Thread(target=install_all, daemon=True).start()
+    install_thread = threading.Thread(
+        target=install_all, daemon=True, name="tk-pip-install")
+    install_thread.start()
     root.after(150, poll)
-    root.mainloop()
+    try:
+        root.mainloop()
+    finally:
+        try:
+            if root.winfo_exists():
+                root.destroy()
+        except _tk.TclError:
+            pass
+        install_thread.join(timeout=2)
     if not state["ok"]:
         raise SystemExit(1)
 
 
 if __name__ == "__main__":
-    _bootstrap_dependencies()
+    try:
+        _bootstrap_dependencies()
+    finally:
+        # Stage 1 creates Tk variables/widgets that must not be finalized by
+        # a later Qt or market-data worker thread.
+        _collect_finished_tk_on_main_thread()
 
 def _dependency_import_error(name: str, exc: Exception):
     """依赖虽然存在但导入失败时，.pyw 也必须能显示明确错误。"""
@@ -4036,7 +4067,7 @@ def attach_chart_hover(canvas):
 # 阶段 2/3：Tkinter 每日行情抓取，Tk 完全关闭后才创建 QApplication
 # ============================================================
 
-def run_tk_data_phase(backend=None, *, autostart=True):
+def _run_tk_data_phase_inner(backend=None, *, autostart=True):
     """运行 8 阶段数据检查。成功返回 (backend, UpdateResult)，失败可重试。
     后台线程只向 Queue 发送状态，所有 Tk 组件操作只在主线程完成。
     """
@@ -4090,7 +4121,7 @@ def run_tk_data_phase(backend=None, *, autostart=True):
     controls.pack(side="right")
     messages=queue.Queue()
     state={"running":False,"success":None,"start":time.monotonic(),
-           "aborted":False,"cancel_requested":False}
+           "aborted":False,"cancel_requested":False,"worker":None}
     stages=[
         ("检查环境与交易日",0,12),("失败数据补抓",12,20),
         ("历史行情缓存",20,66),("缺失交易日补齐",66,80),
@@ -4140,7 +4171,9 @@ def run_tk_data_phase(backend=None, *, autostart=True):
                 messages.put(("cancelled",str(exc)))
             except Exception:
                 messages.put(("failure",traceback.format_exc()))
-        threading.Thread(target=work,daemon=True,name="tk-market-update").start()
+        worker=threading.Thread(target=work,daemon=True,name="tk-market-update")
+        state["worker"]=worker
+        worker.start()
     def poll():
         if state["aborted"]:return
         elapsed=int(time.monotonic()-state["start"])
@@ -4203,9 +4236,28 @@ def run_tk_data_phase(backend=None, *, autostart=True):
                 root.destroy()
         except _tk.TclError:
             pass
+        # No market thread may be left writing to the database as the
+        # application switches from the Tk to the Qt event loop.
+        worker = state.get("worker")
+        if worker is not None and worker.is_alive():
+            worker.join(timeout=5)
+        if worker is not None and worker.is_alive():
+            state["success"] = None
+            state["aborted"] = True
     if state["aborted"] or state["success"] is None:
         return None
     return engine_backend,state["success"]
+
+
+def run_tk_data_phase(backend=None, *, autostart=True):
+    """Dispose of Tk/Tcl reference cycles before handing control to Qt."""
+    if threading.current_thread() is not threading.main_thread():
+        raise RuntimeError("Tkinter 数据窗口只能在 Python 主线程运行")
+    try:
+        return _run_tk_data_phase_inner(backend=backend, autostart=autostart)
+    finally:
+        # This runs after the inner function's entire local Tk frame is gone.
+        _collect_finished_tk_on_main_thread()
 
 
 # ============================================================
@@ -5737,7 +5789,7 @@ def main():
     # 阶段2 的 Tk root 已销毁，Qt 独占 GUI 事件循环。
     os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR","1")
     app=QApplication(sys.argv[:1])
-    app.setFont(QFont("Segoe UI",10))
+    app.setFont(QFont("Helvetica Neue" if sys.platform == "darwin" else "Segoe UI",10))
     win=ScannerWindow(
         demo=args.demo or bool(args.screenshot),
         prepared_backend=backend,prepared_result=result)
