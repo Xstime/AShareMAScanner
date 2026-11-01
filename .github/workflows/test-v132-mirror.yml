@@ -30,6 +30,8 @@ jobs:
           for suite in test_low_first_board_131.py test_manual_self_update_131.py test_update_download_progress_132.py test_v131_full_audit.py test_fresh_robustness_130.py; do
             xvfb-run -a python -m unittest discover -s tests -p "$suite" -v
           done
+      - name: Live mirror health, HEAD, HTTP 206 and full SHA verification
+        run: python tests/live_probe_mirror_readonly_132.py
       - name: Screenshot actual PySide6 application
         run: |
           xvfb-run -a python 'A股MA扫描器_v1.3.2.pyw' --demo --screenshot /tmp/v132.png
