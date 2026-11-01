@@ -1,0 +1,50 @@
+name: Development - cancellable update download
+on:
+  push:
+    branches: [dev/v1.3.1-download-progress]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Qt/Tk libraries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb python3-tk libegl1 libopengl0 libxkbcommon-x11-0 libxcb-cursor0
+          python -m pip install -r requirements.txt
+      - name: Compile and test update dialog, streaming and existing updater
+        run: |
+          python -m py_compile "A股MA扫描器_v1.3.0.pyw"
+          xvfb-run -a python -m unittest discover -s tests -p 'test_update_download_progress_131.py' -v
+          xvfb-run -a python -m unittest discover -s tests -p 'test_manual_self_update_130.py' -v
+          xvfb-run -a python -m unittest discover -s tests -p 'test_v130_full_audit.py' -v
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Compile and test update progress and rollback (native Windows)
+        shell: pwsh
+        run: |
+          python -m py_compile "A股MA扫描器_v1.3.0.pyw"
+          python -m unittest discover -s tests -p "test_update_download_progress_131.py" -v
+          python -m unittest discover -s tests -p "test_manual_self_update_130.py" -v
+          python -m unittest discover -s tests -p "test_v130_full_audit.py" -v
