@@ -1,0 +1,208 @@
+name: Publish v1.3.2 after Linux Windows macOS verification
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/release-v1.3.2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Qt/Tk native libraries and Python requirements
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb python3-tk libegl1 libopengl0 libxkbcommon-x11-0 libxcb-cursor0
+          python -m pip install -r requirements.txt
+      - name: Test v1.3.2 mirror updater and preserved v1.3.1 and v1.3.0
+        run: |
+          set -euo pipefail
+          python -m py_compile 'A股MA扫描器_v1.3.2.pyw' 'A股MA扫描器_v1.3.1.pyw' 'A股MA扫描器_v1.3.0.pyw'
+          for suite in test_mirror_updater_132.py test_ui_compact_and_scan_cache_132.py test_top5_stage2_only_132.py test_macos_tk_lifecycle_mirror_132.py test_market_cancel_tk_mirror_132.py test_low_first_board_131.py test_update_download_progress_132.py test_manual_self_update_131.py test_v131_full_audit.py test_manual_self_update_130.py test_v130_full_audit.py test_fresh_robustness_130.py test_spawn_isolation_130.py test_day_parallel_speed_130.py; do
+            xvfb-run -a python -m unittest discover -s tests -p "$suite" -v
+          done
+      - name: Render actual 1120x840 PySide6 v1.3.2 window
+        run: |
+          xvfb-run -a python 'A股MA扫描器_v1.3.2.pyw' --demo --screenshot /tmp/v131.png
+          python - <<'PY'
+          from PySide6.QtGui import QImage
+          image=QImage('/tmp/v131.png')
+          assert not image.isNull() and (image.width(),image.height())==(1120,840)
+          print('v1.3.2 GUI rendered correctly')
+          PY
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python requirements
+        run: python -m pip install -r requirements.txt
+      - name: Windows 1.3.2 updater and 8 strategies / legacy regression
+        shell: pwsh
+        run: |
+          python -m py_compile "A股MA扫描器_v1.3.2.pyw" "A股MA扫描器_v1.3.1.pyw" "A股MA扫描器_v1.3.0.pyw"
+          python -m unittest discover -s tests -p "test_mirror_updater_132.py" -v
+          python -m unittest discover -s tests -p "test_ui_compact_and_scan_cache_132.py" -v
+          python -m unittest discover -s tests -p "test_top5_stage2_only_132.py" -v
+          python -m unittest discover -s tests -p "test_macos_tk_lifecycle_mirror_132.py" -v
+          python -m unittest discover -s tests -p "test_market_cancel_tk_mirror_132.py" -v
+          python -m unittest discover -s tests -p "test_low_first_board_131.py" -v
+          python -m unittest discover -s tests -p "test_update_download_progress_132.py" -v
+          python -m unittest discover -s tests -p "test_manual_self_update_131.py" -v
+          python -m unittest discover -s tests -p "test_v131_full_audit.py" -v
+          python -m unittest discover -s tests -p "test_manual_self_update_130.py" -v
+          python -m unittest discover -s tests -p "test_v130_full_audit.py" -v
+          python -m unittest discover -s tests -p "test_fresh_robustness_130.py" -v
+          python -m unittest discover -s tests -p "test_spawn_isolation_130.py" -v
+
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 25
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python requirements
+        run: python -m pip install -r requirements.txt
+      - name: macOS Tcl/Qt, mirror and strategy compatibility tests
+        run: |
+          set -euo pipefail
+          python -m py_compile 'A股MA扫描器_v1.3.2.pyw'
+          for suite in test_macos_tk_lifecycle_mirror_132.py test_market_cancel_tk_mirror_132.py test_mirror_updater_132.py test_ui_compact_and_scan_cache_132.py test_top5_stage2_only_132.py test_low_first_board_131.py; do
+            python -m unittest discover -s tests -p "$suite" -v
+          done
+
+  publish:
+    needs: [linux, windows, macos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check version, commit and unused release tag
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$GITHUB_SHA"
+          test "$(grep -c '^APP_VERSION = "1.3.2"$' 'A股MA扫描器_v1.3.2.pyw')" = 1
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v1.3.2" > /dev/null 2>&1; then
+            echo "::error::v1.3.2 tag already exists; will not overwrite an existing release"
+            exit 1
+          fi
+      - name: Assemble source-equivalent .pyw and ZIP
+        run: |
+          set -euo pipefail
+          mkdir -p output
+          cp 'A股MA扫描器_v1.3.2.pyw' output/AShareMAScanner_v1.3.2.pyw
+          python - <<'PY'
+          from zipfile import ZipFile,ZIP_DEFLATED
+          files=('A股MA扫描器_v1.3.2.pyw','requirements.txt','README.md','RELEASE_NOTES_v1.3.2.md')
+          with ZipFile('output/AShareMAScanner_v1.3.2.zip','w',ZIP_DEFLATED,compresslevel=9) as z:
+              for filename in files:
+                  z.write(filename,filename)
+          with ZipFile('output/AShareMAScanner_v1.3.2.zip') as z:
+              assert z.testzip() is None
+              assert set(z.namelist()) == set(files)
+          PY
+          sha256sum output/*
+      - name: Create or reuse already uploaded DRAFT release
+        run: |
+          set -euo pipefail
+          existing="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.tag_name == "v1.3.2" and .draft == true) | .id')"
+          if [[ -n "$existing" ]]; then
+            echo "Reusing existing v1.3.2 draft release $existing; its assets will be revalidated"
+          else
+            gh release create v1.3.2 \
+              output/AShareMAScanner_v1.3.2.pyw \
+              output/AShareMAScanner_v1.3.2.zip \
+              --draft --title "v1.3.2 · VPS 更新镜像、macOS 修复与界面性能优化" \
+              --notes-file RELEASE_NOTES_v1.3.2.md \
+              --target "$GITHUB_SHA" --repo "$GITHUB_REPOSITORY"
+          fi
+      - name: Download and validate the actual DRAFT assets
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,io,json,os,subprocess,time,urllib.request,zipfile
+          from pathlib import Path
+          repo=os.environ['GITHUB_REPOSITORY']
+          token=os.environ['GH_TOKEN']
+          candidates=[]
+          for attempt in range(10):
+              releases=json.loads(subprocess.check_output(
+                  ['gh','api',f'repos/{repo}/releases?per_page=100']))
+              candidates=[r for r in releases if r['tag_name']=='v1.3.2']
+              if len(candidates)==1:
+                  break
+              time.sleep(2)
+          assert len(candidates)==1 and candidates[0]['draft'] is True,candidates
+          release=candidates[0]
+          assets={a['name']:a for a in release['assets']}
+          expected={'AShareMAScanner_v1.3.2.pyw','AShareMAScanner_v1.3.2.zip'}
+          assert set(assets)==expected
+          expected_zip_files={'A股MA扫描器_v1.3.2.pyw','requirements.txt','README.md','RELEASE_NOTES_v1.3.2.md'}
+          for name,asset in assets.items():
+              assert 0 < asset['size'] <= 4*1024*1024
+              req=urllib.request.Request(
+                  f"https://api.github.com/repos/{repo}/releases/assets/{asset['id']}",
+                  headers={
+                      'Accept':'application/octet-stream',
+                      'Authorization':f'Bearer {token}',
+                      'X-GitHub-Api-Version':'2022-11-28',
+                      'User-Agent':'AShareMAScanner-release-verifier',
+                  })
+              with urllib.request.urlopen(req,timeout=30) as response:
+                  raw=response.read(4*1024*1024+1)
+              assert len(raw)==asset['size'],f'{name}: wrong size'
+              assert asset['digest']=='sha256:'+hashlib.sha256(raw).hexdigest(),f'{name}: wrong SHA'
+              if name.endswith('.pyw'):
+                  assert raw==Path('A股MA扫描器_v1.3.2.pyw').read_bytes()
+              else:
+                  with zipfile.ZipFile(io.BytesIO(raw)) as z:
+                      assert z.testzip() is None
+                      assert set(z.namelist())==expected_zip_files
+                      for member in expected_zip_files:
+                          assert z.read(member)==Path(member).read_bytes(),member
+              print(f'{name} verified from GitHub, size={len(raw)} bytes')
+          print('Downloaded draft assets fully match the current source tree')
+          PY
+      - name: Publish verified GitHub Release
+        run: |
+          set -euo pipefail
+          gh release edit v1.3.2 --draft=false --latest --repo "$GITHUB_REPOSITORY"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name')" = 'v1.3.2'
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v1.3.2" --jq '.object.sha')" = "$GITHUB_SHA"
+          echo "Published and verified v1.3.2"
+      - name: Notify VPS with short-lived Actions OIDC and await exact SHA sync
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/sync_mirror.py
