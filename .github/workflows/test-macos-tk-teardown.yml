@@ -3,7 +3,7 @@ on:
   push:
     branches: [fix/macos-tk-teardown-20261101]
     paths:
-      - 'A股MA扫描器_v1.3.1.pyw'
+      - 'A股MA扫描器_v1.3.2.pyw'
       - 'tests/test_macos_tk_lifecycle_132.py'
       - 'tests/test_market_cancel_tk_131.py'
       - '.github/workflows/test-macos-tk-teardown.yml'
@@ -26,10 +26,10 @@ jobs:
         run: |
           python -c 'import tkinter; print("Tcl", tkinter.TclVersion, "Tk", tkinter.TkVersion)'
           python -m pip install -r requirements.txt
-      - name: Compile both versions, run native Tk to Qt and cancel tests
+      - name: Compile versioned preview and original, run native Tk to Qt and cancel tests
         run: |
           set -euo pipefail
-          python -m py_compile 'A股MA扫描器_v1.3.1.pyw' 'A股MA扫描器_v1.3.0.pyw'
+          python -m py_compile 'A股MA扫描器_v1.3.2.pyw' 'A股MA扫描器_v1.3.1.pyw' 'A股MA扫描器_v1.3.0.pyw'
           python -m unittest discover -s tests -p 'test_macos_tk_lifecycle_132.py' -v
           python -m unittest discover -s tests -p 'test_market_cancel_tk_131.py' -v
           python -m unittest discover -s tests -p 'test_manual_self_update_131.py' -v
@@ -54,7 +54,7 @@ jobs:
       - name: Compile and run Tk/Qt transition and previous regression
         run: |
           set -euo pipefail
-          python -m py_compile 'A股MA扫描器_v1.3.1.pyw' 'A股MA扫描器_v1.3.0.pyw'
+          python -m py_compile 'A股MA扫描器_v1.3.2.pyw' 'A股MA扫描器_v1.3.1.pyw' 'A股MA扫描器_v1.3.0.pyw'
           for suite in test_macos_tk_lifecycle_132.py test_market_cancel_tk_131.py test_low_first_board_131.py test_update_download_progress_132.py test_v131_full_audit.py; do
             xvfb-run -a python -m unittest discover -s tests -p "$suite" -v
           done
@@ -75,7 +75,7 @@ jobs:
       - name: Compile and run Tk/Qt transition
         shell: pwsh
         run: |
-          python -m py_compile 'A股MA扫描器_v1.3.1.pyw'
+          python -m py_compile 'A股MA扫描器_v1.3.2.pyw'
           python -m unittest discover -s tests -p 'test_macos_tk_lifecycle_132.py' -v
           python -m unittest discover -s tests -p 'test_market_cancel_tk_131.py' -v
           python -m unittest discover -s tests -p 'test_update_download_progress_132.py' -v
