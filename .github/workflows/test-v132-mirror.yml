@@ -41,6 +41,13 @@ jobs:
           i=QImage('/tmp/v132.png')
           assert not i.isNull() and (i.width(),i.height())==(1120,840)
           PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v132-compact-ui-preview
+          path: /tmp/v132.png
+          if-no-files-found: ignore
+          retention-days: 7
   windows:
     runs-on: windows-latest
     timeout-minutes: 30
