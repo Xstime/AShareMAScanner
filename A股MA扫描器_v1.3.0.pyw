@@ -782,6 +782,107 @@ def ma_convergence_up_metrics(frame: pd.DataFrame, pos: int,
         return None
     return current
 
+
+# This estimates limit-up using post-adjusted DAILY CLOSES, NOT certified
+# exchange closing-limit prices or intraday limit-up order-book data.
+FIRST_BOARD_OFFSETS = (3, 4, 5)    # market trading days ago
+FIRST_BOARD_LOOKBACK = 30          # completed stock trading sessions before board
+FIRST_BOARD_CLEAR_DAYS = 20        # no prior limit-up during these trading sessions
+FIRST_BOARD_LOW_POSITION = 0.35   # lower 35% of preceding 30-session close range
+FIRST_BOARD_VOLUME_RATIO = 1.5    # event volume vs previous 5-session mean
+
+
+def is_approx_limit_up(previous_close, close, code: str) -> bool:
+    """Daily-close proxy for the 10% or 20% A-share closing price limit."""
+    try:
+        before, current = float(previous_close), float(close)
+    except (TypeError, ValueError):
+        return False
+    if not all(math.isfinite(x) and x > 0 for x in (before, current)):
+        return False
+    symbol = str(code).split(".")[-1]
+    if symbol.startswith(("300", "301", "688")):
+        lo, hi = .195, .206
+    elif symbol.startswith(("600", "601", "603", "605",
+                            "000", "001", "002", "003")):
+        lo, hi = .097, .106
+    else:
+        return False
+    return lo <= current / before - 1.0 <= hi
+
+
+def low_first_board_metrics(frame: pd.DataFrame, pos: int, code: str,
+                            market_dates) -> Optional[dict]:
+    """Find a first-board candidate from 3–5 MARKET sessions earlier.
+
+    Uses only history no later than frame[pos]. 'First board' means no
+    approximate limit-up in the prior 20 valid stock sessions.
+    """
+    if (pos < FIRST_BOARD_LOOKBACK + min(FIRST_BOARD_OFFSETS)
+            or pos >= len(frame)):
+        return None
+    calendar = [str(x) for x in market_dates]
+    current_date = str(frame.iloc[pos]["trade_date"])
+    try:
+        calendar_pos = calendar.index(current_date)
+    except ValueError:
+        return None
+    stock_pos = {str(frame.iloc[i]["trade_date"]): i for i in range(pos + 1)}
+    for days_ago in FIRST_BOARD_OFFSETS:
+        calendar_index = calendar_pos - days_ago
+        if calendar_index < 0:
+            continue
+        event_pos = stock_pos.get(calendar[calendar_index])
+        if event_pos is None or event_pos < FIRST_BOARD_LOOKBACK:
+            continue
+        event = frame.iloc[event_pos]
+        name = str(event.get("name", "") or "").strip().upper()
+        if str(event.get("is_st", "0")) in ("1", "1.0") or name.lstrip("*").startswith("ST"):
+            continue
+        previous = frame.iloc[event_pos - 1]
+        if not is_approx_limit_up(previous["close"], event["close"], code):
+            continue
+        # Disallow two-board, three-board, and any limit-up within 20 sessions.
+        if any(is_approx_limit_up(frame.iloc[i - 1]["close"],
+                                  frame.iloc[i]["close"], code)
+               for i in range(event_pos - FIRST_BOARD_CLEAR_DAYS, event_pos)):
+            continue
+        prices = pd.to_numeric(
+            frame.iloc[event_pos - FIRST_BOARD_LOOKBACK:event_pos]["close"],
+            errors="coerce")
+        if len(prices) != FIRST_BOARD_LOOKBACK or prices.isna().any():
+            continue
+        bottom, top = float(prices.min()), float(prices.max())
+        if not (math.isfinite(bottom) and math.isfinite(top)
+                and bottom > 0 and top > bottom):
+            continue
+        previous_close = float(previous["close"])
+        location = (previous_close - bottom) / (top - bottom)
+        if not 0 <= location <= FIRST_BOARD_LOW_POSITION:
+            continue
+        prior_volumes = pd.to_numeric(
+            frame.iloc[event_pos - 5:event_pos]["volume"], errors="coerce")
+        if len(prior_volumes) != 5 or prior_volumes.isna().any():
+            continue
+        mean_volume = float(prior_volumes.mean())
+        if not math.isfinite(mean_volume) or mean_volume <= 0:
+            continue
+        ratio = float(event["volume"]) / mean_volume
+        if not math.isfinite(ratio) or ratio < FIRST_BOARD_VOLUME_RATIO:
+            continue
+        current_close = float(frame.iloc[pos]["close"])
+        event_close = float(event["close"])
+        return {
+            "首板日期": str(event["trade_date"]),
+            "距今交易日": days_ago,
+            "首板涨幅%": (event_close / previous_close - 1) * 100,
+            "首板放量倍数": ratio,
+            "首板前30日位置%": location * 100,
+            "现价较首板%": (current_close / event_close - 1) * 100,
+        }
+    return None
+
+
 MA_WINDOWS = (5, 10, 20)
 VOLUME_AVG_DAYS = 5
 VOLUME_RATIO = 1.5
@@ -3159,6 +3260,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
         if df.empty:
             return pd.DataFrame()
 
+        market_dates = sorted(df["trade_date"].astype(str).unique().tolist())
         result = []
         daily_metrics = {}
 
@@ -3205,6 +3307,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                     6 if strategy == "volume_turnover"
                     else 7 if strategy == "ma5_turn_up"
                     else 23 if strategy == "ma_convergence_up"
+                    else 34 if strategy == "low_first_board"
                     else 21
                 )
                 if len(sub) < minimum_bars:
@@ -3224,6 +3327,25 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                         "当日涨幅%": round(float(change), 2),
                         "放量倍数": round(float(today["volume"] / today["VOL5_PREV"]), 2),
                         "换手率%": round(float(today["turnover"]), 3), "_code_full": code,
+                    })
+
+                elif strategy == "low_first_board":
+                    # Screen TODAY for a qualifying event 3–5 market days ago.
+                    metrics = low_first_board_metrics(
+                        sub, len(sub) - 1, code, market_dates)
+                    if metrics is None or float(prev["close"]) <= 0:
+                        continue
+                    change = (float(today["close"]) / float(prev["close"]) - 1) * 100
+                    result.append({
+                        "代码": self.symbol_only(code),
+                        "名称": str(today["name"] or ""),
+                        "板块": industry_map.get(code, "未分类"),
+                        "触发日": signal_date,
+                        "收盘价": round(float(today["close"]), 2),
+                        "当日涨幅%": round(float(change), 2),
+                        **{k: round(v, 3) if isinstance(v, float) else v
+                           for k, v in metrics.items()},
+                        "_code_full": code,
                     })
 
                 elif strategy.startswith("breakout_ma"):
@@ -3447,6 +3569,8 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                 ["触发日", "MA5上拐幅度%", "当日涨幅%"],
                 ascending=[False, False, False],
             )
+        elif strategy == "low_first_board":
+            out = out.sort_values(["距今交易日", "首板放量倍数"], ascending=[True, False])
         elif strategy == "ma_convergence_up":
             out = out.sort_values(
                 ["触发日", "发散增加百分点", "当日涨幅%"],
@@ -4098,6 +4222,7 @@ STRATEGIES = [
     ("ma5_turn_up", "MA5 拐头向上", "趋势信号"),
     ("ma_convergence_up", "均线粘合向上", "趋势信号"),
     ("volume_turnover", "放量 + 换手率", "量价分析"),
+    ("low_first_board", "低位首板放量（3～5日）", "量价分析"),
 ]
 PHASES = [
     ("环境检查", 0, 12), ("失败补抓", 12, 20),
