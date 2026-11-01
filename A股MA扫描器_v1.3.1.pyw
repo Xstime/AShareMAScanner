@@ -113,46 +113,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
-import gc
-
-# A Tk Variable normally deletes its Tcl name in Variable.__del__.  Python
-# may collect a reference cycle on ANY active background thread (Qt, BaoStock,
-# etc.), even after Tk's mainloop has ended. macOS/Aqua then aborts with
-# "Tcl_AsyncDelete: async handler deleted by the wrong thread".
-# Explicitly release Tcl variables on the GUI/main thread before destroying
-# their Tk root; later Python GC must not call back into Tcl.
-class _TkMainThreadVariableLifetime:
-    def dispose_tcl(self):
-        if getattr(self, "_tcl_disposed", False):
-            return
-        if threading.current_thread() is not threading.main_thread():
-            raise RuntimeError("Tk variables must be finalized on the main thread")
-        try:
-            super().__del__()
-        finally:
-            self._tcl_disposed = True
-
-    def __del__(self):
-        if not getattr(self, "_tcl_disposed", False):
-            super().__del__()
-
-
-def _managed_tk_variable(cls, root, value):
-    class _MainThreadOwnedVar(_TkMainThreadVariableLifetime, cls):
-        pass
-    return _MainThreadOwnedVar(master=root, value=value)
-
-
-def _collect_after_tk():
-    # Flush Tk-related reference cycles while we are still on the main thread,
-    # BEFORE creating another event loop (especially QApplication on macOS).
-    if threading.current_thread() is not threading.main_thread():
-        raise RuntimeError("Tk cleanup must run on the main thread")
-    gc.collect()
-
-
-UI_FONT_FAMILY = "Helvetica Neue" if sys.platform == "darwin" else "Segoe UI"
-
 # ============================================================
 # 启动依赖自检：只在直接运行 .py / .pyw 时执行
 # ============================================================
@@ -185,10 +145,10 @@ def _bootstrap_dependencies():
             root.title("A股 MA 扫描器 · 1/3 环境检查")
             root.geometry("500x165")
             root.configure(bg="#f5f6fa")
-            _tk.Label(root,text="运行环境检查",font=(UI_FONT_FAMILY,15,"bold"),
+            _tk.Label(root,text="运行环境检查",font=("Segoe UI",15,"bold"),
                       bg="#f5f6fa",fg="#24334a").pack(anchor="w",padx=25,pady=(24,10))
             _tk.Label(root,text="Python / Tkinter / PySide6 / 行情依赖已就绪",
-                      font=(UI_FONT_FAMILY,10),bg="#f5f6fa",fg="#3f785b"
+                      font=("Segoe UI",10),bg="#f5f6fa",fg="#3f785b"
                       ).pack(anchor="w",padx=25)
             root.after(700,root.destroy)
             root.mainloop()
@@ -327,17 +287,17 @@ def _bootstrap_dependencies():
     root.resizable(False, False)
     root.configure(bg="#f5f5f7")
     root.protocol("WM_DELETE_WINDOW", lambda: None)
-    _ttk.Label(root, text="1/3 · 自动补齐运行环境（含 PySide6）", font=(UI_FONT_FAMILY, 14, "bold"),
+    _ttk.Label(root, text="1/3 · 自动补齐运行环境（含 PySide6）", font=("Segoe UI", 14, "bold"),
                background="#f5f5f7").pack(anchor="w", padx=24, pady=(22, 8))
-    status = _managed_tk_variable(_tk.StringVar, root, "检测到缺少依赖，首次安装可能需要几分钟…")
+    status = _tk.StringVar(value="检测到缺少依赖，首次安装可能需要几分钟…")
     _ttk.Label(root, textvariable=status, background="#f5f5f7",
-               font=(UI_FONT_FAMILY, 10)).pack(anchor="w", padx=24, pady=(0, 10))
+               font=("Segoe UI", 10)).pack(anchor="w", padx=24, pady=(0, 10))
     bar = _ttk.Progressbar(root, mode="indeterminate", length=442)
     bar.pack(padx=24, fill="x")
     bar.start(14)
     _ttk.Label(root, text="仅安装缺失的库；主界面采用 PySide6，数据更新采用 Tkinter。",
                background="#f5f5f7", foreground="#6e6e73",
-               font=(UI_FONT_FAMILY, 9)).pack(anchor="w", padx=24, pady=(13, 0))
+               font=("Segoe UI", 9)).pack(anchor="w", padx=24, pady=(13, 0))
 
     state = {"ok": True, "notice": ""}
 
@@ -363,18 +323,7 @@ def _bootstrap_dependencies():
 
     threading.Thread(target=install_all, daemon=True).start()
     root.after(150, poll)
-    try:
-        root.mainloop()
-    finally:
-        # Even if the install fails, finalize Tcl-backed variables on the
-        # main GUI thread; never let Qt/background-worker GC do this later.
-        status.dispose_tcl()
-        try:
-            if root.winfo_exists():
-                root.destroy()
-        except _tk.TclError:
-            pass
-        _collect_after_tk()
+    root.mainloop()
     if not state["ok"]:
         raise SystemExit(1)
 
@@ -3966,7 +3915,7 @@ class HoverTip:
             self.window.overrideredirect(True)
             self.window.attributes("-topmost", True)
             self.label = tk.Label(self.window, text=text, justify="left", anchor="w",
-                                  background="#ffffff", foreground="#1d1d1f", font=(UI_FONT_FAMILY, 10),
+                                  background="#ffffff", foreground="#1d1d1f", font=("Segoe UI", 10),
                                   padx=10, pady=7, relief="solid", borderwidth=1, wraplength=420)
             self.label.pack()
         if text != self.text:
@@ -4104,33 +4053,33 @@ def run_tk_data_phase(backend=None, *, autostart=True):
     heading = _tk.Frame(card,bg="#ffffff")
     heading.pack(fill="x",padx=24,pady=(20,4))
     _tk.Label(heading,text="2/3  ·  行情更新与完整性检查",
-              font=(UI_FONT_FAMILY,16,"bold"),bg="#ffffff",fg="#223049").pack(anchor="w")
+              font=("Segoe UI",16,"bold"),bg="#ffffff",fg="#223049").pack(anchor="w")
     _tk.Label(heading,text="八阶段准备完成后，自动进入 PySide6 4:3 主界面",
-              font=(UI_FONT_FAMILY,10),bg="#ffffff",fg="#788699").pack(anchor="w",pady=(5,0))
-    stage_var=_managed_tk_variable(_tk.StringVar,root,"准备开始")
-    task_var=_managed_tk_variable(_tk.StringVar,root,"正在读取本地数据库")
-    counter_var=_managed_tk_variable(_tk.StringVar,root,"等待运行")
-    time_var=_managed_tk_variable(_tk.StringVar,root,"已用时 00:00")
-    pct_var=_managed_tk_variable(_tk.StringVar,root,"0%")
-    progress=_managed_tk_variable(_tk.DoubleVar,root,0)
-    _tk.Label(card,textvariable=stage_var,font=(UI_FONT_FAMILY,13,"bold"),
+              font=("Segoe UI",10),bg="#ffffff",fg="#788699").pack(anchor="w",pady=(5,0))
+    stage_var=_tk.StringVar(value="准备开始")
+    task_var=_tk.StringVar(value="正在读取本地数据库")
+    counter_var=_tk.StringVar(value="等待运行")
+    time_var=_tk.StringVar(value="已用时 00:00")
+    pct_var=_tk.StringVar(value="0%")
+    progress=_tk.DoubleVar(value=0)
+    _tk.Label(card,textvariable=stage_var,font=("Segoe UI",13,"bold"),
               bg="#ffffff",fg="#263a54").pack(anchor="w",padx=24,pady=(23,8))
     _tk.Label(card,textvariable=task_var,wraplength=530,justify="left",
-              font=(UI_FONT_FAMILY,10),bg="#ffffff",fg="#6c7889").pack(anchor="w",padx=24)
-    _tk.Label(card,textvariable=counter_var,font=(UI_FONT_FAMILY,10,"bold"),
+              font=("Segoe UI",10),bg="#ffffff",fg="#6c7889").pack(anchor="w",padx=24)
+    _tk.Label(card,textvariable=counter_var,font=("Segoe UI",10,"bold"),
               bg="#ffffff",fg="#334155").pack(anchor="w",padx=24,pady=(12,8))
     _ttk.Progressbar(card,variable=progress,maximum=100,mode="determinate").pack(
         fill="x",padx=24)
     info=_tk.Frame(card,bg="#ffffff")
     info.pack(fill="x",padx=24,pady=(8,4))
     _tk.Label(info,text="流程进度（按步骤权重，非剩余时间）",
-              bg="#ffffff",fg="#7a8799",font=(UI_FONT_FAMILY,9)).pack(side="left")
+              bg="#ffffff",fg="#7a8799",font=("Segoe UI",9)).pack(side="left")
     _tk.Label(info,textvariable=pct_var,bg="#ffffff",fg="#2776d6",
-              font=(UI_FONT_FAMILY,11,"bold")).pack(side="right")
+              font=("Segoe UI",11,"bold")).pack(side="right")
     _tk.Frame(card,height=1,bg="#e7ebf1").pack(fill="x",padx=24,pady=(18,12))
-    _tk.Label(card,text="实时任务记录",font=(UI_FONT_FAMILY,10,"bold"),
+    _tk.Label(card,text="实时任务记录",font=("Segoe UI",10,"bold"),
               bg="#ffffff",fg="#334155").pack(anchor="w",padx=24)
-    log=_tk.Text(card,height=8,wrap="word",font=(UI_FONT_FAMILY,9),
+    log=_tk.Text(card,height=8,wrap="word",font=("Segoe UI",9),
                  borderwidth=0,background="#fbfcff",foreground="#66758c")
     log.pack(fill="both",expand=True,padx=24,pady=(6,10))
     log.configure(state="disabled")
@@ -4248,18 +4197,12 @@ def run_tk_data_phase(backend=None, *, autostart=True):
     try:
         root.mainloop()
     finally:
-        # This function was entered on the main thread. Tcl Variable.__del__
-        # is NOT thread-safe even when only reading "info exists"; dispatch
-        # each finalizer deterministically here, before the Qt event loop.
-        for variable in (stage_var, task_var, counter_var, time_var,
-                         pct_var, progress):
-            variable.dispose_tcl()
+        # Tk can already be destroyed by the OS/window manager during a stop.
         try:
             if root.winfo_exists():
                 root.destroy()
         except _tk.TclError:
             pass
-        _collect_after_tk()
     if state["aborted"] or state["success"] is None:
         return None
     return engine_backend,state["success"]
@@ -5791,12 +5734,10 @@ def main():
         if phase is None:
             return 1
         backend,result=phase
-    # Finalize residual Tk objects (e.g. callback cycles) on the main thread.
-    # Crucial for macOS where Tcl_AsyncDelete must never run on a QThread.
-    _collect_after_tk()
+    # 阶段2 的 Tk root 已销毁，Qt 独占 GUI 事件循环。
     os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR","1")
     app=QApplication(sys.argv[:1])
-    app.setFont(QFont(UI_FONT_FAMILY,10))
+    app.setFont(QFont("Segoe UI",10))
     win=ScannerWindow(
         demo=args.demo or bool(args.screenshot),
         prepared_backend=backend,prepared_result=result)
