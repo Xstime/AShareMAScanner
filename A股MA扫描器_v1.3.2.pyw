@@ -4709,11 +4709,18 @@ QLabel#fundCard { text-align: left; background: #ffffff; border: 1px solid #e1e7
 QLineEdit, QComboBox { background: white; border: 1px solid #e0e5ee; border-radius: 8px;
                         padding: 7px 9px; min-height: 18px; color: #293344; }
 QLineEdit:focus, QComboBox:focus { border-color: #4c99e8; }
+QComboBox { padding-right: 28px; }
+QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: top right;
+                       width: 26px; border: 0; background: transparent; }
+QComboBox::down-arrow { image: none; width: 0; height: 0;
+                        border-left: 4px solid transparent;
+                        border-right: 4px solid transparent;
+                        border-top: 5px solid #718096; }
 QTableWidget { background: white; border: 1px solid #e4e8f0; border-radius: 10px;
                gridline-color: #edf0f5; alternate-background-color: #fafbfd;
                selection-background-color: #e5f1ff; selection-color: #185eae; }
 QHeaderView::section { background: #f4f6f9; color: #738093; border: none;
-                       border-bottom: 1px solid #e3e8ef; padding: 10px 8px; }
+                       border-bottom: 1px solid #e3e8ef; padding: 4px 7px; }
 QProgressBar { border: none; background: #edf1f6; border-radius: 5px;
                text-align: center; min-height: 9px; max-height: 9px; }
 QProgressBar::chunk { background: #2885e9; border-radius: 5px; }
@@ -4853,10 +4860,10 @@ class ScannerWindow(QMainWindow):
         brand.addWidget(self.header_status)
         line.addLayout(brand)
         line.addStretch(1)
-        self.refresh_market = QPushButton("更新行情")
+        # Keep the safe restart callback, but remove the redundant header button.
+        self.refresh_market = QPushButton("更新行情", self)
         self.refresh_market.clicked.connect(self._restart_pipeline)
-        self.refresh_market.setEnabled(not self.demo)
-        line.addWidget(self.refresh_market)
+        self.refresh_market.hide()
         self.update_button = QPushButton("检查更新")
         self.update_button.clicked.connect(self._show_release_info)
         line.addWidget(self.update_button)
@@ -4914,7 +4921,6 @@ class ScannerWindow(QMainWindow):
         nav_l.addWidget(self.volume_options)
         self.volume_options.hide()
         nav_l.addStretch(1)
-        nav_l.addWidget(self._text("数据：本地 SQLite / BaoStock", "small"))
         split.addWidget(nav)
 
         middle = QWidget()
@@ -4928,12 +4934,18 @@ class ScannerWindow(QMainWindow):
         self.hit_count = self._text("命中 — 只", "small")
         head.addWidget(self.hit_count)
         mid.addLayout(head)
+        self.strategy_loading = QProgressBar()
+        self.strategy_loading.setTextVisible(False)
+        self.strategy_loading.setFixedHeight(3)
+        self.strategy_loading.setRange(0, 0)
+        self.strategy_loading.hide()
+        mid.addWidget(self.strategy_loading)
 
         fund_head = QHBoxLayout()
         fund_head.addWidget(self._text("近5日 · 行业资金 TOP5", "section"))
         fund_head.addStretch()
         self.fund_source_label = self._text("未刷新", "small")
-        fund_head.addWidget(self.fund_source_label)
+        self.fund_source_label.hide()
         self.fund_refresh = QPushButton("刷新")
         self.fund_refresh.clicked.connect(self.start_fund_refresh)
         fund_head.addWidget(self.fund_refresh)
@@ -4987,7 +4999,11 @@ class ScannerWindow(QMainWindow):
         self.sector_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.sector_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.sector_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-        self.sector_table.setMaximumHeight(120)
+        self.sector_table.horizontalHeader().setFixedHeight(25)
+        self.sector_table.verticalHeader().setDefaultSectionSize(22)
+        self.sector_table.verticalHeader().setMinimumSectionSize(22)
+        self.sector_table.setFixedHeight(166)
+        self.sector_table.setShowGrid(False)
         self.sector_table.itemSelectionChanged.connect(self._on_sector_selected)
         self.sector_table.cellDoubleClicked.connect(self._open_sector_chart)
         mid.addWidget(self.sector_table)
@@ -5017,7 +5033,7 @@ class ScannerWindow(QMainWindow):
         mid.addWidget(self.table, 1)
         self.result_info = self._text("选择策略后开始扫描", "small")
         self.result_info.setWordWrap(True)
-        mid.addWidget(self.result_info)
+        self.result_info.hide()
         split.addWidget(middle)
 
         right = QFrame()
@@ -5055,7 +5071,7 @@ class ScannerWindow(QMainWindow):
         rl.addWidget(history)
         self.chart_status = self._text("本地历史缓存", "small")
         self.chart_status.setWordWrap(True)
-        rl.addWidget(self.chart_status)
+        self.chart_status.hide()
         split.addWidget(right)
         split.setSizes([194, 652, 274])
         split.setStretchFactor(0, 0)
@@ -5063,8 +5079,7 @@ class ScannerWindow(QMainWindow):
         split.setStretchFactor(2, 0)
         self.page.addWidget(page)
 
-        footer = self.statusBar()
-        footer.showMessage("本地 SQLite / BaoStock · v1.3.0")
+        self.statusBar().hide()
 
     def _load_demo(self):
         self.demo = True
@@ -5131,7 +5146,7 @@ class ScannerWindow(QMainWindow):
     def _on_update_ready(self, result):
         self.update_result = result
         self.header_status.setText(
-            f"行情日期 {result.scan_date} · 完整率 {result.completeness:.2f}%"
+            f"行情日期 {result.scan_date}"
         )
         self.page.setCurrentIndex(1)
         self.statusBar().showMessage(
@@ -5172,6 +5187,8 @@ class ScannerWindow(QMainWindow):
         self.scan_token += 1
         self._scan_cancel_event = threading.Event()
         self.frame = pd.DataFrame()
+        self.strategy_loading.show()
+        self.strategy_loading.setRange(0, 0)
         self.sector_filter = None
         self.sector_table.blockSignals(True)
         self.sector_table.setRowCount(0)
@@ -5182,6 +5199,7 @@ class ScannerWindow(QMainWindow):
             self._update_industry_filter()
             self._populate_sector_table()
             self.apply_filters()
+            self.strategy_loading.hide()
             return
         try:
             filters = None
@@ -5195,6 +5213,7 @@ class ScannerWindow(QMainWindow):
                 self.current_filters = filters
         except (ValueError, OverflowError) as exc:
             self.result_info.setText("请输入有效的放量倍数及换手率上下限：" + str(exc))
+            self.strategy_loading.hide()
             return
         self.result_info.setText("正在读取本地行情并计算策略…")
         worker = ScanWorker(self.backend, self.scan_token, self.current_key,
@@ -5209,6 +5228,7 @@ class ScannerWindow(QMainWindow):
         if token != self.scan_token:
             return
         self._scan_cancel_event = None
+        self.strategy_loading.hide()
         self.frame = frame
         self._update_industry_filter()
         self._populate_sector_table()
@@ -5217,6 +5237,7 @@ class ScannerWindow(QMainWindow):
         if token != self.scan_token:
             return
         self._scan_cancel_event = None
+        self.strategy_loading.hide()
         self.result_info.setText("策略执行失败，点击查看错误信息")
         self._show_error("策略执行失败", detail)
     def _update_industry_filter(self):
