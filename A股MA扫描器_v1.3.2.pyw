@@ -499,6 +499,8 @@ class UpdateIntegrityError(RuntimeError):
 
 
 def _trusted_update_url(url, source, *, tag="", name="", digest="", redirect=False):
+    if not isinstance(url, str):
+        return False
     try:
         p = urllib.parse.urlsplit(url)
         if (p.scheme != "https" or p.username is not None or p.password is not None
@@ -570,13 +572,43 @@ def _expected_release_asset(release, latest, source="github"):
         raise UpdateIntegrityError("更新清单不是正式发布版本")
     if source == "mirror":
         if (release.get("schema_version") != 1 or release.get("repository") != REPO_FULL_NAME
+                or release.get("tag_name") != tag
+                or not isinstance(release.get("id"), (str, int))
                 or not isinstance(release.get("sync_request_id"), str)
                 or not release.get("sync_request_id")
-                or not isinstance(release.get("synced_at"), str)):
+                or not isinstance(release.get("synced_at"), str)
+                or not release.get("synced_at")
+                or not isinstance(release.get("published_at"), str)
+                or not release.get("published_at")
+                or not isinstance(release.get("name"), str)
+                or not isinstance(release.get("body"), str)
+                or release.get("html_url") != RELEASES_PAGE + "/tag/" + tag):
             raise UpdateIntegrityError("镜像发布清单身份异常")
     assets = release.get("assets")
     if not isinstance(assets, list):
         raise UpdateIntegrityError("更新附件列表异常")
+    if source == "mirror":
+        expected_names = {name, f"AShareMAScanner_{tag}.zip"}
+        if (len(assets) != 2
+                or any(not isinstance(x, dict) for x in assets)
+                or {x["name"] for x in assets if isinstance(x.get("name"), str)}
+                   != expected_names):
+            raise UpdateIntegrityError("镜像发行附件名称或数量异常")
+        for entry in assets:
+            entry_name = entry["name"]
+            entry_digest = entry.get("digest")
+            entry_size = entry.get("size")
+            if (not isinstance(entry_digest, str)
+                    or not re.fullmatch(r"sha256:[a-f0-9]{64}", entry_digest)
+                    or not isinstance(entry_size, int) or isinstance(entry_size, bool)
+                    or not 0 < entry_size <= MAX_UPDATE_BYTES):
+                raise UpdateIntegrityError("镜像发行附件 SHA 或大小异常")
+            entry_sha = entry_digest.split(":", 1)[1]
+            if (not _trusted_update_url(entry.get("browser_download_url"),
+                                        "mirror", tag=tag, name=entry_name, digest=entry_sha)
+                    or not _trusted_update_url(entry.get("upstream_download_url"),
+                                               "github", tag=tag, name=entry_name)):
+                raise UpdateIntegrityError("镜像发行附件链接不可信")
     matches = [a for a in assets if isinstance(a, dict) and a.get("name") == name]
     if len(matches) != 1:
         raise UpdateIntegrityError("缺少唯一的正式 .pyw 附件")
