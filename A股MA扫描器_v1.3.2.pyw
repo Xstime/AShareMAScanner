@@ -5038,6 +5038,9 @@ class ScannerWindow(QMainWindow):
         self._scan_cancel_event = None
         self.selected_stock = None
         self.sector_filter = None
+        self.concept_service = ConceptIndexService()
+        self.concept_rows = []
+        self.concept_worker = None
         self.current_filters = RangeFilter()
         self._latest_release_url = None
         self._version_worker = None
@@ -5068,6 +5071,8 @@ class ScannerWindow(QMainWindow):
         # No QThread can be destroyed while it is still running.
         if self._scan_cancel_event is not None:
             self._scan_cancel_event.set()
+        if self.concept_worker is not None and self.concept_worker.isRunning():
+            self.concept_worker.stop_event.set()
         if self._version_worker is not None and self._version_worker.isRunning():
             self._version_worker.cancel_download()
         if any(worker.isRunning() for worker in self.workers):
@@ -5274,8 +5279,18 @@ class ScannerWindow(QMainWindow):
             entry.editingFinished.connect(self.apply_filters)
         mid.addLayout(change_row)
         sector_head = QHBoxLayout()
-        sector_head.addWidget(self._text("板块信号", "section"))
+        self.sector_heading = self._text("板块信号", "section")
+        sector_head.addWidget(self.sector_heading)
+        self.sector_type = ChevronComboBox()
+        self.sector_type.addItems(["行业板块", "概念指数"])
+        self.sector_type.setMaximumWidth(118)
+        self.sector_type.currentIndexChanged.connect(self._set_sector_mode)
+        sector_head.addWidget(self.sector_type)
         sector_head.addStretch(1)
+        self.concept_refresh = QPushButton("扫描概念")
+        self.concept_refresh.clicked.connect(self._toggle_concept_scan)
+        self.concept_refresh.hide()
+        sector_head.addWidget(self.concept_refresh)
         self.sector_reset = QPushButton("全部板块")
         self.sector_reset.clicked.connect(self._reset_sector_filter)
         sector_head.addWidget(self.sector_reset)
@@ -5294,6 +5309,9 @@ class ScannerWindow(QMainWindow):
         self.sector_table.itemSelectionChanged.connect(self._on_sector_selected)
         self.sector_table.cellDoubleClicked.connect(self._open_sector_chart)
         mid.addWidget(self.sector_table)
+        self.concept_status = self._text("", "small")
+        self.concept_status.hide()
+        mid.addWidget(self.concept_status)
         results = QHBoxLayout()
         results.addWidget(self._text("选股结果", "section"))
         results.addStretch(1)
@@ -5537,6 +5555,9 @@ class ScannerWindow(QMainWindow):
         self.industry.blockSignals(False)
 
     def _populate_sector_table(self):
+        if self.sector_type.currentIndex() == 1:
+            self._render_concepts()
+            return
         self.sector_table.blockSignals(True)
         self.sector_table.setRowCount(0)
         if not self.frame.empty and "板块" in self.frame.columns:
@@ -5559,6 +5580,125 @@ class ScannerWindow(QMainWindow):
         self.sector_table.blockSignals(False)
         self.sector_table.resizeColumnsToContents()
 
+    def _set_sector_mode(self, index):
+        use_concepts = index == 1
+        self.sector_reset.setVisible(not use_concepts)
+        self.concept_refresh.setVisible(use_concepts)
+        self.concept_status.setVisible(use_concepts)
+        self.sector_heading.setText("概念 MA5 拐头" if use_concepts else "板块信号")
+        self.sector_filter = None
+        self.sector_table.clearSelection()
+        self.sector_table.setHorizontalHeaderLabels(
+            ["概念指数", "指数点位", "MA5 信号"] if use_concepts
+            else ["板块", "今日触发", "板块信号"])
+        if use_concepts:
+            self._load_concept_cache()
+            if not self.demo:
+                self._toggle_concept_scan()
+        else:
+            if self.concept_worker is not None and self.concept_worker.isRunning():
+                self.concept_worker.stop_event.set()
+            self._populate_sector_table()
+        self.apply_filters()
+
+    def _load_concept_cache(self):
+        if self.update_result is None:
+            return
+        cache = self.concept_service.load()
+        self.concept_rows = self.concept_service.summary(
+            cache, self.update_result.scan_date,
+            self.update_result.previous_trade_date)
+        self._render_concepts()
+        if not cache.get("catalog"):
+            self.concept_status.setText(
+                "尚无概念缓存 · 点击扫描概念获取同花顺指数")
+        else:
+            hits = sum(x["status"] == "今日触发" for x in self.concept_rows)
+            self.concept_status.setText(
+                f"已缓存 {len(self.concept_rows)} 个概念 · 今日 MA5 拐头 {hits} 个")
+
+    def _render_concepts(self):
+        if self.sector_type.currentIndex() != 1:
+            return
+        table = self.sector_table
+        table.blockSignals(True)
+        table.setRowCount(len(self.concept_rows))
+        for row, entry in enumerate(self.concept_rows):
+            close = (f"{entry['close']:.2f}"
+                     if entry.get("close") is not None else "—")
+            for col, value in enumerate((entry["name"], close, entry["status"])):
+                cell = QTableWidgetItem(str(value))
+                cell.setData(Qt.ItemDataRole.UserRole, entry["code"])
+                if entry.get("date"):
+                    cell.setToolTip(f"指数交易日：{entry['date']}")
+                table.setItem(row, col, cell)
+        table.blockSignals(False)
+        table.horizontalHeader().setStretchLastSection(True)
+        table.setColumnWidth(0, max(100, min(175, table.width() // 2)))
+
+    def _toggle_concept_scan(self):
+        if self.demo or self.update_result is None:
+            return
+        if self.concept_worker is not None and self.concept_worker.isRunning():
+            self.concept_worker.stop_event.set()
+            self.concept_status.setText("正在停止概念扫描…")
+            self.concept_refresh.setEnabled(False)
+            return
+        worker = ConceptScanWorker(
+            self.concept_service, self.update_result.scan_date,
+            self.update_result.previous_trade_date)
+        self.concept_worker = worker
+        self.concept_refresh.setText("停止")
+        self.concept_refresh.setEnabled(True)
+        self.concept_status.setText("正在读取同花顺概念目录…")
+        worker.changed.connect(self._concept_progress)
+        worker.finished.connect(self._concept_finished)
+        self._remember(worker)
+        worker.start()
+
+    def _concept_progress(self, rows, status):
+        if rows:
+            self.concept_rows = rows
+        if self.sector_type.currentIndex() == 1:
+            self._render_concepts()
+            self.concept_status.setText(status)
+
+    def _concept_finished(self):
+        self.concept_refresh.setEnabled(True)
+        self.concept_refresh.setText("继续扫描")
+        self.concept_worker = None
+        if self.sector_type.currentIndex() == 1:
+            self._load_concept_cache()
+
+    def _open_concept_chart(self, row):
+        cell = self.sector_table.item(row, 0)
+        if cell is None:
+            return
+        code = str(cell.data(Qt.ItemDataRole.UserRole) or "")
+        entry = next((x for x in self.concept_rows if x["code"] == code), None)
+        if entry is None:
+            return
+        payload = self.concept_service.load().get("indices", {}).get(code, {})
+        frame = concept_index_frame(payload.get("bars", []))
+        if len(frame) < 7:
+            QMessageBox.information(self, "概念指数", "还没有足够的真实指数日线，请先扫描。")
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"{entry['name']} · MA5")
+        dialog.resize(860, 540)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(self._text(
+            f"{entry['name']} · {entry['status']} · 最新交易日 {entry['date']}",
+            "section"))
+        chart = PriceChart()
+        chart.set_frame(frame.tail(40).reset_index(drop=True),
+                        series=["close", "MA5"],
+                        signal_date=entry["date"] if entry["status"] == "今日触发" else None)
+        layout.addWidget(chart, 1)
+        layout.addWidget(self._text(
+            "同花顺概念指数真实收盘数据 · MA5 最近三日由跌转升时触发", "small"))
+        dialog.exec()
+
     def _reset_sector_filter(self):
         self.sector_filter = None
         self.sector_table.blockSignals(True)
@@ -5567,12 +5707,17 @@ class ScannerWindow(QMainWindow):
         self.apply_filters()
 
     def _on_sector_selected(self):
+        if self.sector_type.currentIndex() == 1:
+            return
         chosen = self.sector_table.selectedItems()
         self.sector_filter = (self.sector_table.item(chosen[0].row(), 0).text()
                               if chosen else None)
         self.apply_filters()
 
     def _open_sector_chart(self, row, column):
+        if self.sector_type.currentIndex() == 1:
+            self._open_concept_chart(row)
+            return
         if self.demo or self.backend is None or self.update_result is None:
             QMessageBox.information(self, "板块走势", "演示模式没有真实板块历史数据。")
             return
