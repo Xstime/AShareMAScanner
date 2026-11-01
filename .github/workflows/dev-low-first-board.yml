@@ -1,0 +1,60 @@
+name: Development - low first-board volume signal
+on:
+  push:
+    branches: [dev/v1.3.1-low-first-board]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb python3-tk libegl1 libopengl0 libxkbcommon-x11-0 libxcb-cursor0
+          python -m pip install -r requirements.txt
+      - name: Test stock strategy, updater, and GUI on Linux
+        run: |
+          set -euo pipefail
+          python -m py_compile "A股MA扫描器_v1.3.0.pyw"
+          for suite in test_low_first_board_131.py test_update_download_progress_131.py test_manual_self_update_130.py test_v130_full_audit.py test_fresh_robustness_130.py; do
+            xvfb-run -a python -m unittest discover -s tests -p "$suite" -v
+          done
+      - name: Render GUI
+        run: |
+          xvfb-run -a python "A股MA扫描器_v1.3.0.pyw" --demo --screenshot /tmp/dev-first-board.png
+          python - <<'PY'
+          from PySide6.QtGui import QImage
+          img=QImage("/tmp/dev-first-board.png")
+          assert not img.isNull() and (img.width(),img.height())==(1120,840)
+          PY
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+      - name: Native Windows strategy and safety regression
+        shell: pwsh
+        run: |
+          python -m py_compile "A股MA扫描器_v1.3.0.pyw"
+          python -m unittest discover -s tests -p "test_low_first_board_131.py" -v
+          python -m unittest discover -s tests -p "test_update_download_progress_131.py" -v
+          python -m unittest discover -s tests -p "test_manual_self_update_130.py" -v
+          python -m unittest discover -s tests -p "test_v130_full_audit.py" -v
+          python -m unittest discover -s tests -p "test_fresh_robustness_130.py" -v
