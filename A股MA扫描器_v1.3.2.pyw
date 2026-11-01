@@ -4566,7 +4566,8 @@ class ConceptIndexService:
                 or not {"日期", "收盘价"}.issubset(result.columns)):
             raise RuntimeError("概念历史日线为空或格式变化")
         rows = [{"trade_date": str(day)[:10], "close": price}
-                for day, price in zip(result["日期"], result["收盘价"])]
+                for day, price in zip(result["日期"], result["收盘价"])
+                if str(day)[:10] <= str(target_date)]
         frame = concept_index_frame(rows)
         if len(frame) < 7:
             raise RuntimeError("概念指数有效历史日线不足七日")
@@ -5614,8 +5615,9 @@ class ScannerWindow(QMainWindow):
                 "尚无概念缓存 · 点击扫描概念获取同花顺指数")
         else:
             hits = sum(x["status"] == "今日触发" for x in self.concept_rows)
+            saved = sum(x["status"] != "等待扫描" for x in self.concept_rows)
             self.concept_status.setText(
-                f"已缓存 {len(self.concept_rows)} 个概念 · 今日 MA5 拐头 {hits} 个")
+                f"指数缓存 {saved}/{len(self.concept_rows)} · 今日 MA5 拐头 {hits} 个")
 
     def _render_concepts(self):
         if self.sector_type.currentIndex() != 1:
