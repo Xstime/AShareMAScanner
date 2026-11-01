@@ -27,6 +27,7 @@ jobs:
           set -euo pipefail
           python -m py_compile 'A股MA扫描器_v1.3.2.pyw' 'A股MA扫描器_v1.3.1.pyw'
           xvfb-run -a python -m unittest discover -s tests -p test_mirror_updater_132.py -v
+          xvfb-run -a python -m unittest discover -s tests -p test_ui_compact_and_scan_cache_132.py -v
           for suite in test_low_first_board_131.py test_manual_self_update_131.py test_update_download_progress_132.py test_v131_full_audit.py test_fresh_robustness_130.py test_macos_tk_lifecycle_mirror_132.py test_market_cancel_tk_mirror_132.py; do
             xvfb-run -a python -m unittest discover -s tests -p "$suite" -v
           done
@@ -57,6 +58,7 @@ jobs:
         run: |
           python -m py_compile "A股MA扫描器_v1.3.2.pyw"
           python -m unittest discover -s tests -p "test_mirror_updater_132.py" -v
+          python -m unittest discover -s tests -p "test_ui_compact_and_scan_cache_132.py" -v
           python -m unittest discover -s tests -p "test_manual_self_update_131.py" -v
           python -m unittest discover -s tests -p "test_low_first_board_131.py" -v
   macos:
@@ -78,6 +80,7 @@ jobs:
           set -euo pipefail
           python -m py_compile 'A股MA扫描器_v1.3.2.pyw'
           python -m unittest discover -s tests -p test_mirror_updater_132.py -v
+          python -m unittest discover -s tests -p test_ui_compact_and_scan_cache_132.py -v
           python -m unittest discover -s tests -p test_low_first_board_131.py -v
           python -m unittest discover -s tests -p test_macos_tk_lifecycle_mirror_132.py -v
           python -m unittest discover -s tests -p test_market_cancel_tk_mirror_132.py -v
