@@ -107,24 +107,36 @@ jobs:
               assert set(z.namelist()) == set(files)
           PY
           sha256sum output/*
-      - name: Create protected DRAFT release
+      - name: Create or reuse already uploaded DRAFT release
         run: |
           set -euo pipefail
-          gh release create v1.3.1 \
-            output/AShareMAScanner_v1.3.1.pyw \
-            output/AShareMAScanner_v1.3.1.zip \
-            --draft --title "v1.3.1 · 低位首板放量与下载进度" \
-            --notes-file RELEASE_NOTES_v1.3.1.md \
-            --target "$GITHUB_SHA" --repo "$GITHUB_REPOSITORY"
+          existing="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.tag_name == "v1.3.1" and .draft == true) | .id')"
+          if [[ -n "$existing" ]]; then
+            echo "Reusing existing v1.3.1 draft release $existing; its assets will be revalidated"
+          else
+            gh release create v1.3.1 \
+              output/AShareMAScanner_v1.3.1.pyw \
+              output/AShareMAScanner_v1.3.1.zip \
+              --draft --title "v1.3.1 · 低位首板放量与下载进度" \
+              --notes-file RELEASE_NOTES_v1.3.1.md \
+              --target "$GITHUB_SHA" --repo "$GITHUB_REPOSITORY"
+          fi
       - name: Verify draft assets SHA-256 and sizes
         run: |
           set -euo pipefail
           python - <<'PY'
-          import hashlib,json,os,subprocess
+          import hashlib,json,os,subprocess,time
           repo=os.environ['GITHUB_REPOSITORY']
-          releases=json.loads(subprocess.check_output(['gh','api',f'repos/{repo}/releases?per_page=100']))
-          candidates=[r for r in releases if r['tag_name']=='v1.3.1']
-          assert len(candidates)==1 and candidates[0]['draft'] is True
+          # GitHub may take a moment to index a freshly created draft.
+          candidates=[]
+          for attempt in range(10):
+              releases=json.loads(subprocess.check_output(
+                  ['gh','api',f'repos/{repo}/releases?per_page=100']))
+              candidates=[r for r in releases if r['tag_name']=='v1.3.1']
+              if len(candidates)==1:
+                  break
+              time.sleep(2)
+          assert len(candidates)==1 and candidates[0]['draft'] is True, candidates
           release=candidates[0]
           assets={a['name']:a for a in release['assets']}
           assert set(assets)=={'AShareMAScanner_v1.3.1.pyw','AShareMAScanner_v1.3.1.zip'}
