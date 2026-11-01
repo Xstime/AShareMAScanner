@@ -1266,6 +1266,10 @@ class BaoStockBackend:
         self._last_login_mono = 0.0
         # 同一次运行多个策略共用只读板块K线计算，避免重复全表读取。
         self._sector_chart_cache: dict[tuple[str, str], pd.DataFrame] = {}
+        # Cache read-only 80-session prepared bars for this application session.
+        # A strategy switch must not read/rebuild 400k SQLite rows again.
+        self._scan_data_lock = threading.Lock()
+        self._scan_prepared_cache = None
         self._instance_lock_file = None
         self._cancel_update_event = threading.Event()
 
@@ -3394,6 +3398,50 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
 
         return g
 
+    def _prepared_scan_session(self, target_date: str,
+                               cancel_event: Optional[threading.Event] = None):
+        """Prepare historical bars once for every strategy in this GUI session.
+
+        Market update always runs before the Qt workspace and restarts the
+        process for further updates; signal_history writes do not alter
+        daily prices. A one-session cache never changes source data or DB.
+        Cooperative lock acquisition lets a newer strategy cancel stale scans.
+        """
+        def cancelled():
+            return cancel_event is not None and cancel_event.is_set()
+
+        if cancelled():
+            return None
+        while not self._scan_data_lock.acquire(timeout=.1):
+            if cancelled():
+                return None
+        try:
+            cached = self._scan_prepared_cache
+            if cached is not None and cached[0] == target_date:
+                return cached[1:]
+            raw = self._load_scan_data(target_date)
+            if cancelled():
+                return None
+            if raw.empty:
+                prepared = ([], [], {})
+            else:
+                dates = sorted(raw["trade_date"].astype(str).unique().tolist())
+                groups = []
+                for code, frame in raw.groupby("code", sort=False):
+                    if cancelled():
+                        return None
+                    stock = self._prepare_group(frame)
+                    if not stock.empty:
+                        groups.append((code, stock))
+                industries = self.get_industry_map()
+                prepared = (dates, groups, industries)
+            if cancelled():
+                return None
+            self._scan_prepared_cache = (target_date, *prepared)
+            return prepared
+        finally:
+            self._scan_data_lock.release()
+
     def scan_strategy(
         self,
         strategy: str,
@@ -3414,42 +3462,27 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
         if include_previous and previous_trade_date:
             scan_dates.append(previous_trade_date)
 
-        earliest_needed = min(scan_dates)
-        df = self._load_scan_data(target_date)
-
-        if df.empty:
+        prepared = self._prepared_scan_session(target_date, cancel_event)
+        if prepared is None:
             return pd.DataFrame()
-
-        market_dates = sorted(df["trade_date"].astype(str).unique().tolist())
+        market_dates, groups, industry_map = prepared
+        if not groups:
+            return pd.DataFrame()
         result = []
         daily_metrics = {}
 
-        # 七个策略都附带行业板块，板块区始终只展示当前选中的策略。
-        industry_map = self.get_industry_map()
-
-        for code, raw in df.groupby("code", sort=False):
+        for code, g in groups:
             if cancelled():
                 return pd.DataFrame()
-            g = self._prepare_group(raw)
-
-            if g.empty:
-                continue
-
+            # Read-only precomputed moving averages; slicing by row position
+            # avoids repeated per-stock Pandas string-conversion and filtering.
+            date_positions = {str(day): i
+                              for i, day in enumerate(g["trade_date"])}
             for signal_date in scan_dates:
-                positions = g.index[
-                    g["trade_date"].astype(str) == signal_date
-                ].tolist()
-
-                if not positions:
+                pos = date_positions.get(signal_date)
+                if pos is None:
                     continue
-
-                # positions 里拿到的是原 DataFrame index，因此用布尔定位后再取位置。
-                sub = g[
-                    g["trade_date"].astype(str) <= signal_date
-                ]
-
-                if sub.empty or str(sub.iloc[-1]["trade_date"]) != signal_date:
-                    continue
+                sub = g.iloc[:pos + 1]
 
                 today = sub.iloc[-1]
                 average = today["VOL5_PREV"]
