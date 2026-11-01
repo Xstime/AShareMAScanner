@@ -37,7 +37,7 @@ class BackendAudit(unittest.TestCase):
         self.b.get_industry_map=lambda:{"sh.600000":"测试行业"}
         self.b.get_sector_strategy_status=lambda **kw:"未触发"
         self.b.record_signals=lambda *a,**kw:None
-        self.assertEqual(len(m.STRATEGIES),8)
+        self.assertEqual(len(m.STRATEGIES),7)
         for key,_,_ in m.STRATEGIES:
             with self.subTest(key=key):
                 x=self.b.scan_strategy(key,self.days[-1],False,self.days[-2],m.RangeFilter())
@@ -67,7 +67,7 @@ class GuiParityAudit(unittest.TestCase):
         self.w.close()
         self.qt.processEvents()
     def test_seven_strategy_buttons_and_five_fund_cards(self):
-        self.assertEqual(len(self.w.buttons),8)
+        self.assertEqual(len(self.w.buttons),7)
         self.assertEqual(len(self.w.fund_cards),5)
     def test_real_update_check_button(self):
         self.assertIn("VersionWorker()",inspect.getsource(m.ScannerWindow._show_release_info))
