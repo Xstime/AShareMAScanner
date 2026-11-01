@@ -676,6 +676,14 @@ def _download_release_asset(url, expected_size, staged, on_progress=None,
                         if on_progress:
                             on_progress(received, expected_size,
                                         received / max(time.monotonic() - started, .001))
+                    # Do not silently accept extra bytes beyond the Release
+                    # manifest's declared size, even if the prefix hashes match.
+                    try:
+                        extra = response.read(1)
+                    except (OSError, TimeoutError, ConnectionError) as exc:
+                        raise UpdateNetworkError("下载完整性确认中断") from exc
+                    if extra:
+                        raise UpdateIntegrityError("更新附件实际长度超过发行清单")
                 failures = 0
         except UpdateIntegrityError:
             raise
