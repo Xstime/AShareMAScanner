@@ -4636,6 +4636,7 @@ class ConceptIndexService:
         report(self.summary(cache, target_date, previous_date),
                f"已缓存 {len(catalog) - total}/{len(catalog)} · 本轮待检查 {total}")
         failures = 0
+        consecutive_failures = 0
         for n, item in enumerate(missing, start=1):
             if cancelled.is_set():
                 break
@@ -4649,8 +4650,10 @@ class ConceptIndexService:
                 if (not old_bars or
                         str(bars[-1]["trade_date"]) >= str(old_bars[-1]["trade_date"])):
                     old_bars = bars
+                consecutive_failures = 0
             except Exception:
                 failures += 1
+                consecutive_failures += 1
             indices[code] = {"bars": old_bars, "attempted": target_date}
             try:
                 self.save(cache)
@@ -4661,10 +4664,9 @@ class ConceptIndexService:
             if n == 1 or n % 5 == 0 or n == total:
                 report(self.summary(cache, target_date, previous_date),
                        f"概念扫描 {n}/{total} · 失败 {failures}")
-            if failures >= 8 and not any(
-                    indices.get(x["code"], {}).get("bars") for x in missing[:n]):
+            if consecutive_failures >= 8:
                 report(self.summary(cache, target_date, previous_date),
-                       "概念数据源暂不可用，已停止连续请求")
+                       "连续请求失败，已停止扫描 · 已保留历史缓存")
                 break
             if cancelled.wait(0.20):
                 break
