@@ -156,7 +156,7 @@ def _bootstrap_dependencies():
             root.configure(bg="#f5f6fa")
             _tk.Label(root,text="运行环境检查",font=("Segoe UI",15,"bold"),
                       bg="#f5f6fa",fg="#24334a").pack(anchor="w",padx=25,pady=(24,10))
-            _tk.Label(root,text="Python / Tkinter / PySide6 / 行情依赖已就绪",
+            _tk.Label(root,text="运行环境已就绪",
                       font=("Segoe UI",10),bg="#f5f6fa",fg="#3f785b"
                       ).pack(anchor="w",padx=25)
             root.after(700,root.destroy)
@@ -296,7 +296,7 @@ def _bootstrap_dependencies():
     root.resizable(False, False)
     root.configure(bg="#f5f5f7")
     root.protocol("WM_DELETE_WINDOW", lambda: None)
-    _ttk.Label(root, text="1/3 · 自动补齐运行环境（含 PySide6）", font=("Segoe UI", 14, "bold"),
+    _ttk.Label(root, text="正在配置运行环境", font=("Segoe UI", 14, "bold"),
                background="#f5f5f7").pack(anchor="w", padx=24, pady=(22, 8))
     status = _tk.StringVar(value="检测到缺少依赖，首次安装可能需要几分钟…")
     _ttk.Label(root, textvariable=status, background="#f5f5f7",
@@ -304,7 +304,7 @@ def _bootstrap_dependencies():
     bar = _ttk.Progressbar(root, mode="indeterminate", length=442)
     bar.pack(padx=24, fill="x")
     bar.start(14)
-    _ttk.Label(root, text="仅安装缺失的库；主界面采用 PySide6，数据更新采用 Tkinter。",
+    _ttk.Label(root, text="仅安装缺失的依赖库",
                background="#f5f5f7", foreground="#6e6e73",
                font=("Segoe UI", 9)).pack(anchor="w", padx=24, pady=(13, 0))
 
@@ -390,7 +390,7 @@ try:
     from tkinter import ttk, messagebox
 except ImportError as exc:
     raise SystemExit(
-        "当前 Python 缺少 Tkinter。\n"
+        "当前运行环境缺少图形界面组件。\n"
         "macOS Homebrew Python 请安装对应版本的 python-tk。"
     ) from exc
 
@@ -4240,7 +4240,7 @@ def _run_tk_data_phase_inner(backend=None, *, autostart=True):
     heading.pack(fill="x",padx=24,pady=(20,4))
     _tk.Label(heading,text="2/3  ·  行情更新与完整性检查",
               font=("Segoe UI",16,"bold"),bg="#ffffff",fg="#223049").pack(anchor="w")
-    _tk.Label(heading,text="八阶段准备完成后，自动进入 PySide6 4:3 主界面",
+    _tk.Label(heading,text="完成后自动进入选股界面",
               font=("Segoe UI",10),bg="#ffffff",fg="#788699").pack(anchor="w",pady=(5,0))
     stage_var=_tk.StringVar(value="准备开始")
     task_var=_tk.StringVar(value="正在读取本地数据库")
@@ -4258,7 +4258,7 @@ def _run_tk_data_phase_inner(backend=None, *, autostart=True):
         fill="x",padx=24)
     info=_tk.Frame(card,bg="#ffffff")
     info.pack(fill="x",padx=24,pady=(8,4))
-    _tk.Label(info,text="流程进度（按步骤权重，非剩余时间）",
+    _tk.Label(info,text="总进度",
               bg="#ffffff",fg="#7a8799",font=("Segoe UI",9)).pack(side="left")
     _tk.Label(info,textvariable=pct_var,bg="#ffffff",fg="#2776d6",
               font=("Segoe UI",11,"bold")).pack(side="right")
@@ -4321,6 +4321,17 @@ def _run_tk_data_phase_inner(backend=None, *, autostart=True):
             try:
                 result=engine_backend.update_all(
                     lambda value,message: messages.put(("progress",float(value),str(message))))
+                # TOP5 refresh is exclusive to stage 2, before Qt is launched.
+                # Network errors do not invalidate market data or old TOP5 cache.
+                messages.put(("progress",99.0,"检查近5日行业资金排名"))
+                try:
+                    rank_message=engine_backend.refresh_fund_top5(
+                        force=False,progress=lambda text: messages.put(
+                            ("progress",99.0,str(text))))
+                    messages.put(("progress",99.0,str(rank_message)))
+                except Exception:
+                    messages.put(("progress",99.0,
+                                  "行业资金 TOP5 暂不可用，显示已有缓存"))
                 messages.put(("success",result))
             except MarketUpdateCancelled as exc:
                 messages.put(("cancelled",str(exc)))
@@ -4361,7 +4372,7 @@ def _run_tk_data_phase_inner(backend=None, *, autostart=True):
                 stage_var.set("完成 · 行情检查通过")
                 pct_var.set("100%")
                 progress.set(100)
-                append("准备关闭 Tkinter 并进入 PySide6 主工作台")
+                append("行情更新完成，正在打开选股界面")
                 root.after(160,root.quit)
                 return
             elif kind=="cancelled":
@@ -4475,32 +4486,6 @@ class ScanWorker(QThread):
             self.success.emit(self.request_id, frame)
         except Exception:
             self.failed.emit(self.request_id, traceback.format_exc())
-
-
-class FundWorker(QThread):
-    notice = Signal(str)
-    success = Signal(str, object, object)
-    failed = Signal(str, str, object, object)
-
-    def __init__(self, backend):
-        super().__init__()
-        self.backend = backend
-
-    def run(self):
-        notices = []
-        try:
-            message = self.backend.refresh_fund_top5(
-                force=True, progress=lambda t: (notices.append(str(t)), self.notice.emit(str(t)))
-            )
-            rows, members = self.backend.load_fund_top5()
-            self.success.emit(message, rows, members)
-        except Exception:
-            error = traceback.format_exc()
-            try:
-                rows, members = self.backend.load_fund_top5()
-            except Exception:
-                rows, members = [], {}
-            self.failed.emit(error, "\n".join(notices[-35:]), rows, members)
 
 
 class ChartWorker(QThread):
@@ -4809,7 +4794,7 @@ class ScannerWindow(QMainWindow):
         self._version_worker = None
         self._update_in_progress = False
         self._download_dialog = None
-        self.setWindowTitle("A股 MA 扫描器 v1.3.2 · PySide6 4:3 工作台")
+        self.setWindowTitle("A股 MA 扫描器 v1.3.2")
         self.resize(1120, 840)
         self.setMinimumSize(980, 735)
         self.setStyleSheet(STYLE)
@@ -4860,7 +4845,7 @@ class ScannerWindow(QMainWindow):
         cl.setContentsMargins(35, 30, 35, 35)
         cl.setSpacing(15)
         cl.addWidget(self._text("A股 MA 扫描器", "brand"))
-        cl.addWidget(self._text("正在准备今日行情 · 完成后自动打开工作台", "small"))
+        cl.addWidget(self._text("正在准备行情数据", "small"))
         self.loading_phase = self._text("检查数据存储", "section")
         cl.addWidget(self.loading_phase)
         self.loading_task = self._text("正在初始化本地数据…", "small")
@@ -4871,7 +4856,7 @@ class ScannerWindow(QMainWindow):
         self.loading_fraction.setValue(0)
         self.loading_fraction.setTextVisible(False)
         cl.addWidget(self.loading_fraction)
-        self.loading_total = self._text("总体流程：0% · 按阶段计数", "small")
+        self.loading_total = self._text("更新进度 0%", "small")
         cl.addWidget(self.loading_total)
         self.loading_stages = self._text("○ 环境检查    ○ 历史修复    ○ 每日行情    ○ 完整性校验", "small")
         self.loading_stages.setWordWrap(True)
@@ -4912,7 +4897,7 @@ class ScannerWindow(QMainWindow):
         brand = QVBoxLayout()
         brand.setSpacing(2)
         brand.addWidget(self._text("A股 MA 扫描器", "brand"))
-        self.header_status = self._text("PySide6 · 4:3 工作台", "small")
+        self.header_status = self._text("准备就绪", "small")
         brand.addWidget(self.header_status)
         line.addLayout(brand)
         line.addStretch(1)
@@ -5002,9 +4987,6 @@ class ScannerWindow(QMainWindow):
         fund_head.addStretch()
         self.fund_source_label = self._text("未刷新", "small")
         self.fund_source_label.hide()
-        self.fund_refresh = QPushButton("刷新")
-        self.fund_refresh.clicked.connect(self.start_fund_refresh)
-        fund_head.addWidget(self.fund_refresh)
         mid.addLayout(fund_head)
         cards = QHBoxLayout()
         cards.setSpacing(6)
@@ -5043,7 +5025,7 @@ class ScannerWindow(QMainWindow):
             entry.editingFinished.connect(self.apply_filters)
         mid.addLayout(change_row)
         sector_head = QHBoxLayout()
-        sector_head.addWidget(self._text("板块信号 · 点击筛选 / 双击查看走势", "section"))
+        sector_head.addWidget(self._text("板块信号", "section"))
         sector_head.addStretch(1)
         self.sector_reset = QPushButton("全部板块")
         self.sector_reset.clicked.connect(self._reset_sector_filter)
@@ -5152,7 +5134,6 @@ class ScannerWindow(QMainWindow):
                               ("通信", 16.8), ("电力设备", 14.4), ("汽车", 11.2))
         ]
         self.refresh_market.setEnabled(False)
-        self.fund_refresh.setEnabled(False)
         self._render_funds()
         self.page.setCurrentIndex(1)
         self._select_strategy(self.current_key)
@@ -5172,7 +5153,7 @@ class ScannerWindow(QMainWindow):
         """Exit Qt, release SQLite lock, then restart in main()."""
         confirm=QMessageBox.question(
             self,"重新更新行情",
-            "将关闭当前 PySide6 主界面，然后重新显示 Tkinter 行情更新窗口。继续吗？")
+            "将关闭当前界面并重新更新行情。继续吗？")
         if confirm!=QMessageBox.StandardButton.Yes:return
         if self._scan_cancel_event is not None:
             self._scan_cancel_event.set()
@@ -5193,7 +5174,7 @@ class ScannerWindow(QMainWindow):
         index = next((i for i, (_, a, b) in enumerate(PHASES) if a <= percent < b), 7)
         self.loading_phase.setText(f"第 {index + 1} / 8 阶段 · {PHASES[index][0]}")
         self.loading_task.setText(task)
-        self.loading_total.setText(f"总体流程 {percent:.0f}% · 按步骤权重计算")
+        self.loading_total.setText(f"更新进度 {percent:.0f}%")
         self.loading_stages.setText("   ".join(
             ("✓ " if i < index else "● " if i == index else "○ ") + title
             for i, (title, _, _) in enumerate(PHASES)
@@ -5210,7 +5191,6 @@ class ScannerWindow(QMainWindow):
         )
         self._select_strategy(self.current_key)
         self._load_funds_from_cache()
-        self.start_fund_refresh()
 
     def _on_update_failed(self, detail):
         self.loading_task.setText(detail.splitlines()[-1][:220])
@@ -5541,55 +5521,6 @@ class ScannerWindow(QMainWindow):
             self.fund_source_label.setText(f"{self.fund_source} · 抓取 {stamp}")
         else:
             self.fund_source_label.setText("暂无资金榜单")
-
-
-    def start_fund_refresh(self):
-        if self.demo:
-            return
-        now = datetime.now(CST)
-        if now.weekday() < 5 and now.hour < 18:
-            # Current trading-day ranking is not yet settled. Do not throw an
-            # error dialog on normal morning startup when no cache exists.
-            if not self.funds:
-                self.fund_source_label.setText("交易日 18:00 后可刷新 TOP5")
-            else:
-                self._check_fund_freshness()
-            self.statusBar().showMessage("交易日资金榜单尚未结算，18:00 后可刷新；扫描策略不受影响")
-            return
-        if self.backend is None or any(isinstance(w, FundWorker) and w.isRunning() for w in self.workers):
-            return
-        self.fund_error_details = ""
-        self.fund_refresh.setEnabled(False)
-        self.fund_source_label.setText("正在获取近5日行业资金TOP5排名…")
-        worker = FundWorker(self.backend)
-        worker.notice.connect(self.fund_source_label.setText)
-        worker.success.connect(self._fund_ready)
-        worker.failed.connect(self._fund_failed)
-        worker.finished.connect(lambda: self.fund_refresh.setEnabled(True))
-        self._remember(worker)
-        worker.start()
-
-    def _fund_ready(self, message, rows, members):
-        self.funds = rows
-        self._check_fund_freshness()
-        self._render_funds()
-        self.statusBar().showMessage(message)
-
-
-    def _fund_failed(self, detail, notices, rows, members):
-        self.fund_error_details = detail + "\n\n请求步骤：\n" + notices
-        self.funds = rows
-        self._check_fund_freshness()
-        self._render_funds()
-        self.fund_source_label.setText(
-            f"{self.fund_source} · 更新失败，显示旧缓存" if rows
-            else "同花顺资金排名失败 · 查看原因"
-        )
-        self._show_error(
-            "TOP5 排名刷新失败",
-            "同花顺资金排名获取失败；原有同花顺榜单缓存未被覆盖。\n\n"
-            + self.fund_error_details,
-        )
 
 
     def _stock_selected(self):
@@ -5955,7 +5886,7 @@ class ScannerWindow(QMainWindow):
         dialog.setWindowTitle(title)
         dialog.resize(710, 410)
         layout = QVBoxLayout(dialog)
-        layout.addWidget(QLabel("错误详情 / traceback（可复制用于排查）"))
+        layout.addWidget(QLabel("错误详情"))
         txt = QPlainTextEdit()
         txt.setReadOnly(True)
         txt.setPlainText(details)
