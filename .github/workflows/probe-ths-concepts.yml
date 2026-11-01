@@ -1,0 +1,41 @@
+name: Read-only THS concept market data probe
+
+on:
+  push:
+    branches: [experiment/ths-concept-api-20261101]
+    paths:
+      - '.github/workflows/probe-ths-concepts.yml'
+      - 'tests/manual_probe_ths_concepts.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install current AKShare
+        run: python -m pip install --disable-pip-version-check -q akshare
+      - name: Live probe of concept catalog, MA5 daily bars, members and five-day funds
+        run: python -u tests/manual_probe_ths_concepts.py
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 12
+    env:
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install current AKShare
+        run: python -m pip install --disable-pip-version-check -q akshare
+      - name: Live probe on Windows
+        run: python -u tests/manual_probe_ths_concepts.py
