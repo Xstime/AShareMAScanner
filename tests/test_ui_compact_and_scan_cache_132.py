@@ -125,6 +125,17 @@ class CompactWidgetRegression(unittest.TestCase):
             self.assertEqual(win.sector_table.verticalHeader().defaultSectionSize(),22)
             self.assertIn("QComboBox::drop-down",win.styleSheet())
             self.assertIn("border: 0;",win.styleSheet())
+            self.assertIsInstance(win.market, scanner.ChevronComboBox)
+            self.assertIsInstance(win.industry, scanner.ChevronComboBox)
+            for combo in (win.market, win.industry):
+                pixels=combo.grab().toImage()
+                mid=pixels.height() // 2
+                cx=pixels.width() - 16
+                # Confirm a visible V is painted, not an absent arrow.
+                dark=sum(1 for yy in range(mid-4, mid+5)
+                           for xx in range(cx-6, cx+7)
+                           if pixels.pixelColor(xx, yy).lightness() < 150)
+                self.assertGreater(dark, 3, "Chevron missing from combo box")
             self.assertTrue(win.strategy_loading.isHidden())
             self.assertEqual(len(win.buttons), 8)
         finally:
