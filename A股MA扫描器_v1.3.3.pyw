@@ -512,8 +512,9 @@ def main():
         if verified_sha(final, size) != digest:
             raise RuntimeError("新版本落盘校验失败")
         # Confirm file bytes were flushed; do not delete old before launch.
-        with final.open("rb") as fp:
-            os.fsync(fp.fileno())
+        if os.name != "nt":
+            with final.open("rb") as fp:
+                os.fsync(fp.fileno())
 
         flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         child = subprocess.Popen(
