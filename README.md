@@ -1,6 +1,6 @@
 # AShareMAScanner v1.3.3 · A 股 MA 扫描器
 
-**待发布版本：v1.3.3（开发分支）**。完整的 Windows/Python `.pyw` 单文件应用：Tkinter 启动检测、Tkinter 行情更新、PySide6 4:3 主界面。行情来自 BaoStock 后复权日线；同花顺近 5 日资金净流入 TOP5 仅展示行业排名，不抓成分股。
+**当前源码版本：v1.3.3**。完整的 Windows/Python `.pyw` 单文件应用：Tkinter 启动检测、Tkinter 行情更新、PySide6 4:3 主界面。行情来自 BaoStock 后复权日线；同花顺近 5 日资金净流入 TOP5 仅展示行业排名，不抓成分股。
 
 ## v1.3.3 更新：先保存并确认新版，再清理旧版
 
