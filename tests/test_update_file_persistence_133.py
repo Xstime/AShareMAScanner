@@ -211,8 +211,23 @@ class VersionedFilePersistenceTests(unittest.TestCase):
             reaper = threading.Thread(target=old_process.wait, daemon=True)
             reaper.start()
             args[2] = str(old_process.pid)
-            helper = subprocess.run(args, capture_output=True, text=True, timeout=30)
-            self.assertEqual(helper.returncode, 0, helper.stderr)
+            helper_proc = subprocess.Popen(
+                args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            try:
+                out, err = helper_proc.communicate(timeout=23)
+            except subprocess.TimeoutExpired:
+                diagnostics = {
+                    "old_return": old_process.poll(),
+                    "marker": marker.read_text() if marker.exists() else None,
+                    "ack": self.ack.read_text() if self.ack.exists() else None,
+                    "control": self.control.read_text() if self.control.exists() else None,
+                    "final_exists": self.final.exists(),
+                    "old_exists": self.old.exists(),
+                }
+                helper_proc.kill()
+                out, err = helper_proc.communicate(timeout=5)
+                self.fail(f"helper hung: {diagnostics}; stdout={out}; stderr={err}")
+            self.assertEqual(helper_proc.returncode, 0, err)
             reaper.join(timeout=6)
             self.assertFalse(reaper.is_alive())
             self.assertEqual(old_process.returncode, 0)
