@@ -11,6 +11,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import types
 import unittest
@@ -205,10 +206,15 @@ class VersionedFilePersistenceTests(unittest.TestCase):
              str(marker), str(self.final)],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
+            # POSIX os.kill(pid, 0) still succeeds on a zombie child; reap
+            # the old process concurrently so the helper can observe exit.
+            reaper = threading.Thread(target=old_process.wait, daemon=True)
+            reaper.start()
             args[2] = str(old_process.pid)
             helper = subprocess.run(args, capture_output=True, text=True, timeout=30)
             self.assertEqual(helper.returncode, 0, helper.stderr)
-            old_process.wait(timeout=6)
+            reaper.join(timeout=6)
+            self.assertFalse(reaper.is_alive())
             self.assertEqual(old_process.returncode, 0)
             self.assertEqual(marker.read_text(), "new-saved-before-old-exit")
             self.assertEqual(self.final.read_bytes(), source)
