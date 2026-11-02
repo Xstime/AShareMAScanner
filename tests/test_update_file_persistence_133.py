@@ -42,36 +42,49 @@ class VersionedFilePersistenceTests(unittest.TestCase):
         self.database.parent.mkdir()
         self.database.write_bytes(b"vintage market data remains unchanged")
 
-    def child_source(self, *, fail=False, check_old=True, delay=0.4):
+    def child_source(self, *, fail=False, check_old=True, delay=0.25):
         if fail:
-            return b'APP_VERSION = "1.3.3"\nraise RuntimeError("simulated UI boot failure")\n'
+            return b'APP_VERSION = "1.3.3"\nraise RuntimeError("simulated GUI startup failure")\n'
         old_required = (
             f'assert Path(__file__).with_name("{self.old.name}").is_file()\n'
-            if check_old else ""
-        )
+            if check_old else "")
         return (
             'from pathlib import Path\nimport sys,time\n'
             'APP_VERSION = "1.3.3"\n'
-            'assert Path(__file__).name == "AShareMAScanner_v1.3.3.pyw"\n'
-            + old_required +
+            'args = sys.argv\n'
+            'assert "--update-preview-ack" in args\n'
+            'assert "--update-preview-control" in args\n'
+            f'{old_required}'
+            'ack=Path(args[args.index("--update-preview-ack")+1])\n'
+            'control=Path(args[args.index("--update-preview-control")+1])\n'
+            'target=Path(args[args.index("--update-preview-target")+1])\n'
+            'assert target.parent == Path(__file__).parent\n'
             f'time.sleep({delay})\n'
-            'Path(sys.argv[sys.argv.index("--update-ack")+1]).write_text("ready",encoding="utf-8")\n'
-            'time.sleep(.6)\n'
+            'ack.write_text("ready",encoding="utf-8")\n'
+            'end=time.monotonic()+5\n'
+            'while time.monotonic()<end:\n'
+            '    state=control.read_text() if control.exists() else ""\n'
+            '    if state in ("done","failed"):\n'
+            '        break\n'
+            '    time.sleep(.03)\n'
+            'time.sleep(.2)\n'
         ).encode()
 
-    def helper_args(self, source, *, sha=None, final=None, old=None):
+    def helper_args(self, source, *, sha=None, final=None, old=None, old_pid=999999):
         self.staged.write_bytes(source)
         expected = hashlib.sha256(source).hexdigest()
+        self.control = self.parent / "ashare-update-control-for-test"
         return [
-            sys.executable, str(self.helper), "999999", str(old or self.old),
+            sys.executable, str(self.helper), str(old_pid), str(old or self.old),
             str(self.staged), str(final or self.final), str(self.backup),
-            str(self.ack), "1.3.2", "1.3.3", sha or expected, str(len(source))
+            str(self.ack), str(self.control),
+            "1.3.2", "1.3.3", sha or expected, str(len(source))
         ]
 
     def run_helper(self, source, *, sha=None, final=None, old=None):
         args = self.helper_args(source, sha=sha, final=final, old=old)
-        completed = subprocess.run(args, text=True, capture_output=True, timeout=18)
-        time.sleep(.9)  # allow test child to exit before Windows temporary cleanup
+        completed = subprocess.run(args, text=True, capture_output=True, timeout=20)
+        time.sleep(.6)
         return completed
 
     def assert_db_intact(self):
@@ -169,6 +182,39 @@ class VersionedFilePersistenceTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(wrong_target.exists())
         self.assertTrue(self.old.exists())
+
+    def test_real_updated_qt_preview_ack_and_visible_notification(self):
+        """Real application imports and Qt dialog succeed without DB refresh."""
+        self.final.write_bytes(PROGRAM.read_bytes())
+        self.assertTrue(self.final.is_file())
+        self.control = self.parent / "ashare-update-control-real-qt"
+        ack = self.parent / "ashare-update-ack-real-qt"
+        env = os.environ.copy()
+        env.setdefault("QT_QPA_PLATFORM", "offscreen")
+        cmd = [
+            sys.executable, str(self.final),
+            "--update-preview-ack", str(ack),
+            "--update-preview-control", str(self.control),
+            "--update-preview-target", str(self.final),
+        ]
+        child = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, text=True)
+        try:
+            deadline = time.monotonic() + 20
+            while not ack.exists() and time.monotonic() < deadline:
+                if child.poll() is not None:
+                    break
+                time.sleep(.1)
+            self.assertTrue(ack.exists(),
+                            f"Real preview GUI did not start: {child.poll()}")
+            self.assertEqual(ack.read_text(), "ready")
+            self.assertTrue(self.old.is_file(),
+                            "Old file must still exist while new Qt UI is visible")
+            self.control.write_text("failed", encoding="utf-8")
+        finally:
+            if child.poll() is None:
+                child.terminate()
+                child.wait(timeout=5)
 
     def test_real_pyqt_window_writes_ack_only_after_startup(self):
         # Run the full scanner in demo/screenshot mode; unlike helper synthetic
