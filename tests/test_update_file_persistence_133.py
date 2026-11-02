@@ -205,6 +205,9 @@ class VersionedFilePersistenceTests(unittest.TestCase):
                 if child.poll() is not None:
                     break
                 time.sleep(.1)
+            if not ack.exists() and child.poll() is not None:
+                _, stderr = child.communicate(timeout=5)
+                self.fail(f"Real preview GUI exited {child.returncode}: {stderr[-3000:]}")
             self.assertTrue(ack.exists(),
                             f"Real preview GUI did not start: {child.poll()}")
             self.assertEqual(ack.read_text(), "ready")
