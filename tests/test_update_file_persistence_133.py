@@ -183,6 +183,42 @@ class VersionedFilePersistenceTests(unittest.TestCase):
         self.assertFalse(wrong_target.exists())
         self.assertTrue(self.old.exists())
 
+    def test_live_old_process_exits_only_after_new_preview_ack(self):
+        """Real old process sees a saved new file before the close signal."""
+        source = self.child_source(delay=.35)
+        args = self.helper_args(source)
+        marker = self.parent / "old-saw-new.txt"
+        self.old.write_text(
+            "from pathlib import Path\nimport sys,time\n"
+            "control, marker, newer = map(Path, sys.argv[1:])\n"
+            "deadline=time.monotonic()+18\n"
+            "while time.monotonic()<deadline:\n"
+            "    if control.exists() and control.read_text()=='close-old':\n"
+            "        assert newer.is_file()\n"
+            "        marker.write_text('new-saved-before-old-exit')\n"
+            "        break\n"
+            "    time.sleep(.05)\n"
+            "else:\n    raise RuntimeError('did not receive close signal')\n",
+            encoding="utf-8")
+        old_process = subprocess.Popen(
+            [sys.executable, str(self.old), str(self.control),
+             str(marker), str(self.final)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            args[2] = str(old_process.pid)
+            helper = subprocess.run(args, capture_output=True, text=True, timeout=30)
+            self.assertEqual(helper.returncode, 0, helper.stderr)
+            old_process.wait(timeout=6)
+            self.assertEqual(old_process.returncode, 0)
+            self.assertEqual(marker.read_text(), "new-saved-before-old-exit")
+            self.assertEqual(self.final.read_bytes(), source)
+            self.assertFalse(self.old.exists())
+            self.assert_db_intact()
+        finally:
+            if old_process.poll() is None:
+                old_process.terminate()
+                old_process.wait(timeout=5)
+
     def test_real_updated_qt_preview_ack_and_visible_notification(self):
         """Real application imports and Qt dialog succeed without DB refresh."""
         self.final.write_bytes(PROGRAM.read_bytes())
