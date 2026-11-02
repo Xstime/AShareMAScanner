@@ -6039,7 +6039,8 @@ def _run_update_preview(ack_name, control_name, target_name):
             or not control.name.startswith("ashare-update-control-")
             or target.name != f"AShareMAScanner_v{APP_VERSION}.pyw"):
         raise RuntimeError("非法更新确认参数")
-    if not (Path(__file__).is_file() and target.parent == Path(__file__).resolve().parent):
+    if not (Path(__file__).is_file() and
+            target.parent.resolve() == Path(__file__).resolve().parent):
         raise RuntimeError("新版程序不在原目录")
     os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR", "1")
     app = QApplication(sys.argv[:1])
