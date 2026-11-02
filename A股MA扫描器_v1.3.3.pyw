@@ -429,7 +429,7 @@ def wait_previous_process(pid):
         if handle:
             try:
                 if kernel.WaitForSingleObject(handle, 120000) != 0:
-                    raise TimeoutError("原程序未退出，未执行更新")
+                    raise TimeoutError("原程序退出超时；保留两个版本文件")
             finally:
                 kernel.CloseHandle(handle)
     else:
@@ -440,29 +440,30 @@ def wait_previous_process(pid):
             except ProcessLookupError:
                 return
             except PermissionError:
-                raise RuntimeError("没有权限确认原程序退出")
+                raise RuntimeError("无法确认旧程序退出")
             time.sleep(.2)
-        raise TimeoutError("原程序未退出，未执行更新")
+        raise TimeoutError("原程序退出超时；保留两个版本文件")
 
 
 def verified_sha(path, size):
-    if not path.is_file() or path.is_symlink() or path.stat().st_size != size:
-        raise RuntimeError("更新文件不存在或大小不符")
+    if (not path.is_file() or path.is_symlink() or path.stat().st_size != size):
+        raise RuntimeError("更新文件缺失或大小不符")
     sha = hashlib.sha256()
     with path.open("rb") as stream:
-        while chunk := stream.read(128 * 1024):
+        for chunk in iter(lambda: stream.read(128 * 1024), b""):
             sha.update(chunk)
     return sha.hexdigest()
 
 
+def put_status(path, status):
+    Path(path).write_text(status, encoding="utf-8")
+
+
 def main():
     (parent, old_name, staged_name, final_name, backup_name,
-     ack_name, prior, version, digest, size_text) = sys.argv[1:]
-    old = Path(old_name)
-    staged = Path(staged_name)
-    final = Path(final_name)
-    backup = Path(backup_name)
-    ack = Path(ack_name)
+     ack_name, control_name, prior, version, digest, size_text) = sys.argv[1:]
+    old, staged, final, backup, ack, control = map(
+        Path, (old_name, staged_name, final_name, backup_name, ack_name, control_name))
     size = int(size_text)
     child = None
     changed_original = False
@@ -473,92 +474,98 @@ def main():
                 or not 0 < size <= MAX_SIZE):
             raise RuntimeError("更新版本、摘要或大小异常")
         if final.name != f"AShareMAScanner_v{version}.pyw":
-            raise RuntimeError("安装文件名与版本不一致")
-        if (not old.is_absolute() or not staged.is_absolute()
-                or not final.is_absolute()
+            raise RuntimeError("安装文件名与版本不匹配")
+        if (not old.is_absolute() or not staged.is_absolute() or not final.is_absolute()
                 or old.parent != staged.parent or old.parent != final.parent
                 or old.parent != backup.parent
-                or old.is_symlink() or staged.is_symlink() or final.is_symlink()):
-            raise RuntimeError("更新文件必须在当前程序目录")
+                or any(p.is_symlink() for p in (old, staged, final))):
+            raise RuntimeError("更新源及目标必须位于当前程序目录")
         if verified_sha(staged, size) != digest:
-            raise RuntimeError("临时更新文件摘要不匹配")
-        wait_previous_process(int(parent))
+            raise RuntimeError("更新临时文件 SHA-256 验证失败")
         if not old.is_file():
-            raise RuntimeError("原程序文件已丢失，拒绝清理或替换")
-        if verified_sha(staged, size) != digest:
-            raise RuntimeError("等待期间临时文件内容发生变化")
+            raise RuntimeError("原版程序已丢失；不允许执行清理")
+        if final == old:
+            if backup.exists() or backup.is_symlink():
+                raise RuntimeError("旧备份尚未处理，拒绝同版本修复")
+            preview_source = staged
+        elif final.exists():
+            if verified_sha(final, size) != digest:
+                raise RuntimeError("目标文件已存在且摘要不一致")
+            staged.unlink()
+            preview_source = final
+        else:
+            # Crucial: persist the canonical versioned .pyw before touching old.
+            os.replace(staged, final)
+            preview_source = final
+
+        if verified_sha(preview_source, size) != digest:
+            raise RuntimeError("新版保存到本机后 SHA-256 验证失败")
+
+        # Start the downloaded application's *real imports and Qt runtime*,
+        # but not its market/SQLite pipeline (the old GUI still owns DB).
+        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        child = subprocess.Popen(
+            [sys.executable, str(preview_source),
+             "--update-preview-ack", str(ack),
+             "--update-preview-control", str(control),
+             "--update-preview-target", str(final),
+             "--updated-from", prior],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, creationflags=flags, cwd=str(old.parent))
+
+        # The new process shows "更新完成" BEFORE signaling "ready".
+        # No old file can be touched before receipt from a visible Qt window.
+        deadline = time.monotonic() + 45
+        while time.monotonic() < deadline:
+            if ack.exists() and ack.read_text(encoding="utf-8").strip() == "ready":
+                if child.poll() is not None:
+                    raise RuntimeError("新版窗口启动后立即退出")
+                break
+            if child.poll() is not None:
+                raise RuntimeError("新版未能启动；旧版及新文件均被保留")
+            time.sleep(.15)
+        else:
+            raise TimeoutError("新版图形界面未能按时启动")
+
+        put_status(control, "close-old")
+        # On Windows a running file may be locked, so graceful old-process exit
+        # MUST precede deletion; Unix also follows the safer same order.
+        wait_previous_process(int(parent))
 
         if final == old:
-            # Same-version repair: Windows cannot replace an active script.
-            # Keep old in a rollback-only backup until real GUI has started.
-            if backup.exists() or backup.is_symlink():
-                raise RuntimeError("上一次备份尚未处理，拒绝覆盖")
             os.replace(old, backup)
             changed_original = True
             os.replace(staged, final)
             installed = True
-        elif final.exists():
-            # Never overwrite a preexisting, possibly unrelated versioned file.
-            if verified_sha(final, size) != digest:
-                raise RuntimeError("目标版本文件已存在且内容不一致，拒绝覆盖")
-            staged.unlink()
-            installed = True
         else:
-            # New version is saved under its canonical visible filename FIRST.
-            # The running old version remains fully intact until startup ACK.
-            os.replace(staged, final)
+            if not old.is_file():
+                raise RuntimeError("旧版文件已被外部改变；保留新版")
+            if verified_sha(final, size) != digest:
+                raise RuntimeError("新版内容在等待期间已改变，拒绝删除旧版")
+            old.unlink()
             installed = True
-
         if verified_sha(final, size) != digest:
-            raise RuntimeError("新版本落盘校验失败")
-        # Confirm file bytes were flushed; do not delete old before launch.
-        if os.name != "nt":
-            with final.open("rb") as fp:
-                os.fsync(fp.fileno())
-
-        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-        child = subprocess.Popen(
-            [sys.executable, str(final), "--update-ack", str(ack),
-             "--updated-from", prior],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL, creationflags=flags,
-            cwd=str(old.parent))
-
-        # No aggregate startup timeout: market initialization may take hours.
-        # ACK is written only AFTER Qt has displayed the new main window.
-        while True:
-            if ack.is_file() and ack.read_text(encoding="utf-8").strip() == "ready":
-                if child.poll() is not None:
-                    raise RuntimeError("新版本在启动确认前已退出")
-                if verified_sha(final, size) != digest:
-                    raise RuntimeError("新版本启动后文件内容变化")
-                if final != old:
-                    old.unlink()  # Only now remove the previous .pyw.
-                elif backup.exists():
-                    backup.unlink()
-                return
-            if child.poll() is not None:
-                raise RuntimeError("新版尚未进入主界面；保留原程序以便恢复")
-            time.sleep(.25)
+            raise RuntimeError("新版最终落盘校验失败")
+        if final == old:
+            backup.unlink(missing_ok=True)
+        # The preview process may now start the normal app pipeline.
+        put_status(control, "done")
     except Exception:
-        # If we replaced the same pathname, the old file must be recovered.
-        if changed_original:
-            if child is not None and child.poll() is None:
-                child.terminate()
-                try:
-                    child.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    child.kill()
-                    child.wait()
-            if backup.exists():
+        if changed_original and backup.exists():
+            try:
                 os.replace(backup, old)
-        # Cross-name failures leave BOTH old and new intact. Never delete the
-        # successfully downloaded version due to a failed startup.
+            except OSError:
+                # Do not touch the backup if restoration is blocked.
+                pass
+        try:
+            put_status(control, "failed")
+        except OSError:
+            pass
         traceback.print_exc()
         raise
     finally:
-        ack.unlink(missing_ok=True)
         staged.unlink(missing_ok=True)
+        # ACK/control belong to the preview process until it handles "done".
         Path(__file__).unlink(missing_ok=True)
 
 
@@ -4867,6 +4874,8 @@ class ScannerWindow(QMainWindow):
         self._version_worker = None
         self._update_in_progress = False
         self._download_dialog = None
+        self._update_control_path = None
+        self._update_cleanup_timer = None
         self.setWindowTitle("A股 MA 扫描器 v1.3.3")
         self.resize(1120, 840)
         self.setMinimumSize(980, 735)
@@ -5916,6 +5925,24 @@ class ScannerWindow(QMainWindow):
         dialog.show()
         worker.start()
 
+    def _check_update_cleanup(self):
+        """Close the old GUI only after the new app has visibly started."""
+        path = self._update_control_path
+        if path is None:
+            return
+        try:
+            status = path.read_text(encoding="utf-8").strip() if path.exists() else ""
+        except OSError:
+            status = ""
+        if status == "close-old":
+            self._update_cleanup_timer.stop()
+            # This closeEvent already handles cancellation of scanner workers.
+            self.close()
+        elif status == "failed":
+            self._update_cleanup_timer.stop()
+            self._update_control_path = None
+            QMessageBox.warning(self, "软件更新", "新版文件已保留，但更新未完成。")
+
     def _install_staged_update(self, staged: Path):
         old = Path(__file__).resolve()
         staged = Path(staged).resolve()
@@ -5954,22 +5981,29 @@ class ScannerWindow(QMainWindow):
         os.close(ack_fd)
         ack = Path(ack_name)
         ack.unlink()
+        control_fd, control_name = tempfile.mkstemp(prefix="ashare-update-control-")
+        os.close(control_fd)
+        control = Path(control_name)
+        control.unlink()
         try:
             helper.write_text(UPDATE_HELPER, encoding="utf-8")
             flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
             subprocess.Popen(
                 [sys.executable, str(helper), str(os.getpid()),
                  str(old), str(staged), str(final), str(backup), str(ack),
-                 APP_VERSION, version, digest, str(len(program))],
+                 str(control), APP_VERSION, version, digest, str(len(program))],
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL, creationflags=flags,
                 cwd=str(old.parent))
         except Exception:
             helper.unlink(missing_ok=True)
             raise
-        if self._scan_cancel_event is not None:
-            self._scan_cancel_event.set()
-        self.close()
+        # Leave the old GUI and its SQLite locks running until the new
+        # preview window is rendered and the helper requests graceful exit.
+        self._update_control_path = control
+        self._update_cleanup_timer = QTimer(self)
+        self._update_cleanup_timer.timeout.connect(self._check_update_cleanup)
+        self._update_cleanup_timer.start(180)
 
     def _show_error(self, title, details):
         if not self.demo:
@@ -5995,6 +6029,79 @@ class ScannerWindow(QMainWindow):
         dialog.exec()
 
 
+def _run_update_preview(ack_name, control_name, target_name):
+    """Show actual Qt success UI while old GUI still owns market SQLite.
+
+    No stock fetch, database writer or background polling is started here.
+    """
+    ack, control, target = map(Path, (ack_name, control_name, target_name))
+    if (not ack.name.startswith("ashare-update-ack-")
+            or not control.name.startswith("ashare-update-control-")
+            or target.name != f"AShareMAScanner_v{APP_VERSION}.pyw"):
+        raise RuntimeError("非法更新确认参数")
+    if not (Path(__file__).is_file() and target.parent == Path(__file__).resolve().parent):
+        raise RuntimeError("新版程序不在原目录")
+    os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR", "1")
+    app = QApplication(sys.argv[:1])
+    app.setFont(QFont("Helvetica Neue" if sys.platform == "darwin" else "Segoe UI", 10))
+    dialog = QDialog()
+    dialog.setWindowTitle("软件更新")
+    dialog.setFixedSize(360, 150)
+    layout = QVBoxLayout(dialog)
+    layout.setContentsMargins(24, 22, 24, 22)
+    text_label = QLabel("已更新完成")
+    text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    layout.addWidget(text_label)
+    detail_label = QLabel("正在切换到新版本…")
+    detail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    layout.addWidget(detail_label)
+    dialog.show()
+
+    def report_visible():
+        if dialog.isVisible() and Path(__file__).is_file():
+            ack.write_text("ready", encoding="utf-8")
+        else:
+            detail_label.setText("新版窗口启动失败")
+
+    QTimer.singleShot(350, report_visible)
+    status_timer = QTimer(dialog)
+    status_timer.setInterval(170)
+
+    def check_cleanup():
+        try:
+            state = control.read_text(encoding="utf-8").strip() if control.exists() else ""
+        except OSError:
+            return
+        if state == "done":
+            status_timer.stop()
+            if not target.is_file():
+                detail_label.setText("无法找到新版文件")
+                return
+            flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+            try:
+                subprocess.Popen(
+                    [sys.executable, str(target)],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, creationflags=flags,
+                    cwd=str(target.parent))
+            except OSError:
+                detail_label.setText("新版已保存，请手动启动")
+                return
+            QTimer.singleShot(800, dialog.accept)
+        elif state == "failed":
+            status_timer.stop()
+            text_label.setText("新版已保存")
+            detail_label.setText("旧版清理失败，请手动核查")
+        # "close-old" means old is finishing, do not restart yet.
+
+    status_timer.timeout.connect(check_cleanup)
+    status_timer.start()
+    result = app.exec()
+    ack.unlink(missing_ok=True)
+    control.unlink(missing_ok=True)
+    return result
+
+
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument("--demo",action="store_true",
@@ -6002,10 +6109,16 @@ def main():
     parser.add_argument("--screenshot",default="",
                         help="CI 渲染 4:3 主窗口并保存 PNG 后退出")
     parser.add_argument("--update-ack",default="",help=argparse.SUPPRESS)
+    parser.add_argument("--update-preview-ack",default="",help=argparse.SUPPRESS)
+    parser.add_argument("--update-preview-control",default="",help=argparse.SUPPRESS)
+    parser.add_argument("--update-preview-target",default="",help=argparse.SUPPRESS)
     parser.add_argument("--updated-from",default="",help=argparse.SUPPRESS)
     args=parser.parse_args()
+    if args.update_preview_ack:
+        return _run_update_preview(
+            args.update_preview_ack, args.update_preview_control,
+            args.update_preview_target)
     if args.update_ack:
-        # Validate now; acknowledge only after the new PySide6 window appears.
         ack = Path(args.update_ack)
         if not ack.name.startswith("ashare-update-ack-"):
             raise RuntimeError("非法更新确认路径")
