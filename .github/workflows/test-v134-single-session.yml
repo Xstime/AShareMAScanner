@@ -1,7 +1,7 @@
-name: Dev v1.3.4 updater single BaoStock session regression
+name: Dev v1.3.4 single BaoStock session regression
 on:
   push:
-    branches: [fix/v1.3.4-update-file-persistence]
+    branches: [fix/v1.3.4-single-session-baostock]
   workflow_dispatch:
 permissions:
   contents: read
@@ -22,7 +22,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq xvfb python3-tk libegl1 libopengl0 libxkbcommon-x11-0 libxcb-cursor0
           python -m pip install -r requirements.txt
-      - name: Real helper installation/rollback and GUI ACK
+      - name: Serial stock histories, daily cache and GUI compatibility
         run: |
           set -euo pipefail
           python -m py_compile 'A股MA扫描器_v1.3.4.pyw'
