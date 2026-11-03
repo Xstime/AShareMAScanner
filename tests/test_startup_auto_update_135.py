@@ -180,13 +180,13 @@ class StartupUpdateTests(unittest.TestCase):
             control, process = m._launch_verified_update_helper(staged)
         self.assertEqual(self.old.read_bytes(), old_bytes)
         args = spawn.call_args.args[0]
-        self.assertEqual(args[2], str(self.old))
-        self.assertEqual(args[3], str(staged))
-        self.assertEqual(args[4], str(self.root / self.name))
+        self.assertEqual(args[3], str(self.old))
+        self.assertEqual(args[4], str(staged))
+        self.assertEqual(args[5], str(self.root / self.name))
         self.assertTrue(Path(args[1]).is_file())
         self.assertIsNotNone(process)
         self.addCleanup(Path(args[1]).unlink, missing_ok=True)
-        self.addCleanup(Path(args[6]).unlink, missing_ok=True)
+        self.addCleanup(Path(args[7]).unlink, missing_ok=True)
         self.addCleanup(control.unlink, missing_ok=True)
 
     def test_offline_window_automatically_continues_to_market(self):
