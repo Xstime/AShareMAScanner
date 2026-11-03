@@ -6087,8 +6087,12 @@ def _startup_auto_update(prechecked):
     try:
         root.mainloop()
     finally:
-        if root.winfo_exists():
-            root.destroy()
+        try:
+            if root.winfo_exists():
+                root.destroy()
+        except tk.TclError:
+            # Tk already destroyed its interpreter on the normal path.
+            pass
     return state["handoff"]
 
 
