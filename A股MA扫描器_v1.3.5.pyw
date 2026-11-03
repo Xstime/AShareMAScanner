@@ -5838,62 +5838,9 @@ class ScannerWindow(QMainWindow):
             QMessageBox.warning(self, "软件更新", "新版文件已保留，但更新未完成。")
 
     def _install_staged_update(self, staged: Path):
-        old = Path(__file__).resolve()
-        staged = Path(staged).resolve()
-        if staged.parent != old.parent or not staged.is_file():
-            raise RuntimeError("下载文件不在当前程序目录")
-        program = staged.read_bytes()
-        match = re.search(
-            rb'(?m)^APP_VERSION\s*=\s*["\x27](\d+\.\d+\.\d+)["\x27]\s*$',
-            program)
-        if not match:
-            raise RuntimeError("无法确认新程序的版本号")
-        version = match.group(1).decode("ascii")
-        current = _release_version(APP_VERSION)
-        wanted = _release_version(version)
-        if wanted is None or current is None or wanted < current:
-            raise RuntimeError("拒绝降级或无效版本更新")
-        if (len(program) > MAX_UPDATE_BYTES or not program or
-                b"--update-ack" not in program):
-            raise RuntimeError("更新文件超出大小上限或缺少启动确认接口")
-        compile(program, str(staged), "exec")
-        digest = hashlib.sha256(program).hexdigest()
-        final = old.with_name(f"AShareMAScanner_v{version}.pyw")
-        # An existing filename with different content must never be clobbered.
-        if final != old and (final.exists() or final.is_symlink()):
-            if (not final.is_file() or final.is_symlink() or
-                    final.stat().st_size != len(program) or
-                    hashlib.sha256(final.read_bytes()).hexdigest() != digest):
-                raise RuntimeError("目标版本文件已存在且内容不一致")
-        backup = old.with_name(old.name + ".old-update.bak")
-        if final == old and (backup.exists() or backup.is_symlink()):
-            raise RuntimeError("发现旧版备份，拒绝覆盖")
-        helper_fd, helper_name = tempfile.mkstemp(prefix="ashare-updater-", suffix=".py")
-        os.close(helper_fd)
-        helper = Path(helper_name)
-        ack_fd, ack_name = tempfile.mkstemp(prefix="ashare-update-ack-")
-        os.close(ack_fd)
-        ack = Path(ack_name)
-        ack.unlink()
-        control_fd, control_name = tempfile.mkstemp(prefix="ashare-update-control-")
-        os.close(control_fd)
-        control = Path(control_name)
-        control.unlink()
-        try:
-            helper.write_text(UPDATE_HELPER, encoding="utf-8")
-            flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-            subprocess.Popen(
-                [sys.executable, str(helper), str(os.getpid()),
-                 str(old), str(staged), str(final), str(backup), str(ack),
-                 str(control), APP_VERSION, version, digest, str(len(program))],
-                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL, creationflags=flags,
-                cwd=str(old.parent))
-        except Exception:
-            helper.unlink(missing_ok=True)
-            raise
-        # Leave the old GUI and its SQLite locks running until the new
-        # preview window is rendered and the helper requests graceful exit.
+        control, _helper_process = _launch_verified_update_helper(staged)
+        # Keep the current Qt GUI and its SQLite locks alive until the
+        # downloaded app's real Qt preview sends its visible-window ACK.
         self._update_control_path = control
         self._update_cleanup_timer = QTimer(self)
         self._update_cleanup_timer.timeout.connect(self._check_update_cleanup)
@@ -5921,6 +5868,69 @@ class ScannerWindow(QMainWindow):
         close.clicked.connect(dialog.accept)
         layout.addWidget(close)
         dialog.exec()
+
+
+def _launch_verified_update_helper(staged: Path):
+    """Spawn the tested updater helper for GUI and pre-market startup alike.
+
+    The helper writes the canonical new file, launches the real new Qt preview
+    and requests old-process exit only after a visible-window handshake.
+    """
+    old = Path(__file__).resolve()
+    staged = Path(staged).resolve()
+    if staged.parent != old.parent or not staged.is_file():
+        raise RuntimeError("下载文件不在当前程序目录")
+    program = staged.read_bytes()
+    match = re.search(
+        rb'(?m)^APP_VERSION\s*=\s*["\x27](\d+\.\d+\.\d+)["\x27]\s*$',
+        program)
+    if not match:
+        raise RuntimeError("无法确认新程序的版本号")
+    version = match.group(1).decode("ascii")
+    current = _release_version(APP_VERSION)
+    wanted = _release_version(version)
+    if wanted is None or current is None or wanted < current:
+        raise RuntimeError("拒绝降级或无效版本更新")
+    if (len(program) > MAX_UPDATE_BYTES or not program or
+            b"--update-ack" not in program):
+        raise RuntimeError("更新文件超出大小上限或缺少启动确认接口")
+    compile(program, str(staged), "exec")
+    digest = hashlib.sha256(program).hexdigest()
+    final = old.with_name(f"AShareMAScanner_v{version}.pyw")
+    # An existing filename with different content must never be clobbered.
+    if final != old and (final.exists() or final.is_symlink()):
+        if (not final.is_file() or final.is_symlink() or
+                final.stat().st_size != len(program) or
+                hashlib.sha256(final.read_bytes()).hexdigest() != digest):
+            raise RuntimeError("目标版本文件已存在且内容不一致")
+    backup = old.with_name(old.name + ".old-update.bak")
+    if final == old and (backup.exists() or backup.is_symlink()):
+        raise RuntimeError("发现旧版备份，拒绝覆盖")
+    helper_fd, helper_name = tempfile.mkstemp(prefix="ashare-updater-", suffix=".py")
+    os.close(helper_fd)
+    helper = Path(helper_name)
+    ack_fd, ack_name = tempfile.mkstemp(prefix="ashare-update-ack-")
+    os.close(ack_fd)
+    ack = Path(ack_name)
+    ack.unlink()
+    control_fd, control_name = tempfile.mkstemp(prefix="ashare-update-control-")
+    os.close(control_fd)
+    control = Path(control_name)
+    control.unlink()
+    try:
+        helper.write_text(UPDATE_HELPER, encoding="utf-8")
+        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        helper_process = subprocess.Popen(
+            [sys.executable, str(helper), str(os.getpid()),
+             str(old), str(staged), str(final), str(backup), str(ack),
+             str(control), APP_VERSION, version, digest, str(len(program))],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, creationflags=flags,
+            cwd=str(old.parent))
+    except Exception:
+        helper.unlink(missing_ok=True)
+        raise
+    return control, helper_process
 
 
 def _run_update_preview(ack_name, control_name, target_name):
