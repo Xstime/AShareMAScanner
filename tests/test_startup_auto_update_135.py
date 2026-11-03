@@ -189,6 +189,54 @@ class StartupUpdateTests(unittest.TestCase):
         self.addCleanup(Path(args[7]).unlink, missing_ok=True)
         self.addCleanup(control.unlink, missing_ok=True)
 
+    def test_gui_auto_update_waits_for_helper_visible_ack_before_exiting_old(self):
+        staged = self.root / "verified-new.pyw"
+        staged.write_bytes(self.new_source)
+        control = self.root / "ashare-update-control-test-success"
+        old_bytes = self.old.read_bytes()
+
+        def launch(file):
+            self.assertEqual(Path(file), staged)
+            # Simulate the helper's visible Qt preview ACK + close-old signal.
+            control.write_text("close-old", encoding="utf8")
+            process = MagicMock()
+            process.poll.return_value = None
+            return control, process
+
+        with patch.object(m, "prepare_manual_update",
+                          return_value=("已验证 v1.3.6", staged)) as check, \
+             patch.object(m, "_launch_verified_update_helper",
+                          side_effect=launch) as install:
+            handed_off = m._startup_auto_update(("mirror", self.manifest))
+        if not check.called:
+            self.skipTest("No Tk GUI available on this runner")
+        self.assertTrue(handed_off)
+        install.assert_called_once_with(staged)
+        self.assertEqual(self.old.read_bytes(), old_bytes,
+                         "Old file must survive until helper reaps its process")
+
+    def test_gui_update_failure_continues_old_version(self):
+        staged = self.root / "verified-failed.pyw"
+        staged.write_bytes(self.new_source)
+        control = self.root / "ashare-update-control-test-failure"
+        old_bytes = self.old.read_bytes()
+
+        def launch(file):
+            control.write_text("failed", encoding="utf8")
+            process = MagicMock()
+            process.poll.return_value = 1
+            return control, process
+
+        with patch.object(m, "prepare_manual_update",
+                          return_value=("已验证 v1.3.6", staged)) as check, \
+             patch.object(m, "_launch_verified_update_helper",
+                          side_effect=launch) as install:
+            handed_off = m._startup_auto_update(("mirror", self.manifest))
+        self.assertFalse(handed_off)
+        if check.called:
+            install.assert_called_once_with(staged)
+        self.assertEqual(self.old.read_bytes(), old_bytes)
+
     def test_offline_window_automatically_continues_to_market(self):
         # On headless macOS the window is intentionally unavailable; Linux
         # Xvfb and Windows exercise the actual Tk event loop.
