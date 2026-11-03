@@ -1,0 +1,68 @@
+name: Dev v1.3.4 updater single BaoStock session regression
+on:
+  push:
+    branches: [fix/v1.3.4-update-file-persistence]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Tk Qt and dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb python3-tk libegl1 libopengl0 libxkbcommon-x11-0 libxcb-cursor0
+          python -m pip install -r requirements.txt
+      - name: Real helper installation/rollback and GUI ACK
+        run: |
+          set -euo pipefail
+          python -m py_compile 'A股MA扫描器_v1.3.4.pyw'
+          xvfb-run -a python -m unittest discover -s tests -p test_single_session_baostock_134.py -v
+          for t in test_mirror_updater_132.py test_top5_stage2_only_132.py test_ui_compact_and_scan_cache_132.py test_low_first_board_131.py; do
+            xvfb-run -a python -m unittest discover -s tests -p "$t" -v
+          done
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+      - name: Windows actual single session and Qt startup
+        shell: pwsh
+        run: |
+          python -m py_compile "A股MA扫描器_v1.3.4.pyw"
+          python -m unittest discover -s tests -p "test_single_session_baostock_134.py" -v
+          python -m unittest discover -s tests -p "test_low_first_board_131.py" -v
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 25
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+      - name: macOS single session and Tk-to-Qt compatibility
+        run: |
+          set -euo pipefail
+          python -m py_compile 'A股MA扫描器_v1.3.4.pyw'
+          python -m unittest discover -s tests -p test_single_session_baostock_134.py -v
+          python -m unittest discover -s tests -p test_macos_tk_lifecycle_mirror_132.py -v
