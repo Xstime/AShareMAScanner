@@ -180,9 +180,9 @@ class StartupUpdateTests(unittest.TestCase):
             control, process = m._launch_verified_update_helper(staged)
         self.assertEqual(self.old.read_bytes(), old_bytes)
         args = spawn.call_args.args[0]
-        self.assertEqual(args[3], str(self.old))
-        self.assertEqual(args[4], str(staged))
-        self.assertEqual(args[5], str(self.root / self.name))
+        self.assertEqual(Path(args[3]).resolve(), self.old.resolve())
+        self.assertEqual(Path(args[4]).resolve(), staged.resolve())
+        self.assertEqual(Path(args[5]).resolve(), (self.root / self.name).resolve())
         self.assertTrue(Path(args[1]).is_file())
         self.assertIsNotNone(process)
         self.addCleanup(Path(args[1]).unlink, missing_ok=True)
