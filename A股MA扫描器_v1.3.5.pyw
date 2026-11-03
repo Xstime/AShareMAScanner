@@ -5933,6 +5933,165 @@ def _launch_verified_update_helper(staged: Path):
     return control, helper_process
 
 
+def _startup_auto_update(prechecked):
+    """Check/install before any BaoStock login, SQLite access or scan window.
+
+    The new version must be fully verified, saved and visibly bootstrapped
+    before this old process exits. In an outage the normal launch proceeds.
+    """
+    events = queue.Queue()
+    cancel = threading.Event()
+    state = {"handoff": False, "control": None, "helper": None,
+             "helper_started": 0.0, "done": False}
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        # A headless CI environment has no ordinary desktop startup.
+        return False
+    root.title("A股 MA 扫描器 · 检查更新")
+    root.geometry("400x168")
+    root.resizable(False, False)
+    root.configure(bg="#f5f6fa")
+    notice = tk.StringVar(master=root, value="正在检查服务器上的最新版本…")
+    ttk.Label(root, text="软件更新", font=("Segoe UI", 13, "bold"),
+              background="#f5f6fa").pack(anchor="w", padx=24, pady=(18, 10))
+    ttk.Label(root, textvariable=notice, background="#f5f6fa",
+              font=("Segoe UI", 10)).pack(anchor="w", padx=24)
+    bar = ttk.Progressbar(root, mode="indeterminate", length=340)
+    bar.pack(fill="x", padx=24, pady=(14, 8))
+    bar.start(16)
+    action = ttk.Button(root, text="取消检查")
+    action.pack(anchor="e", padx=24)
+
+    def cancel_check():
+        if state["helper"] is not None:
+            # Do not interrupt the already-running verified install handshake.
+            return
+        cancel.set()
+        notice.set("正在取消更新检查…")
+        action.state(["disabled"])
+
+    action.configure(command=cancel_check)
+    root.protocol("WM_DELETE_WINDOW", cancel_check)
+
+    def worker():
+        try:
+            message, staged = prepare_manual_update(
+                Path(__file__).resolve(),
+                on_update_found=lambda version, size: events.put(
+                    ("found", (version, size))),
+                on_progress=lambda received, size, speed: events.put(
+                    ("progress", (received, size))),
+                on_status=lambda message: events.put(("status", message)),
+                cancel_event=cancel, newer_only=True, prechecked=prechecked)
+            events.put(("ready", (message, staged)))
+        except UpdateDownloadCancelled:
+            events.put(("cancelled", None))
+        except Exception:
+            # Do not expose internal server paths, tracebacks or credentials.
+            events.put(("unavailable", None))
+
+    thread = threading.Thread(target=worker, name="startup-update", daemon=True)
+
+    def finish(message="", delay=350):
+        if state["done"]:
+            return
+        state["done"] = True
+        if message:
+            notice.set(message)
+        bar.stop()
+        action.state(["disabled"])
+        root.after(delay, root.destroy)
+
+    def poll():
+        if state["done"]:
+            return
+        while True:
+            try:
+                kind, value = events.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "found":
+                notice.set("发现新版，正在下载更新…")
+                bar.stop()
+                bar.configure(mode="determinate", maximum=1000, value=0)
+            elif kind == "progress":
+                received, size = value
+                if size:
+                    bar.configure(value=min(1000, round(1000 * received / size)))
+            elif kind == "status":
+                notice.set("正在验证更新文件…" if "验证" in value
+                           else "正在下载更新…")
+            elif kind == "ready":
+                message, staged = value
+                if staged is None:
+                    finish(delay=100)
+                    break
+                if cancel.is_set():
+                    Path(staged).unlink(missing_ok=True)
+                    finish("已取消，继续启动旧版")
+                    break
+                try:
+                    control, process = _launch_verified_update_helper(Path(staged))
+                except Exception:
+                    Path(staged).unlink(missing_ok=True)
+                    finish("更新未完成，继续启动现有版本", 900)
+                    break
+                state["control"], state["helper"] = control, process
+                state["helper_started"] = time.monotonic()
+                action.state(["disabled"])
+                notice.set("新版已下载，正在验证启动…")
+                bar.configure(mode="indeterminate")
+                bar.start(16)
+            elif kind == "cancelled":
+                finish("已取消，继续正常启动", 450)
+                break
+            elif kind == "unavailable":
+                finish("更新服务暂不可用，继续正常启动", 1000)
+                break
+
+        if state["done"]:
+            return
+        control = state["control"]
+        process = state["helper"]
+        if control is not None:
+            try:
+                flag = control.read_text(encoding="utf-8").strip() if control.exists() else ""
+            except OSError:
+                flag = ""
+            if flag == "close-old":
+                # The verified new Qt preview is visible. Exit this old process
+                # so the helper can delete its old file and start the new GUI.
+                state["handoff"] = True
+                state["done"] = True
+                root.destroy()
+                return
+            if flag == "failed" or process.poll() is not None:
+                finish("新版未能完成切换，继续使用旧版", 1200)
+                return
+            if time.monotonic() - state["helper_started"] > 75:
+                # Never proceed into market updates while an unknown updater
+                # helper may still request shutdown asynchronously.
+                process.kill()
+                try:
+                    control.write_text("failed", encoding="utf-8")
+                except OSError:
+                    pass
+                finish("更新启动超时，继续使用旧版", 1200)
+                return
+        root.after(120, poll)
+
+    root.after(120, poll)
+    thread.start()
+    try:
+        root.mainloop()
+    finally:
+        if root.winfo_exists():
+            root.destroy()
+    return state["handoff"]
+
+
 def _run_update_preview(ack_name, control_name, target_name):
     """Show actual Qt success UI while old GUI still owns market SQLite.
 
@@ -6018,6 +6177,8 @@ def main():
     parser.add_argument("--update-preview-control",default="",help=argparse.SUPPRESS)
     parser.add_argument("--update-preview-target",default="",help=argparse.SUPPRESS)
     parser.add_argument("--updated-from",default="",help=argparse.SUPPRESS)
+    parser.add_argument("--skip-startup-update",action="store_true",
+                        help=argparse.SUPPRESS)
     args=parser.parse_args()
     if args.update_preview_ack:
         return _run_update_preview(
@@ -6027,6 +6188,13 @@ def main():
         ack = Path(args.update_ack)
         if not ack.name.startswith("ashare-update-ack-"):
             raise RuntimeError("非法更新确认路径")
+    if (not args.demo and not args.screenshot and not args.skip_startup_update
+            and not args.update_ack and not args.update_preview_ack):
+        try:
+            if _startup_auto_update(_STARTUP_VPS_PROBE):
+                return 0
+        finally:
+            _collect_finished_tk_on_main_thread()
     if args.demo or args.screenshot:
         backend=None
         result=None
