@@ -1,10 +1,19 @@
-# AShareMAScanner v1.3.3 · A 股 MA 扫描器
+# AShareMAScanner v1.3.4 · A 股 MA 扫描器
 
-**当前源码版本：v1.3.3**。完整的 Windows/Python `.pyw` 单文件应用：Tkinter 启动检测、Tkinter 行情更新、PySide6 4:3 主界面。行情来自 BaoStock 后复权日线；同花顺近 5 日资金净流入 TOP5 仅展示行业排名，不抓成分股。
+**当前源码版本：v1.3.4**。完整的 Windows/Python `.pyw` 单文件应用：Tkinter 启动检测、Tkinter 行情更新、PySide6 4:3 主界面。行情来自 BaoStock 后复权日线；同花顺近 5 日资金净流入 TOP5 仅展示行业排名，不抓成分股。
+
+## v1.3.4 更新：BaoStock 禁用并发
+
+- 取消 BaoStock 的多个独立下载进程，历史初始化和每日增量更新均采用**单会话、按股票顺序抓取**。
+- 删除多进程连接逻辑；即使旧环境变量 `ASHARE_MA_FETCH_WORKERS` 设置为 3 或更高，也不会启用并发。
+- 保留 SQLite 增量缓存、断点补抓、200 只股票批次提交及失败恢复，不影响八种策略和同花顺行业资金 TOP5。
+- BaoStock 官方不允许并发连接，每日 API 请求不得超过 50,000 次。已出现 `10001011` 黑名单时仍需等待解除，**更新本软件不能立即解封公网 IP**。
+
+详见 [v1.3.4 更新说明](RELEASE_NOTES_v1.3.4.md)。
 
 ## v1.3.3 更新：先保存并确认新版，再清理旧版
 
-- 更新程序先将完整、已校验的新文件保存为 `AShareMAScanner_v1.3.3.pyw`，确保它在旧版退出前已经存在于程序目录。
+- 更新程序先将完整、已校验的新文件保存为 `AShareMAScanner_v1.3.4.pyw`，确保它在旧版退出前已经存在于程序目录。
 - 新版先启动真实 PySide6/Qt 更新确认窗口，确认窗口可见后，再请求旧版正常退出；旧进程完全停止后才允许删除旧文件，最后启动新版的常规行情与扫描流程。
 - 新版不能启动、旧版退出超时或内容校验异常时，保留旧版与已保存的新文件。支持同版本修复失败时回滚原文件。
 - 数据库 `data/`、八种策略、同花顺行业 TOP5 及 v1.3.2 镜像更新规则不变。三平台自动化回归已通过，仍待正式发布后的跨平台 Release 验证。
@@ -59,12 +68,12 @@ v1.3.2 新增固定 HTTPS 镜像作为首选更新源；不提供可配置代理
 
 ## 安装和数据
 
-[GitHub Releases](https://github.com/Xstime/AShareMAScanner/releases) 下载 `AShareMAScanner_v1.3.3.pyw` 或 `AShareMAScanner_v1.3.3.zip`。直接运行 `python A股MA扫描器_v1.3.3.pyw`（系统需有 Python 3.10+ 和 Tkinter；依赖库可按提示安装）。`python A股MA扫描器_v1.3.2.pyw --demo` 可不联网查看主界面。
+[GitHub Releases](https://github.com/Xstime/AShareMAScanner/releases) 下载 `AShareMAScanner_v1.3.4.pyw` 或 `AShareMAScanner_v1.3.4.zip`。直接运行 `python A股MA扫描器_v1.3.4.pyw`（系统需有 Python 3.10+ 和 Tkinter；依赖库可按提示安装）。`python A股MA扫描器_v1.3.2.pyw --demo` 可不联网查看主界面。
 
 数据库始终放在程序文件同级的 **`data/a_share_baostock_hfq.db`**，采用 SQLite/WAL；升级时**不要删除或移动 `data/`**。新版不修改 `daily` 表结构、不清空缓存、不重新下载全部历史数据。仍保留 45 交易日左右的 BaoStock 行情缓存、断点补抓、三阶段 GUI、8 阶段更新进度和同花顺行业 TOP5。
 
-旧版 `A股MA扫描器_v1.3.0.pyw`、`A股MA扫描器_v1.3.1.pyw`、`A股MA扫描器_v1.3.2.pyw` 保留在仓库以供回归验证。发行使用独立的 `A股MA扫描器_v1.3.3.pyw` 源文件，避免覆盖旧版本源文件。
+旧版 `A股MA扫描器_v1.3.0.pyw`、`A股MA扫描器_v1.3.1.pyw`、`A股MA扫描器_v1.3.2.pyw`、`A股MA扫描器_v1.3.3.pyw` 保留在仓库以供回归验证。发行使用独立的 `A股MA扫描器_v1.3.4.pyw` 源文件，避免覆盖旧版本源文件。
 
-更多内容见 [v1.3.3 更新说明](RELEASE_NOTES_v1.3.3.md) 和对应的 Linux/Windows/macOS 自动化测试记录。
+更多内容见 [v1.3.4 更新说明](RELEASE_NOTES_v1.3.4.md) 和对应的 Linux/Windows/macOS 自动化测试记录。
 
 MIT License。所有信息仅用于技术研究，不构成投资建议。
