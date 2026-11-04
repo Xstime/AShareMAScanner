@@ -31,7 +31,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m py_compile 'A股MA扫描器_v1.3.6.pyw' 'A股MA扫描器_v1.3.2.pyw' 'A股MA扫描器_v1.3.1.pyw' 'A股MA扫描器_v1.3.0.pyw'
-          for suite in test_eight_strategy_math_136.py test_real_strategy_ui_136.py test_eight_strategy_math_136.py test_real_strategy_ui_136.py test_startup_auto_update_135.py test_single_session_baostock_134.py test_mirror_updater_132.py test_ui_compact_and_scan_cache_132.py test_top5_stage2_only_132.py test_macos_tk_lifecycle_mirror_132.py test_market_cancel_tk_mirror_132.py test_low_first_board_131.py test_update_download_progress_132.py test_manual_self_update_131.py test_v131_full_audit.py test_manual_self_update_130.py test_v130_full_audit.py test_fresh_robustness_130.py test_spawn_isolation_130.py test_day_parallel_speed_130.py; do
+          for suite in test_eight_strategy_math_136.py test_real_strategy_ui_136.py test_startup_auto_update_135.py test_single_session_baostock_134.py test_mirror_updater_132.py test_ui_compact_and_scan_cache_132.py test_top5_stage2_only_132.py test_macos_tk_lifecycle_mirror_132.py test_market_cancel_tk_mirror_132.py test_low_first_board_131.py test_update_download_progress_132.py test_manual_self_update_131.py test_v131_full_audit.py test_manual_self_update_130.py test_v130_full_audit.py test_fresh_robustness_130.py test_spawn_isolation_130.py test_day_parallel_speed_130.py; do
             xvfb-run -a python -m unittest discover -s tests -p "$suite" -v
           done
       - name: Render actual 1120x840 PySide6 v1.3.6 window
@@ -96,7 +96,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m py_compile 'A股MA扫描器_v1.3.6.pyw'
-          for suite in test_eight_strategy_math_136.py test_real_strategy_ui_136.py test_eight_strategy_math_136.py test_real_strategy_ui_136.py test_startup_auto_update_135.py test_single_session_baostock_134.py test_macos_tk_lifecycle_mirror_132.py test_market_cancel_tk_mirror_132.py test_mirror_updater_132.py test_ui_compact_and_scan_cache_132.py test_top5_stage2_only_132.py test_low_first_board_131.py; do
+          for suite in test_eight_strategy_math_136.py test_real_strategy_ui_136.py test_startup_auto_update_135.py test_single_session_baostock_134.py test_macos_tk_lifecycle_mirror_132.py test_market_cancel_tk_mirror_132.py test_mirror_updater_132.py test_ui_compact_and_scan_cache_132.py test_top5_stage2_only_132.py test_low_first_board_131.py; do
             python -m unittest discover -s tests -p "$suite" -v
           done
 
