@@ -1,6 +1,17 @@
-# AShareMAScanner v1.3.5 · A 股 MA 扫描器
+# AShareMAScanner v1.3.6 · A 股 MA 扫描器
 
-**当前源码版本：v1.3.5**。完整的 Windows/Python `.pyw` 单文件应用：Tkinter 启动检测、Tkinter 行情更新、PySide6 4:3 主界面。行情来自 BaoStock 后复权日线；同花顺近 5 日资金净流入 TOP5 仅展示行业排名，不抓成分股。
+**当前源码版本：v1.3.6**。完整的 Windows/Python `.pyw` 单文件应用：Tkinter 启动检测、Tkinter 行情更新、PySide6 4:3 主界面。行情来自 BaoStock 后复权日线；同花顺近 5 日资金净流入 TOP5 仅展示行业排名，不抓成分股。
+
+## v1.3.6 更新：八种策略计算复核
+
+- 通过独立收盘价、成交量与 SQLite 算例核查八种个股策略和七种适用的板块信号。
+- 修复历史数据门槛过高造成的漏选：放量突破 MA5 从21根改为**6根**、放量突破 MA10 从21根改为**11根**、MA5上穿MA10从21根改为**11根**、三均线粘合首次上行从23根改为**22根**。
+- 放量突破 MA20（21根）、MA5首次拐头（7根）、自定义量比/换手率（6根）、低位首板放量（34根）的最低 K 线要求保持不变；其他策略的核心公式未发现需要修改的问题。
+- 保持 BaoStock 串行单连接、v1.3.5 启动时 VPS 优先自动更新、SQLite 数据库及八种策略的其余筛选条件。
+- 修复策略加载完成后表格没有解释的情况：有信号即显示实际股票，无信号则说明是**当天确实无新触发、数据不足、缓存缺失或被筛选条件过滤**。
+- 可勾选「含上一交易日」查看昨日触发的信号；默认仍仅检索最新交易日，不自动放宽公式。历史信号回算与主策略最低 K 线要求保持一致。
+
+完整算例、限制与验证范围见 [v1.3.6 更新说明](RELEASE_NOTES_v1.3.6.md)。
 
 ## v1.3.5 更新：每次启动自动从 VPS 检查更新
 
@@ -79,12 +90,12 @@ v1.3.2 新增固定 HTTPS 镜像作为首选更新源；不提供可配置代理
 
 ## 安装和数据
 
-[GitHub Releases](https://github.com/Xstime/AShareMAScanner/releases) 下载 `AShareMAScanner_v1.3.5.pyw` 或 `AShareMAScanner_v1.3.5.zip`。直接运行 `python A股MA扫描器_v1.3.5.pyw`（系统需有 Python 3.10+ 和 Tkinter；依赖库可按提示安装）。`python A股MA扫描器_v1.3.5.pyw --demo` 可不联网查看主界面。
+[GitHub Releases](https://github.com/Xstime/AShareMAScanner/releases) 下载 `AShareMAScanner_v1.3.6.pyw` 或 `AShareMAScanner_v1.3.6.zip`。直接运行 `python A股MA扫描器_v1.3.6.pyw`（系统需有 Python 3.10+ 和 Tkinter；依赖库可按提示安装）。`python A股MA扫描器_v1.3.6.pyw --demo` 可不联网查看主界面。
 
 数据库始终放在程序文件同级的 **`data/a_share_baostock_hfq.db`**，采用 SQLite/WAL；升级时**不要删除或移动 `data/`**。新版不修改 `daily` 表结构、不清空缓存、不重新下载全部历史数据。仍保留 45 交易日左右的 BaoStock 行情缓存、断点补抓、三阶段 GUI、8 阶段更新进度和同花顺行业 TOP5。
 
-旧版 `A股MA扫描器_v1.3.0.pyw`、`A股MA扫描器_v1.3.1.pyw`、`A股MA扫描器_v1.3.2.pyw`、`A股MA扫描器_v1.3.3.pyw`、`A股MA扫描器_v1.3.4.pyw` 保留在仓库以供回归验证。发行使用独立的 `A股MA扫描器_v1.3.5.pyw` 源文件，避免覆盖旧版本源文件。
+旧版 `A股MA扫描器_v1.3.0.pyw`、`A股MA扫描器_v1.3.1.pyw`、`A股MA扫描器_v1.3.2.pyw`、`A股MA扫描器_v1.3.3.pyw`、`A股MA扫描器_v1.3.4.pyw`、`A股MA扫描器_v1.3.5.pyw` 保留在仓库以供回归验证。发行使用独立的 `A股MA扫描器_v1.3.6.pyw` 源文件，避免覆盖旧版本源文件。
 
-更多内容见 [v1.3.5 更新说明](RELEASE_NOTES_v1.3.5.md) 和对应的 Linux/Windows/macOS 自动化测试记录。
+更多内容见 [v1.3.6 更新说明](RELEASE_NOTES_v1.3.6.md) 和对应的 Linux/Windows/macOS 自动化测试记录。
 
 MIT License。所有信息仅用于技术研究，不构成投资建议。
