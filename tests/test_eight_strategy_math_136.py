@@ -183,6 +183,37 @@ class FullStrategyMathAudit(unittest.TestCase):
         bars.loc[5, "is_st"] = 1
         self.assertTrue(self.scan("breakout_ma5", bars).empty)
 
+    def test_historical_replay_matches_all_eight_current_scans(self):
+        # History reconstruction used an outdated blanket 21-bar threshold.
+        # Each strategy must produce the same edge-date signal in both paths.
+        for strategy, required in MINIMUM.items():
+            with self.subTest(strategy=strategy):
+                with tempfile.TemporaryDirectory() as path:
+                    b = m.BaoStockBackend(Path(path) / "historical.sqlite")
+                    b.init_db()
+                    code = "sh.600111"
+                    bars = raw_bars(strategy, required, code=code)
+                    with m.sqlite_connection(b.db_path) as conn:
+                        conn.executemany(
+                            "INSERT INTO daily "
+                            "(code,trade_date,name,close,volume,trade_status,is_st,turnover) "
+                            "VALUES (?,?,?,?,?,?,?,?)",
+                            [tuple(getattr(r, k) for k in
+                              ("code","trade_date","name","close","volume",
+                               "trade_status","is_st","turnover"))
+                             for r in bars.itertuples(index=False)])
+                    b.get_industry_map = lambda: {}
+                    date = str(bars.iloc[-1]["trade_date"])
+                    scan = b.scan_strategy(strategy, date, False, None)
+                    self.assertEqual(len(scan), 1)
+                    history = b.get_signal_history(code, date)
+                    found = history.loc[
+                        (history["strategy"] == strategy) &
+                        (history["signal_date"] == date)
+                    ]
+                    self.assertEqual(len(found), 1,
+                        f"{strategy} vanished from on-demand historical replay")
+
     def test_no_future_leak_and_repeat_switch_reads_cached_snapshot(self):
         bars = raw_bars("breakout_ma10", 11)
         first = self.scan("breakout_ma10", bars)
