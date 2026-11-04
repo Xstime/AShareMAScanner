@@ -1165,6 +1165,18 @@ def low_first_board_metrics(frame: pd.DataFrame, pos: int, code: str,
 
 
 MA_WINDOWS = (5, 10, 20)
+# A previous rolling average is needed for comparisons with today's value.
+# Share the exact requirements across current scanning and signal-history replay.
+STRATEGY_MIN_BARS = {
+    "breakout_ma5": 6,
+    "breakout_ma10": 11,
+    "breakout_ma20": 21,
+    "ma5_cross_ma10": 11,
+    "ma5_turn_up": 7,
+    "ma_convergence_up": 22,
+    "volume_turnover": 6,
+    "low_first_board": 34,
+}
 VOLUME_AVG_DAYS = 5
 VOLUME_RATIO = 1.5
 
@@ -3201,10 +3213,10 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                                 and prev["MA5"] <= before["MA5"]
                             )
                     elif strategy == "ma_convergence_up":
-                        match = pos >= 22 and ma_convergence_up_metrics(g, pos) is not None
+                        match = pos + 1 >= STRATEGY_MIN_BARS[strategy] and ma_convergence_up_metrics(g, pos) is not None
                     elif strategy == "low_first_board":
                         match = low_first_board_metrics(g, pos, code, calendar) is not None
-                    elif pos >= 20 and prev["close"] > 0:
+                    elif pos + 1 >= STRATEGY_MIN_BARS[strategy] and prev["close"] > 0:
                         if strategy.startswith("breakout_ma"):
                             ma = 'MA' + strategy.replace('breakout_ma', '')
                             match = (pd.notna(row[ma]) and pd.notna(prev[ma]) and row[ma] > 0
@@ -3472,20 +3484,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                         or name_today.lstrip("*").startswith("ST")):
                     continue
 
-                # Only require bars actually needed by this strategy.
-                # Each MA breakout needs one previous valid MA (N+1 bars);
-                # MA5/MA10 crossing needs 11 bars; convergence needs 22
-                # bars for previous/current MA20 and first-trigger exclusion.
-                minimum_bars = {
-                    "breakout_ma5": 6,
-                    "breakout_ma10": 11,
-                    "breakout_ma20": 21,
-                    "ma5_cross_ma10": 11,
-                    "ma5_turn_up": 7,
-                    "ma_convergence_up": 22,
-                    "volume_turnover": 6,
-                    "low_first_board": 34,
-                }.get(strategy)
+                minimum_bars = STRATEGY_MIN_BARS.get(strategy)
                 if minimum_bars is None:
                     raise ValueError(f"未知的选股策略: {strategy}")
                 if len(sub) < minimum_bars:
