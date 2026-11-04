@@ -3455,9 +3455,18 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
             return pd.DataFrame()
         market_dates, groups, industry_map = prepared
         if not groups:
-            return pd.DataFrame()
+            empty = pd.DataFrame()
+            empty.attrs["scan_diagnostics"] = {
+                "stock_count": 0, "target_stocks": 0,
+                "enough_history": 0, "latest_data_date": (
+                    market_dates[-1] if market_dates else ""),
+                "target_date": target_date,
+            }
+            return empty
         result = []
         daily_metrics = {}
+        target_stocks = 0
+        enough_history = 0
 
         for code, g in groups:
             if cancelled():
@@ -3470,6 +3479,10 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                 pos = date_positions.get(signal_date)
                 if pos is None:
                     continue
+                if signal_date == target_date:
+                    target_stocks += 1
+                    if pos + 1 >= STRATEGY_MIN_BARS[strategy]:
+                        enough_history += 1
                 sub = g.iloc[:pos + 1]
 
                 today = sub.iloc[-1]
@@ -3681,8 +3694,16 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                     })
 
         out = pd.DataFrame(result)
+        scan_diagnostics = {
+            "stock_count": len(groups),
+            "target_stocks": target_stocks,
+            "enough_history": enough_history,
+            "latest_data_date": market_dates[-1] if market_dates else "",
+            "target_date": target_date,
+        }
 
         if out.empty:
+            out.attrs["scan_diagnostics"] = scan_diagnostics
             return out
 
         # 七个策略统一显示触发当天的成交指标，缺失值不冒充零。
@@ -3763,7 +3784,9 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
             return pd.DataFrame()
 
         self.record_signals(strategy, out, active_filters)
-        return out.reset_index(drop=True)
+        out = out.reset_index(drop=True)
+        out.attrs["scan_diagnostics"] = scan_diagnostics
+        return out
 
     # -------------------- 图表数据 --------------------
 
@@ -4449,7 +4472,8 @@ class ScanWorker(QThread):
     success = Signal(int, object)
     failed = Signal(int, str)
 
-    def __init__(self, backend, request_id, strategy, date, previous, filters, cancel_event=None):
+    def __init__(self, backend, request_id, strategy, date, previous, filters,
+                 cancel_event=None, include_previous=False):
         super().__init__()
         self.backend = backend
         self.request_id = request_id
@@ -4458,12 +4482,13 @@ class ScanWorker(QThread):
         self.previous = previous
         self.filters = filters
         self.cancel_event = cancel_event
+        self.include_previous = bool(include_previous)
 
     def run(self):
         try:
             frame = self.backend.scan_strategy(
-                self.strategy, self.date, False, self.previous, self.filters,
-                cancel_event=self.cancel_event
+                self.strategy, self.date, self.include_previous,
+                self.previous, self.filters, cancel_event=self.cancel_event
             )
             self.success.emit(self.request_id, frame)
         except Exception:
@@ -4778,7 +4803,7 @@ class ScannerWindow(QMainWindow):
         self._download_dialog = None
         self._update_control_path = None
         self._update_cleanup_timer = None
-        self.setWindowTitle("A股 MA 扫描器 v1.3.3")
+        self.setWindowTitle(f"A股 MA 扫描器 v{APP_VERSION}")
         self.resize(1120, 840)
         self.setMinimumSize(980, 735)
         self.setStyleSheet(STYLE)
@@ -4956,6 +4981,11 @@ class ScannerWindow(QMainWindow):
         self.strategy_title = self._text("均线粘合向上", "section")
         head.addWidget(self.strategy_title)
         head.addStretch()
+        self.show_previous = QCheckBox("含上一交易日")
+        self.show_previous.setToolTip(
+            "默认只显示当前最新交易日新触发的股票；勾选后同时查询上一市场交易日。")
+        self.show_previous.toggled.connect(lambda _checked: self._rerun_strategy())
+        head.addWidget(self.show_previous)
         self.hit_count = self._text("命中 — 只", "small")
         head.addWidget(self.hit_count)
         mid.addLayout(head)
@@ -5036,6 +5066,11 @@ class ScannerWindow(QMainWindow):
         clear.clicked.connect(self.clear_filters)
         results.addWidget(clear)
         mid.addLayout(results)
+        # A zero-hit scan must never look like an uninitialized blank UI.
+        self.scan_notice = self._text("", "small")
+        self.scan_notice.setWordWrap(True)
+        self.scan_notice.hide()
+        mid.addWidget(self.scan_notice)
 
         self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
@@ -5207,6 +5242,7 @@ class ScannerWindow(QMainWindow):
         self.scan_token += 1
         self._scan_cancel_event = threading.Event()
         self.frame = pd.DataFrame()
+        self.scan_notice.hide()
         self.strategy_loading.show()
         self.strategy_loading.setRange(0, 0)
         self.sector_filter = None
@@ -5239,7 +5275,7 @@ class ScannerWindow(QMainWindow):
         worker = ScanWorker(self.backend, self.scan_token, self.current_key,
                             self.update_result.scan_date,
                             self.update_result.previous_trade_date, filters,
-                            self._scan_cancel_event)
+                            self._scan_cancel_event, self.show_previous.isChecked())
         worker.success.connect(self._scan_ready)
         worker.failed.connect(self._scan_failed)
         self._remember(worker)
@@ -5259,6 +5295,8 @@ class ScannerWindow(QMainWindow):
         self._scan_cancel_event = None
         self.strategy_loading.hide()
         self.result_info.setText("策略执行失败，点击查看错误信息")
+        self.scan_notice.setText("策略计算未成功，不是正常的零命中。请查看错误详情。")
+        self.scan_notice.show()
         self._show_error("策略执行失败", detail)
     def _update_industry_filter(self):
         current = self.industry.currentText()
@@ -5417,12 +5455,63 @@ class ScannerWindow(QMainWindow):
             self.filtered = frame.copy()
         self._draw_table()
         self.hit_count.setText(f"命中 {len(self.filtered)} 只")
+        self._show_scan_diagnostics()
         self.result_info.setText(
             "模拟数据 · 非真实行情" if self.demo else
             (f"股票结果 {len(self.filtered)} 只 · {self.update_result.scan_date if self.update_result else '—'}"
              + (" · 仅由后复权收盘涨幅近似识别首板，非交易所封板记录"
                 if self.current_key == "low_first_board" else ""))
         )
+    def _show_scan_diagnostics(self):
+        """Explain *why* a completed scan rendered zero rows."""
+        if not self.filtered.empty:
+            self.scan_notice.hide()
+            return
+        total = len(self.frame)
+        date = self.update_result.scan_date if self.update_result else "—"
+        diagnostics = self.frame.attrs.get("scan_diagnostics", {})
+        if total:
+            message = (
+                f"策略已计算出 {total} 只股票，但当前代码、市场、行业、"
+                "板块或涨幅筛选条件使结果变为 0。请点击「重置条件」。"
+            )
+        elif diagnostics.get("stock_count", 0) == 0:
+            message = (
+                f"本地缓存没有足够的有效日线用于 {date} 的策略计算。"
+                "请检查行情是否已成功下载以及数据库所在目录。"
+            )
+        elif diagnostics.get("target_stocks", 0) == 0:
+            cached = diagnostics.get("latest_data_date") or "未知"
+            message = (
+                f"{date} 没有找到任何有效的个股日线；"
+                f"本地缓存最后有数据的日期为 {cached}。请检查行情更新状态。"
+            )
+        elif diagnostics.get("enough_history", 0) == 0:
+            message = (
+                f"{date} 有 {diagnostics['target_stocks']} 只股票记录，"
+                "但有效历史长度不足以计算当前策略。"
+            )
+        else:
+            period = (
+                "最近两个市场交易日" if self.show_previous.isChecked()
+                else f"{date} 当天"
+            )
+            message = (
+                f"本次已完成计算：{period}没有新触发当前策略的股票。"
+                + ("" if self.show_previous.isChecked()
+                   else "可勾选「含上一交易日」查看前一日信号。")
+            )
+        if (self.update_result is not None and
+                self.update_result.expected > 0 and
+                self.update_result.completeness < 99.995):
+            message += (
+                f" 注意：行情完整率仅 {self.update_result.completeness:.2f}%"
+                f"（{self.update_result.saved}/{self.update_result.expected}），"
+                "可能发生漏选。"
+            )
+        self.scan_notice.setText(message)
+        self.scan_notice.show()
+
     def _draw_table(self):
         # Like v1.2.6, show metrics particular to the active strategy.
         common = ["代码", "名称", "板块", "触发日", "收盘价", "当日涨幅%"]
