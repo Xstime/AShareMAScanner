@@ -5464,6 +5464,9 @@ class ScannerWindow(QMainWindow):
         )
     def _show_scan_diagnostics(self):
         """Explain *why* a completed scan rendered zero rows."""
+        if not self.strategy_loading.isHidden():
+            self.scan_notice.hide()
+            return
         if not self.filtered.empty:
             self.scan_notice.hide()
             return
