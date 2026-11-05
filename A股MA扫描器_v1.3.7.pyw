@@ -1200,7 +1200,45 @@ RETRY_WAIT = 1.5
 BATCH_SIZE = 200
 BATCH_PAUSE = 2.0
 
-# 长任务定期刷新 BaoStock 会话。
+# 网络失败采用持久化指数退避，避免每次启动重复请求同一批失败股票。
+RETRY_BASE_HOURS = 6
+RETRY_MAX_HOURS = 168
+TURNOVER_RETRY_BASE_HOURS = 24
+
+
+def retry_delay_hours(retry_count, base_hours=RETRY_BASE_HOURS,
+                      max_hours=RETRY_MAX_HOURS):
+    """6h, 12h, 24h... 最长7天；不删除失败记录，也不降低数据完整率。"""
+    count = max(1, int(retry_count or 1))
+    return min(max_hours, base_hours * (2 ** min(count - 1, 5)))
+
+
+def retry_is_due(updated_at, retry_count, now=None, base_hours=RETRY_BASE_HOURS):
+    """兼容旧记录；时间缺失/格式异常时允许立即重试。"""
+    try:
+        last = datetime.strptime(str(updated_at), "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return True
+    current = now or datetime.now()
+    delay = retry_delay_hours(retry_count, base_hours=base_hours)
+    return current >= last + timedelta(hours=delay)
+
+
+def format_elapsed(seconds):
+    seconds = max(0, int(round(float(seconds))))
+    if seconds < 60:
+        return f"{seconds}秒"
+    minutes, seconds = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}分{seconds:02d}秒"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}小时{minutes:02d}分"
+
+
+# AKShare 是无会话 HTTP 接口；行情适配器自身负责多源回退，不再套用 BaoStock 会话重连。
+
+
+# 长任务定期刷新行情状态。
 SESSION_REFRESH_SECONDS = 15 * 60
 
 # BaoStock 行业分类官方说明为每周更新；本地缓存按7天刷新。
@@ -1594,7 +1632,7 @@ class AKShareQuotes:
                 return False
         return True
 
-    def history(self, code, first, last):
+    def history(self, code, first, last, *, require_turnover=False):
         if first>last:
             return pd.DataFrame(columns=self.FIELDS)
         with sqlite_connection(self.db_path) as db:
@@ -1619,6 +1657,8 @@ class AKShareQuotes:
                 selected = bars[bars["date"].between(first,last)]
                 if selected.empty:
                     raise ValueError("目标交易日无记录")
+                if require_turnover and not selected["turn"].notna().any():
+                    raise ValueError(f"{source} 未提供有效换手率")
                 self._preferred[code] = source
                 return selected.reset_index(drop=True)
             except Exception as e:
@@ -1796,6 +1836,7 @@ class AKShareBackend:
         self._scan_prepared_cache = None
         self._instance_lock_file = None
         self._cancel_update_event = threading.Event()
+        self._last_update_timings = []
 
     def cancel_update(self):
         self._cancel_update_event.set()
@@ -1995,6 +2036,16 @@ class AKShareBackend:
 
     def init_db(self):
         with sqlite_connection(self.db_path, timeout=30) as conn:
+            daily_existed = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='daily'"
+            ).fetchone() is not None
+            existing_daily_rows = (
+                conn.execute("SELECT COUNT(*) FROM daily").fetchone()[0]
+                if daily_existed else 0
+            )
+            turnover_retry_existed = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='turnover_retry_state'"
+            ).fetchone() is not None
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
 
@@ -2124,6 +2175,45 @@ class AKShareBackend:
             columns = {r[1] for r in conn.execute("PRAGMA table_info(daily)")}
             if "turnover" not in columns:
                 conn.execute("ALTER TABLE daily ADD COLUMN turnover REAL")
+
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS turnover_retry_state (
+                code TEXT PRIMARY KEY,
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL,
+                next_retry_at TEXT NOT NULL,
+                last_checked_end_date TEXT,
+                reason TEXT
+            )
+            """)
+
+            # v1.3.7 每次启动都会重试历史换手率缺失项。升级时将已有数据库中
+            # 最近80个交易日已存在的缺失项放入首次冷却，避免升级后立刻再跑一小时。
+            # 全新数据库没有旧行情行，不会跳过首次换手率初始化。
+            if not turnover_retry_existed and existing_daily_rows:
+                dates = conn.execute(
+                    "SELECT DISTINCT trade_date FROM daily ORDER BY trade_date DESC LIMIT 80"
+                ).fetchall()
+                if dates:
+                    latest_date = dates[0][0]
+                    first_date = dates[-1][0]
+                    codes = conn.execute(
+                        "SELECT DISTINCT code FROM daily WHERE trade_date BETWEEN ? AND ? "
+                        "AND trade_status=1 AND turnover IS NULL",
+                        (first_date, latest_date),
+                    ).fetchall()
+                    now_dt = datetime.now()
+                    stamp = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+                    retry_at = (now_dt + timedelta(hours=TURNOVER_RETRY_BASE_HOURS)).strftime(
+                        "%Y-%m-%d %H:%M:%S")
+                    conn.executemany(
+                        "INSERT OR IGNORE INTO turnover_retry_state "
+                        "(code,retry_count,updated_at,next_retry_at,last_checked_end_date,reason) "
+                        "VALUES(?,1,?,?,?,?)",
+                        [(row[0], stamp, retry_at, latest_date,
+                          "v1.3.7 upgrade: existing missing turnover deferred once")
+                         for row in codes],
+                    )
             conn.commit()
 
     def upsert_daily_rows(self, conn, rows):
@@ -2424,22 +2514,9 @@ class AKShareBackend:
         return pd.DataFrame(rows, columns=rs.fields)
 
     def run_query(self, query_func) -> pd.DataFrame:
-        last_error = None
-
-        for attempt in range(1, QUERY_RETRY + 1):
-            try:
-                self.ensure_session_fresh()
-                return query_func()
-            except Exception as exc:
-                last_error = exc
-                if attempt < QUERY_RETRY:
-                    try:
-                        self.reconnect()
-                    except Exception:
-                        pass
-                    time.sleep(RETRY_WAIT * attempt)
-
-        raise last_error
+        # AKShareQuotes 内部已经按东方财富/新浪/腾讯顺序回退。
+        # 旧 BaoStock 包装器会把整套多源请求再重复三遍，限流时将等待放大数倍。
+        return query_func()
 
     # -------------------- BaoStock 查询 --------------------
 
@@ -2855,8 +2932,9 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
 
             conn.commit()
 
-    def query_stock_history(self,code,start_date,end_date):
-        return self.run_query(lambda:self._quotes.history(code,start_date,end_date))
+    def query_stock_history(self,code,start_date,end_date,*,require_turnover=False):
+        return self.run_query(lambda:self._quotes.history(
+            code,start_date,end_date,require_turnover=require_turnover))
 
     def dataframe_to_daily_rows(
         self,
@@ -2897,42 +2975,111 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
         return value if value is not None and math.isfinite(value) and value >= 0 else None
 
     def backfill_turnover(self, end_date: str, cb: ProgressCallback) -> str:
-        """仅补近期正常交易记录的缺失换手率；逐股提交，NULL 即续传标记。"""
+        """补近期缺失换手率；无数据来源时持久化退避，不在每次启动重拉80日。"""
         with sqlite_connection(self.db_path, timeout=30) as conn:
-            dates = conn.execute("SELECT DISTINCT trade_date FROM daily WHERE trade_date<=? "
-                                 "ORDER BY trade_date DESC LIMIT 80", (end_date,)).fetchall()
+            dates = conn.execute(
+                "SELECT DISTINCT trade_date FROM daily WHERE trade_date<=? "
+                "ORDER BY trade_date DESC LIMIT 80", (end_date,)
+            ).fetchall()
             if not dates:
                 return ""
             start = dates[-1][0]
-            jobs = conn.execute("SELECT code, MIN(trade_date), MAX(trade_date) FROM daily "
-                                "WHERE trade_date BETWEEN ? AND ? AND trade_status=1 "
-                                "AND turnover IS NULL GROUP BY code ORDER BY code",
-                                (start, end_date)).fetchall()
-            self._check_cancel()
-        for idx, (code, first, last) in enumerate(jobs, 1):
-            self.stage_progress(cb, 94, 96, idx-1, len(jobs),
-                                f"补换手率 {idx}/{len(jobs)} · {self.symbol_only(code)}")
+            jobs = conn.execute(
+                "SELECT code, MIN(trade_date), MAX(trade_date) FROM daily "
+                "WHERE trade_date BETWEEN ? AND ? AND trade_status=1 "
+                "AND turnover IS NULL GROUP BY code ORDER BY code",
+                (start, end_date),
+            ).fetchall()
+            retry_rows = conn.execute(
+                "SELECT code,retry_count,next_retry_at FROM turnover_retry_state"
+            ).fetchall()
+
+        if not jobs:
+            cb(96, "近期换手率缓存已完整")
+            return ""
+
+        now_dt = datetime.now()
+        now_text = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+        retry_map = {code: (int(count), str(next_at or ""))
+                     for code, count, next_at in retry_rows}
+        eligible = []
+        deferred = 0
+        for code, first, last in jobs:
+            state = retry_map.get(code)
+            if state and state[1] and state[1] > now_text:
+                deferred += 1
+                continue
+            eligible.append((code, first, last, state[0] if state else 0))
+
+        def schedule_retry(code, previous_count, last, reason):
+            count = previous_count + 1
+            delay = retry_delay_hours(
+                count, base_hours=TURNOVER_RETRY_BASE_HOURS)
+            stamp = datetime.now()
+            updated = stamp.strftime("%Y-%m-%d %H:%M:%S")
+            next_at = (stamp + timedelta(hours=delay)).strftime("%Y-%m-%d %H:%M:%S")
+            with sqlite_connection(self.db_path, timeout=30) as conn:
+                conn.execute(
+                    "INSERT INTO turnover_retry_state "
+                    "(code,retry_count,updated_at,next_retry_at,last_checked_end_date,reason) "
+                    "VALUES(?,?,?,?,?,?) ON CONFLICT(code) DO UPDATE SET "
+                    "retry_count=excluded.retry_count,updated_at=excluded.updated_at,"
+                    "next_retry_at=excluded.next_retry_at,"
+                    "last_checked_end_date=excluded.last_checked_end_date,reason=excluded.reason",
+                    (code, count, updated, next_at, last, str(reason)[:300]),
+                )
+
+        for idx, (code, first, last, previous_count) in enumerate(eligible, 1):
+            self.stage_progress(
+                cb, 94, 96, idx - 1, len(eligible),
+                f"补换手率 {idx}/{len(eligible)} · {self.symbol_only(code)}",
+            )
             try:
-                data = self.query_stock_history(code, first, last)
+                # 强制要求来源实际提供换手率；腾讯等无换手率源不再被误认为成功。
+                data = self.query_stock_history(
+                    code, first, last, require_turnover=True)
                 rows = []
                 for row in data.itertuples(index=False):
                     value = self.valid_turnover(getattr(row, "turn", None))
                     if value is not None:
                         rows.append((value, code, str(row.date)))
                 with sqlite_connection(self.db_path, timeout=30) as conn:
-                    conn.executemany("UPDATE daily SET turnover=? WHERE code=? AND trade_date=? "
-                                     "AND turnover IS NULL", rows)
-            except Exception:
-                # 行情不受影响；缺失值保留，下次启动继续重试。
-                pass
+                    if rows:
+                        conn.executemany(
+                            "UPDATE daily SET turnover=? WHERE code=? AND trade_date=? "
+                            "AND turnover IS NULL", rows)
+                    remaining = conn.execute(
+                        "SELECT COUNT(*) FROM daily WHERE code=? AND trade_date BETWEEN ? AND ? "
+                        "AND trade_status=1 AND turnover IS NULL",
+                        (code, start, end_date),
+                    ).fetchone()[0]
+                    if remaining:
+                        schedule_retry(code, previous_count, end_date,
+                                       f"换手率仍缺失 {remaining} 条")
+                    else:
+                        conn.execute(
+                            "DELETE FROM turnover_retry_state WHERE code=?", (code,))
+                    conn.commit()
+            except Exception as exc:
+                schedule_retry(code, previous_count, end_date, exc)
             if idx % BATCH_SIZE == 0:
                 time.sleep(BATCH_PAUSE)
-        cb(96, "近期换手率检查完成")
+
+        cb(96, f"换手率检查完成 · 本次检查 {len(eligible)} 只，冷却跳过 {deferred} 只")
         with sqlite_connection(self.db_path, timeout=30) as conn:
-            missing = conn.execute("SELECT COUNT(*) FROM daily WHERE trade_date BETWEEN ? AND ? "
-                                   "AND trade_status=1 AND turnover IS NULL", (start, end_date)).fetchone()[0]
-        return (f"近期有 {missing} 条换手率缺失，放量换手率策略结果可能不完整；下次启动继续补抓。"
-                if missing else "")
+            missing = conn.execute(
+                "SELECT COUNT(*) FROM daily WHERE trade_date BETWEEN ? AND ? "
+                "AND trade_status=1 AND turnover IS NULL", (start, end_date)
+            ).fetchone()[0]
+            deferred_now = conn.execute(
+                "SELECT COUNT(*) FROM turnover_retry_state WHERE next_retry_at>?",
+                (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),),
+            ).fetchone()[0]
+        return (
+            f"最近80个交易日仍有 {missing} 条换手率缺失；{deferred_now} 只股票已按指数退避等待重试"
+            "（最长7天）。不影响其他策略；放量+换手率策略在缺失数据上可能漏选。"
+            if missing else ""
+        )
 
     # -------------------- 历史初始化 --------------------
 
@@ -2944,66 +3091,52 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
     ):
         with sqlite_connection(self.db_path, timeout=30) as conn:
             rows = conn.execute("""
-                SELECT code, name, start_date, end_date
+                SELECT code, name, start_date, end_date, retry_count, updated_at
                 FROM init_queue
                 ORDER BY code
             """).fetchall()
 
         if not rows:
             cb(end_p, "没有历史失败项")
-            return
+            return {"retried": 0, "deferred": 0}
 
-        total = len(rows)
+        now = datetime.now()
+        due_rows = [
+            row for row in rows
+            if retry_is_due(row[5], row[4], now=now)
+        ]
+        deferred = len(rows) - len(due_rows)
+        if not due_rows:
+            cb(end_p, f"历史失败项 {deferred} 只处于退避等待，本次跳过重复网络请求")
+            return {"retried": 0, "deferred": deferred}
 
+        total = len(due_rows)
         with sqlite_connection(self.db_path, timeout=30) as conn:
-            for idx, (code, name, start_date, end_date) in enumerate(
-                rows,
-                start=1,
+            for idx, (code, name, start_date, end_date, retry_count, updated_at) in enumerate(
+                due_rows, start=1,
             ):
                 self._check_cancel(conn)
                 self.stage_progress(
-                    cb,
-                    start_p,
-                    end_p,
-                    idx - 1,
-                    total,
+                    cb, start_p, end_p, idx - 1, total,
                     f"补历史失败 {idx}/{total} · {self.symbol_only(code)}",
                 )
-
                 try:
-                    df = self.query_stock_history(
-                        code,
-                        start_date,
-                        end_date,
-                    )
-                    data_rows = self.dataframe_to_daily_rows(
-                        df,
-                        name or "",
-                    )
-
+                    df = self.query_stock_history(code, start_date, end_date)
+                    data_rows = self.dataframe_to_daily_rows(df, name or "")
                     if not data_rows:
                         raise RuntimeError("历史补抓返回空数据")
-
                     self.upsert_daily_rows(conn, data_rows)
                     self.mark_history_ready(conn, code, name or "")
-
                 except Exception as exc:
                     self.queue_init_failure(
-                        conn,
-                        code,
-                        name or "",
-                        start_date,
-                        end_date,
-                        exc,
-                    )
-
+                        conn, code, name or "", start_date, end_date, exc)
                 if idx % BATCH_SIZE == 0:
                     conn.commit()
                     time.sleep(BATCH_PAUSE)
-
             conn.commit()
 
-        cb(end_p, "历史失败补抓完成")
+        cb(end_p, f"历史失败补抓完成 · 重试 {total} 只，冷却跳过 {deferred} 只")
+        return {"retried": total, "deferred": deferred}
 
     def initialize_missing_histories(
         self,
@@ -3013,15 +3146,23 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
         start_p: float,
         end_p: float,
     ):
-        trade_dates = self.recent_n_trade_dates(latest_date, INITIAL_TRADING_DAYS)
-        start_date = trade_dates[0]
         ready_codes = self.get_history_ready_codes()
-        todo = latest_stocks[~latest_stocks["code"].isin(ready_codes)].copy()
+        with sqlite_connection(self.db_path, timeout=30) as conn:
+            queued_codes = {row[0] for row in conn.execute(
+                "SELECT code FROM init_queue").fetchall()}
+        blocked_codes = ready_codes | queued_codes
+        todo = latest_stocks[~latest_stocks["code"].isin(blocked_codes)].copy()
 
         if todo.empty:
-            cb(end_p, "历史缓存已就绪")
+            message = "历史缓存已就绪"
+            if queued_codes:
+                message += f"；{len(queued_codes)} 只历史失败股票按退避间隔等待重试"
+            cb(end_p, message)
             return
 
+        # 没有待初始化股票时，不再为零工作量请求45日交易日历。
+        trade_dates = self.recent_n_trade_dates(latest_date, INITIAL_TRADING_DAYS)
+        start_date = trade_dates[0]
         tasks = [(str(r.code), str(r.name or ""), start_date, latest_date)
                  for r in todo.itertuples(index=False)]
         total = len(tasks)
@@ -3134,9 +3275,27 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
             ~active["code"].isin(existing)
         ].copy()
 
+        # 同一交易日失败股票采用持久化退避；已成功的股票仍立即保留。
+        with sqlite_connection(self.db_path, timeout=30) as conn:
+            queued = conn.execute(
+                "SELECT code,retry_count,updated_at FROM fetch_queue WHERE trade_date=?",
+                (trade_date,),
+            ).fetchall()
+        now = datetime.now()
+        todo_codes = set(todo["code"].astype(str))
+        deferred_codes = {
+            code for code, retry_count, updated_at in queued
+            if code in todo_codes and not retry_is_due(updated_at, retry_count, now=now)
+        }
+        if deferred_codes:
+            todo = todo[~todo["code"].isin(deferred_codes)].copy()
+
         if todo.empty:
             info = self.update_day_status(trade_date)
-            cb(end_p, f"{trade_date} 已完整")
+            if info["status"] == "complete":
+                cb(end_p, f"{trade_date} 已完整")
+            else:
+                cb(end_p, f"{trade_date} 仍有 {len(deferred_codes)} 只失败项在退避等待，跳过重复请求")
             return info
 
         total = len(todo)
@@ -3314,6 +3473,23 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
         cb(1, "准备 AKShare 免费行情接口")
         self.login()
 
+        timings = []
+        def timed_step(label, end_percent, action):
+            started = time.monotonic()
+            try:
+                result = action()
+            except Exception:
+                elapsed = time.monotonic() - started
+                timings.append((label, elapsed))
+                cb(end_percent, f"{label}失败 · 用时 {format_elapsed(elapsed)}")
+                self._last_update_timings = list(timings)
+                raise
+            elapsed = time.monotonic() - started
+            timings.append((label, elapsed))
+            self._last_update_timings = list(timings)
+            cb(end_percent, f"{label}完成 · 用时 {format_elapsed(elapsed)}")
+            return result
+
         try:
             cb(5, "检查今天是否为交易日")
             today = self.today_cn()
@@ -3328,56 +3504,51 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
             )
 
             cb(11, f"读取 {latest_available} 股票列表")
-            latest_stocks = self.query_all_a_stocks(
-                latest_available
+            latest_stocks = timed_step(
+                "股票列表", 11,
+                lambda: self.query_all_a_stocks(latest_available),
             )
 
             self._check_cancel()
             # 先处理以前失败的历史初始化。
-            self.retry_init_queue(
-                cb,
-                12,
-                20,
+            timed_step(
+                "历史失败补抓", 20,
+                lambda: self.retry_init_queue(cb, 12, 20),
             )
 
             self._check_cancel()
             # 首次或有新上市股票时补历史。
-            self.initialize_missing_histories(
-                latest_stocks,
-                latest_available,
-                cb,
-                20,
-                66,
+            timed_step(
+                "历史缓存准备", 66,
+                lambda: self.initialize_missing_histories(
+                    latest_stocks, latest_available, cb, 20, 66),
             )
 
             self._check_cancel()
             # 以前中途失败的交易日优先补齐。
-            self.retry_partial_dates(
-                latest_available,
-                cb,
-                66,
-                80,
+            timed_step(
+                "交易日失败补齐", 80,
+                lambda: self.retry_partial_dates(latest_available, cb, 66, 80),
             )
 
             self._check_cancel()
             # 数据库断点之后的新交易日。
-            self.process_new_trade_dates(
-                latest_available,
-                cb,
-                80,
-                94,
+            timed_step(
+                "每日行情更新", 94,
+                lambda: self.process_new_trade_dates(latest_available, cb, 80, 94),
             )
 
             self._check_cancel()
-            turnover_warning = self.backfill_turnover(latest_available, cb)
+            turnover_warning = timed_step(
+                "换手率补齐", 96,
+                lambda: self.backfill_turnover(latest_available, cb),
+            )
 
             self._check_cancel()
             # 行业分类用于全部策略的板块联动。
-            industry_warning = self.refresh_industry_cache(
-                latest_stocks,
-                cb,
-                96,
-                97,
+            industry_warning = timed_step(
+                "行业分类", 97,
+                lambda: self.refresh_industry_cache(latest_stocks, cb, 96, 97),
             )
 
             self._check_cancel()
@@ -3424,7 +3595,9 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                     f"{completeness:.2f}%，结果可能不完整。"
                 )
 
-            cb(100, "数据检查完成")
+            summary = "；".join(
+                f"{name} {format_elapsed(seconds)}" for name, seconds in timings)
+            cb(100, "数据检查完成 · " + summary)
 
             return UpdateResult(
                 scan_date=latest_available,
