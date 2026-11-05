@@ -1,0 +1,26 @@
+name: Dev AKShare bounded Tencent window and Sina industry live smoke (no publish)
+on:
+  push:
+    branches: [dev/akshare-excel-v136]
+    paths: [.github/workflows/dev-akshare-live.yml]
+permissions:
+  contents: read
+jobs:
+  live-upstream:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python and Qt runtime
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3-tk libegl1 libopengl0 libxkbcommon-x11-0 libxcb-cursor0
+          python -m pip install -r requirements.txt
+      - name: Bounded real endpoints smoke - no database writes
+        run: timeout 190s python -u tests/smoke_dev_akshare_live.py
