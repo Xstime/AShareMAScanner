@@ -1,4 +1,4 @@
-name: Dev AKShare endpoint-isolated live API smoke (no publish)
+name: Dev AKShare bounded Tencent window and Sina industry live smoke (no publish)
 on:
   push:
     branches: [dev/akshare-excel-v136]
