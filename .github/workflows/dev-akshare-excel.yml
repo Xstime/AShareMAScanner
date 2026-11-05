@@ -38,6 +38,7 @@ jobs:
           python -m unittest discover -s tests -p test_dev_sector_recovery.py -v
           python -m unittest discover -s tests -p test_dev_real_ui_pipeline.py -v
           python -m unittest discover -s tests -p test_dev_scan_cache_and_widgets.py -v
+          python -m unittest discover -s tests -p test_dev_full_pipeline.py -v
       - name: Offline regression on Linux
         if: runner.os == 'Linux'
         run: |
@@ -46,3 +47,4 @@ jobs:
           xvfb-run -a python -m unittest discover -s tests -p test_dev_sector_recovery.py -v
           xvfb-run -a python -m unittest discover -s tests -p test_dev_real_ui_pipeline.py -v
           xvfb-run -a python -m unittest discover -s tests -p test_dev_scan_cache_and_widgets.py -v
+          xvfb-run -a python -m unittest discover -s tests -p test_dev_full_pipeline.py -v
