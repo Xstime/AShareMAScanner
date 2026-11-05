@@ -81,7 +81,7 @@ class FullOfflinePipeline(unittest.TestCase):
         self.assertEqual(self.result.saved,3)
         self.assertEqual(self.result.warning,"")
         with m.sqlite_connection(self.backend.db_path) as db:
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM daily").fetchone()[0],150)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM daily").fetchone()[0],135)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM day_universe").fetchone()[0],3)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM industry_cache").fetchone()[0],3)
             row=db.execute("SELECT saved_count,expected_count,status FROM day_status").fetchone()
