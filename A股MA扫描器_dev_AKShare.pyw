@@ -1359,6 +1359,10 @@ class AKShareQuotes:
 
     def __init__(self, db_path):
         self.db_path = db_path
+        # AKShare defaults to (10,60); a blocked upstream must not stall the
+        # Tk update stage for minutes before trying the next free provider.
+        if hasattr(ak, "set_timeout"):
+            ak.set_timeout((5, 12))
         self.names = {}
         self._preferred = {}
         self._index_days = None
@@ -1650,6 +1654,7 @@ class AKShareQuotes:
             boards = attempt("东方财富行业列表", ak.stock_board_industry_name_em)
             if "板块名称" not in boards:
                 raise ValueError("东方财富行业列表缺少板块名称列")
+            consecutive_em_errors = 0
             for sector in boards["板块名称"].dropna().astype(str).drop_duplicates():
                 if check_cancel is not None:
                     check_cancel()
@@ -1659,13 +1664,19 @@ class AKShareQuotes:
                         lambda name=sector: ak.stock_board_industry_cons_em(symbol=name))
                     if accept(members, "eastmoney", sector, "代码", "名称"):
                         stats["eastmoney_ok"] += 1
+                        consecutive_em_errors = 0
                     else:
                         stats["eastmoney_failed"] += 1
+                        consecutive_em_errors += 1
                 except MarketUpdateCancelled:
                     raise
                 except Exception as exc:
+                    consecutive_em_errors += 1
                     stats["eastmoney_failed"] += 1
                     stats["errors"].append(str(exc))
+                if consecutive_em_errors >= 4:
+                    stats["errors"].append("东方财富连续4个板块失败，本轮切换备用源")
+                    break
         except MarketUpdateCancelled:
             raise
         except Exception as exc:
@@ -1682,6 +1693,7 @@ class AKShareQuotes:
                                  lambda: ak.stock_sector_spot(indicator="新浪行业"))
                 if not {"label", "板块"}.issubset(boards.columns):
                     raise ValueError("新浪行业列表字段不完整")
+                consecutive_sina_errors = 0
                 for sector_id, sector in boards[["label", "板块"]].drop_duplicates().itertuples(index=False, name=None):
                     if check_cancel is not None:
                         check_cancel()
@@ -1693,13 +1705,19 @@ class AKShareQuotes:
                             lambda item=sector_id: ak.stock_sector_detail(sector=str(item)))
                         if accept(members, "sina", str(sector), "symbol", "name"):
                             stats["sina_ok"] += 1
+                            consecutive_sina_errors = 0
                         else:
                             stats["sina_failed"] += 1
+                            consecutive_sina_errors += 1
                     except MarketUpdateCancelled:
                         raise
                     except Exception as exc:
                         stats["sina_failed"] += 1
+                        consecutive_sina_errors += 1
                         stats["errors"].append(str(exc))
+                    if consecutive_sina_errors >= 4:
+                        stats["errors"].append("新浪连续4个板块失败，停止本轮重试")
+                        break
             except MarketUpdateCancelled:
                 raise
             except Exception as exc:
