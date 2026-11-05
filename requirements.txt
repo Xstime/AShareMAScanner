@@ -1,4 +1,4 @@
 pandas
-baostock
 akshare
+openpyxl
 PySide6>=6.7,<7
