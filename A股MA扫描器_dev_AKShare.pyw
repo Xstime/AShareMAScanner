@@ -114,6 +114,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
+# pythonw.exe (Windows .pyw) can start with stdout/stderr set to None.
+# AKShare's progress indicators and some upstream parsers call .write().
+# Provide writable sinks before dependencies import or market queries begin.
+# Ordinary console execution keeps its original streams unchanged.
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
 def _collect_finished_tk_on_main_thread():
     """Prevent Python GC finalizing Tk Variable cycles in a Qt/market thread."""
     if threading.current_thread() is not threading.main_thread():
