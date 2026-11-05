@@ -7,6 +7,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager, ExitStack
 from unittest import mock
 
 import pandas as pd
@@ -26,6 +27,7 @@ STOCKS = pd.DataFrame([
 ])
 
 
+@contextmanager
 def mock_providers(primary_fails=False, backup_fails=False):
     def em_members(symbol):
         if symbol == "有色金属" and primary_fails:
@@ -45,7 +47,7 @@ def mock_providers(primary_fails=False, backup_fails=False):
         return pd.DataFrame({"symbol": ["sh600123"],
                              "name": ["材料股份"]})
 
-    return [
+    patches = [
         mock.patch.object(m.ak, "stock_board_industry_name_em",
                           return_value=pd.DataFrame({"板块名称": ["电力设备", "有色金属"]})),
         mock.patch.object(m.ak, "stock_board_industry_cons_em",
@@ -56,6 +58,8 @@ def mock_providers(primary_fails=False, backup_fails=False):
         mock.patch.object(m.ak, "stock_sector_detail",
                           side_effect=sina_members),
     ]
+    with ExitStack() as stack:
+        yield [stack.enter_context(patch) for patch in patches]
 
 
 class SectorRecovery(unittest.TestCase):
