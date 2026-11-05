@@ -3011,23 +3011,22 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                 continue
             eligible.append((code, first, last, state[0] if state else 0))
 
-        def schedule_retry(code, previous_count, last, reason):
+        def schedule_retry(conn, code, previous_count, last, reason):
             count = previous_count + 1
             delay = retry_delay_hours(
                 count, base_hours=TURNOVER_RETRY_BASE_HOURS)
             stamp = datetime.now()
             updated = stamp.strftime("%Y-%m-%d %H:%M:%S")
             next_at = (stamp + timedelta(hours=delay)).strftime("%Y-%m-%d %H:%M:%S")
-            with sqlite_connection(self.db_path, timeout=30) as conn:
-                conn.execute(
-                    "INSERT INTO turnover_retry_state "
-                    "(code,retry_count,updated_at,next_retry_at,last_checked_end_date,reason) "
-                    "VALUES(?,?,?,?,?,?) ON CONFLICT(code) DO UPDATE SET "
-                    "retry_count=excluded.retry_count,updated_at=excluded.updated_at,"
-                    "next_retry_at=excluded.next_retry_at,"
-                    "last_checked_end_date=excluded.last_checked_end_date,reason=excluded.reason",
-                    (code, count, updated, next_at, last, str(reason)[:300]),
-                )
+            conn.execute(
+                "INSERT INTO turnover_retry_state "
+                "(code,retry_count,updated_at,next_retry_at,last_checked_end_date,reason) "
+                "VALUES(?,?,?,?,?,?) ON CONFLICT(code) DO UPDATE SET "
+                "retry_count=excluded.retry_count,updated_at=excluded.updated_at,"
+                "next_retry_at=excluded.next_retry_at,"
+                "last_checked_end_date=excluded.last_checked_end_date,reason=excluded.reason",
+                (code, count, updated, next_at, last, str(reason)[:300]),
+            )
 
         for idx, (code, first, last, previous_count) in enumerate(eligible, 1):
             self.stage_progress(
@@ -3054,14 +3053,16 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                         (code, start, end_date),
                     ).fetchone()[0]
                     if remaining:
-                        schedule_retry(code, previous_count, end_date,
+                        schedule_retry(conn, code, previous_count, end_date,
                                        f"换手率仍缺失 {remaining} 条")
                     else:
                         conn.execute(
                             "DELETE FROM turnover_retry_state WHERE code=?", (code,))
                     conn.commit()
             except Exception as exc:
-                schedule_retry(code, previous_count, end_date, exc)
+                with sqlite_connection(self.db_path, timeout=30) as conn:
+                    schedule_retry(conn, code, previous_count, end_date, exc)
+                    conn.commit()
             if idx % BATCH_SIZE == 0:
                 time.sleep(BATCH_PAUSE)
 
