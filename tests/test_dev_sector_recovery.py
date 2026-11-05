@@ -170,6 +170,35 @@ class SectorRecovery(unittest.TestCase):
         self.assertTrue(all(name.startswith("新浪·") for name in frame["industry"]))
         self.assertTrue(any(source == "sina" for source, _, _ in writes))
 
+    def test_repeated_upstream_failures_abort_early_and_use_backup(self):
+        calls = []
+        sectors = [f"板块{i}" for i in range(30)]
+        def unavailable(symbol):
+            calls.append(symbol)
+            raise ConnectionError("upstream refuses request")
+        with mock.patch.object(m.ak, "stock_board_industry_name_em",
+                               return_value=pd.DataFrame({"板块名称": sectors})), \
+             mock.patch.object(m.ak, "stock_board_industry_cons_em",
+                               side_effect=unavailable), \
+             mock.patch.object(m.ak, "stock_sector_spot",
+                               return_value=pd.DataFrame({"label": ["h1", "h2"],
+                                                          "板块": ["备用1", "备用2"]})), \
+             mock.patch.object(m.ak, "stock_sector_detail",
+                               side_effect=[
+                                   pd.DataFrame({"symbol": ["sh600001", "sz000001"],
+                                                 "name": ["A", "B"]}),
+                                   pd.DataFrame({"symbol": ["sh600123"],
+                                                 "name": ["C"]}),
+                               ]):
+            warning = self.refresh()
+        self.assertEqual(len(calls), 8)  # Four boards, two retries per board.
+        self.assertEqual(len(self.backend.get_industry_map()), 3)
+        self.assertIn("部分不完整", warning)
+
+    def test_timeout_configuration_is_bounded(self):
+        from akshare.utils.context import get_timeout
+        self.assertEqual(get_timeout(), (5, 12))
+
     def test_update_result_includes_nonfatal_sector_warning(self):
         b = self.backend
         b.prepare_storage = lambda cb: None
