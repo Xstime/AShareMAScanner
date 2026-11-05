@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 import tempfile
 import textwrap
 import unittest
@@ -77,6 +78,10 @@ class DesktopUpdaterChecks(unittest.TestCase):
             import sys
             from pathlib import Path
             import time
+            import tempfile
+            import os
+            # Detach the test preview from the mock Desktop working directory.
+            os.chdir(tempfile.gettempdir())
             args = sys.argv
             if "--update-preview-ack" in args:
                 ack = Path(args[args.index("--update-preview-ack") + 1])
@@ -115,7 +120,11 @@ class DesktopUpdaterChecks(unittest.TestCase):
             new_version, hashlib.sha256(new_bytes).hexdigest(), str(len(new_bytes))]
         finished = subprocess.run(
             args, cwd=str(folder), stdin=subprocess.DEVNULL,
-            capture_output=True, text=True, timeout=30)
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+        # The real updater handoff returns just before the preview process exits.
+        # Windows keeps a directory busy while a child still has it open as CWD.
+        if finished.returncode == 0:
+            time.sleep(0.35)
         return finished, old, old_before, staged, target, new_bytes, control
 
     def test_first_and_second_update_both_write_new_program_on_desktop(self):
