@@ -1586,7 +1586,7 @@ class AKShareQuotes:
                 errors.append(f"{source}:{e}")
         raise RuntimeError(f"{code} 三家免费行情均失败："+"; ".join(errors)[:850])
 
-    def industries(self, batch_callback=None, target_codes=None):
+    def industries(self, batch_callback=None, target_codes=None, check_cancel=None):
         """Incrementally fetch EM industry members, with Sina fallback.
 
         Successful boards are passed to the caller immediately. A failed board
@@ -1601,6 +1601,8 @@ class AKShareQuotes:
         def attempt(label, method):
             last_error = None
             for trial in range(2):
+                if check_cancel is not None:
+                    check_cancel()
                 try:
                     self._pace()
                     result = method()
@@ -1619,9 +1621,10 @@ class AKShareQuotes:
             if name_column not in frame.columns:
                 raise ValueError(f"{source} {sector} 缺少 {name_column} 字段")
             fresh = []
+            pending_codes = set()
             for code_raw, name_raw in frame[[code_column, name_column]].itertuples(index=False, name=None):
                 code = self.ticker(code_raw)
-                if code is None or code in resolved:
+                if code is None or code in resolved or code in pending_codes:
                     continue
                 # A single stock has one classified industry; never confuse
                 # industry members with multi-membership concept sectors.
@@ -1632,12 +1635,15 @@ class AKShareQuotes:
                     "updateDate": "", "industryClassification":
                         "AKShare-EM" if source == "eastmoney" else "AKShare-Sina"}
                 fresh.append(record)
-                resolved[code] = record
+                pending_codes.add(code)
             if not fresh:
                 return False
             data = pd.DataFrame(fresh)
             if batch_callback is not None:
                 batch_callback(data, source, sector)
+            # Only mark a symbol classified after it has been durably saved.
+            for record in fresh:
+                resolved[record["code"]] = record
             return True
 
         try:
@@ -1645,6 +1651,8 @@ class AKShareQuotes:
             if "板块名称" not in boards:
                 raise ValueError("东方财富行业列表缺少板块名称列")
             for sector in boards["板块名称"].dropna().astype(str).drop_duplicates():
+                if check_cancel is not None:
+                    check_cancel()
                 try:
                     members = attempt(
                         f"东方财富 {sector}",
@@ -1653,9 +1661,13 @@ class AKShareQuotes:
                         stats["eastmoney_ok"] += 1
                     else:
                         stats["eastmoney_failed"] += 1
+                except MarketUpdateCancelled:
+                    raise
                 except Exception as exc:
                     stats["eastmoney_failed"] += 1
                     stats["errors"].append(str(exc))
+        except MarketUpdateCancelled:
+            raise
         except Exception as exc:
             stats["eastmoney_failed"] += 1
             stats["errors"].append(str(exc))
@@ -1671,6 +1683,8 @@ class AKShareQuotes:
                 if not {"label", "板块"}.issubset(boards.columns):
                     raise ValueError("新浪行业列表字段不完整")
                 for sector_id, sector in boards[["label", "板块"]].drop_duplicates().itertuples(index=False, name=None):
+                    if check_cancel is not None:
+                        check_cancel()
                     if wanted and wanted.issubset(resolved):
                         break
                     try:
@@ -1681,9 +1695,13 @@ class AKShareQuotes:
                             stats["sina_ok"] += 1
                         else:
                             stats["sina_failed"] += 1
+                    except MarketUpdateCancelled:
+                        raise
                     except Exception as exc:
                         stats["sina_failed"] += 1
                         stats["errors"].append(str(exc))
+            except MarketUpdateCancelled:
+                raise
             except Exception as exc:
                 stats["sina_failed"] += 1
                 stats["errors"].append(str(exc))
@@ -2487,7 +2505,7 @@ class AKShareBackend:
     def query_stock_industry_all(self, batch_callback=None, target_codes=None):
         # Industry failures are managed inside the provider adapter; partial
         # successful board batches must not be thrown away by a full retry.
-        return self._quotes.industries(batch_callback, target_codes)
+        return self._quotes.industries(batch_callback, target_codes, self._check_cancel)
 
     def get_industry_map(self) -> dict[str, str]:
         with sqlite_connection(self.db_path, timeout=30) as conn:
