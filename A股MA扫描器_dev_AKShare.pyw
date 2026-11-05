@@ -2925,8 +2925,10 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
             conn.commit()
 
     def query_stock_history(self,code,start_date,end_date,*,require_turnover=False):
-        return self.run_query(lambda:self._quotes.history(
-            code,start_date,end_date,require_turnover=require_turnover))
+        if require_turnover:
+            return self.run_query(lambda:self._quotes.history(
+                code,start_date,end_date,require_turnover=True))
+        return self.run_query(lambda:self._quotes.history(code,start_date,end_date))
 
     def dataframe_to_daily_rows(
         self,
