@@ -1369,6 +1369,19 @@ class AKShareQuotes:
         self._index_cache_date = None
         self._sina_calendar = None
         self._last_fetch = 0.0
+        self._em_banned_until = 0.0
+
+    @staticmethod
+    def _is_em_rate_limit(exc):
+        return ("Push2RateLimitError" in type(exc).__name__
+                or "东方财富 push2" in str(exc)
+                or "当前 IP 被临时限流" in str(exc))
+
+    def _remember_em_limit(self, exc):
+        if self._is_em_rate_limit(exc):
+            # Do not hammer a banned IP for every one of 5,000 stocks.
+            self._em_banned_until = max(
+                self._em_banned_until, time.monotonic() + 30 * 60)
 
     def _pace(self):
         delay = 0.18 - (time.monotonic() - self._last_fetch)
@@ -1397,12 +1410,16 @@ class AKShareQuotes:
         first = (today - timedelta(days=800)).strftime("%Y%m%d")
         last = today.strftime("%Y%m%d")
         failures = []
+        # Tencent and Sina index dates avoid an unnecessary full EastMoney
+        # request when its push2 endpoint has been IP rate-limited.
         for name, load in (
-            ("东财", lambda: ak.index_zh_a_hist(
-                symbol="000001", period="daily", start_date=first, end_date=last)),
             ("腾讯", lambda: ak.stock_zh_index_daily_tx(symbol="sh000001")),
             ("新浪", lambda: ak.stock_zh_index_daily(symbol="sh000001")),
+            ("东财", lambda: ak.index_zh_a_hist(
+                symbol="000001", period="daily", start_date=first, end_date=last)),
         ):
+            if name == "东财" and time.monotonic() < self._em_banned_until:
+                continue
             try:
                 self._pace()
                 dates = self._dates(load(), ["日期", "date"])
@@ -1412,6 +1429,8 @@ class AKShareQuotes:
                 self._index_cache_date = today
                 return dates
             except Exception as e:
+                if name == "东财":
+                    self._remember_em_limit(e)
                 failures.append(f"{name}: {e}")
         raise RuntimeError("指数行情三个来源均失败：" + "；".join(failures)[:500])
 
@@ -1461,9 +1480,11 @@ class AKShareQuotes:
         problems = []
         for provider, fetch in (
             ("东财", lambda: ak.stock_zh_a_spot_em()),
-            ("交易所", lambda: ak.stock_info_a_code_name()),
             ("新浪", lambda: ak.stock_zh_a_spot()),
+            ("交易所", lambda: ak.stock_info_a_code_name()),
         ):
+            if provider == "东财" and time.monotonic() < self._em_banned_until:
+                continue
             try:
                 self._pace()
                 df = fetch()
@@ -1493,6 +1514,8 @@ class AKShareQuotes:
                     raise ValueError(f"股票数异常：{len(rows)}")
                 return pd.DataFrame(rows.values())
             except Exception as e:
+                if provider == "东财":
+                    self._remember_em_limit(e)
                 problems.append(f"{provider}: {e}")
         raise RuntimeError("全A股股票池获取失败：" + "；".join(problems)[:600])
 
@@ -1573,6 +1596,8 @@ class AKShareQuotes:
         favorite = self._preferred.get(code)
         order = ([favorite] if favorite else []) + [
             p for p in ("eastmoney","sina","tencent") if p!=favorite]
+        if time.monotonic() < self._em_banned_until:
+            order = [p for p in order if p != "eastmoney"]
         errors=[]
         for source in order:
             try:
@@ -1587,6 +1612,8 @@ class AKShareQuotes:
                 self._preferred[code] = source
                 return selected.reset_index(drop=True)
             except Exception as e:
+                if source == "eastmoney":
+                    self._remember_em_limit(e)
                 errors.append(f"{source}:{e}")
         raise RuntimeError(f"{code} 三家免费行情均失败："+"; ".join(errors)[:850])
 
@@ -1615,6 +1642,9 @@ class AKShareQuotes:
                     return result
                 except Exception as exc:
                     last_error = exc
+                    if label.startswith("东方财富") and self._is_em_rate_limit(exc):
+                        self._remember_em_limit(exc)
+                        raise
                     if trial == 0:
                         time.sleep(.45)
             raise RuntimeError(f"{label}: {last_error}")
@@ -1651,6 +1681,8 @@ class AKShareQuotes:
             return True
 
         try:
+            if time.monotonic() < self._em_banned_until:
+                raise RuntimeError("东方财富 IP 限流冷却中，使用新浪备用分类")
             boards = attempt("东方财富行业列表", ak.stock_board_industry_name_em)
             if "板块名称" not in boards:
                 raise ValueError("东方财富行业列表缺少板块名称列")
@@ -1674,6 +1706,9 @@ class AKShareQuotes:
                     consecutive_em_errors += 1
                     stats["eastmoney_failed"] += 1
                     stats["errors"].append(str(exc))
+                if time.monotonic() < self._em_banned_until:
+                    stats["errors"].append("东方财富 IP 限流，本轮切换新浪备用源")
+                    break
                 if consecutive_em_errors >= 4:
                     stats["errors"].append("东方财富连续4个板块失败，本轮切换备用源")
                     break
