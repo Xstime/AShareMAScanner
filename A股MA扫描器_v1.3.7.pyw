@@ -107,7 +107,6 @@ import urllib.parse
 import webbrowser
 import subprocess
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -1192,11 +1191,7 @@ VOLUME_RATIO = 1.5
 # 为 MA20 的“昨日/今日”判断保留足够历史余量。
 INITIAL_TRADING_DAYS = 45
 
-QUERY_RETRY = 3
-RETRY_WAIT = 1.5
-
-# BaoStock 官方不允许并发连接：本程序全程仅用主进程的一个会话顺序抓取。
-# 仍按批次提交 SQLite，并在批次间暂停，保留断点补抓。
+# 不启用并发抓取，避免触发免费行情源的 IP 限流；批次提交并保留断点续传。
 BATCH_SIZE = 200
 BATCH_PAUSE = 2.0
 
@@ -1238,10 +1233,7 @@ def format_elapsed(seconds):
 # AKShare 是无会话 HTTP 接口；行情适配器自身负责多源回退，不再套用 BaoStock 会话重连。
 
 
-# 长任务定期刷新行情状态。
-SESSION_REFRESH_SECONDS = 15 * 60
-
-# BaoStock 行业分类官方说明为每周更新；本地缓存按7天刷新。
+# 行业分类缓存按7天刷新。
 INDUSTRY_CACHE_DAYS = 7
 
 # 数据库路径固定在源文件同级 data 目录，永不迁移到用户目录。
@@ -1278,10 +1270,10 @@ def describe_update_progress(percent: float, task: str) -> dict:
     explicit = (
         (r"^(补历史失败|历史失败补抓|没有历史失败项)", 1),
         (r"^(初始化历史|历史缓存)", 2),
-        (r"^没有未完整交易日", 3),
-        (r"^没有新的交易日", 4),
-        (r"^(补换手率|近期换手率)", 5),
-        (r"^(更新行业|行业板块|板块分类)", 6),
+        (r"^(没有未完整交易日|交易日失败补齐)", 3),
+        (r"^(没有新的交易日|每日行情更新)", 4),
+        (r"^(补换手率|近期换手率|换手率补齐|换手率检查)", 5),
+        (r"^(更新行业|行业板块|板块分类|行业分类)", 6),
         (r"^(校验最新交易日|数据检查完成)", 7),
     )
     index = next((idx for pattern, idx in explicit if re.search(pattern, task)), None)
@@ -2984,6 +2976,13 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
             if not dates:
                 return ""
             start = dates[-1][0]
+            # 若正常每日行情已经补齐换手率，删除对应的过期退避记录。
+            conn.execute(
+                "DELETE FROM turnover_retry_state WHERE code NOT IN ("
+                "SELECT DISTINCT code FROM daily WHERE trade_date BETWEEN ? AND ? "
+                "AND trade_status=1 AND turnover IS NULL)",
+                (start, end_date),
+            )
             jobs = conn.execute(
                 "SELECT code, MIN(trade_date), MAX(trade_date) FROM daily "
                 "WHERE trade_date BETWEEN ? AND ? AND trade_status=1 "
