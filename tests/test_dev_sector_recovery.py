@@ -147,6 +147,29 @@ class SectorRecovery(unittest.TestCase):
         self.assertAlmostEqual(float(sector.iloc[0]["close"]), 100.0, places=3)
         self.assertTrue(pd.notna(sector.iloc[-1]["MA20"]))
 
+    def test_cancelled_sector_refresh_stops_without_losing_existing_rows(self):
+        with mock_providers(primary_fails=False):
+            self.backend._cancel_update_event.set()
+            with self.assertRaises(m.MarketUpdateCancelled):
+                self.refresh()
+            self.backend._cancel_update_event.clear()
+            self.assertEqual(len(self.backend.get_industry_map()), 0)
+            self.assertEqual(self.refresh(), "")
+            self.assertEqual(len(self.backend.get_industry_map()), 3)
+
+    def test_failed_persist_does_not_mark_stock_as_classified(self):
+        adapter = self.backend._quotes
+        writes = []
+        def persist(batch, provider, sector):
+            if provider == "eastmoney":
+                raise sqlite3.OperationalError("readonly simulated cache")
+            writes.append((provider, sector, batch.copy()))
+        with mock_providers(primary_fails=False):
+            frame = adapter.industries(persist, set(STOCKS["code"]))
+        self.assertEqual(len(frame), 3)
+        self.assertTrue(all(name.startswith("新浪·") for name in frame["industry"]))
+        self.assertTrue(any(source == "sina" for source, _, _ in writes))
+
     def test_update_result_includes_nonfatal_sector_warning(self):
         b = self.backend
         b.prepare_storage = lambda cb: None
