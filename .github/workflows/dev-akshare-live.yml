@@ -1,4 +1,4 @@
-name: Dev AKShare bounded live API smoke (no publish)
+name: Dev AKShare endpoint-isolated live API smoke (no publish)
 on:
   push:
     branches: [dev/akshare-excel-v136]
