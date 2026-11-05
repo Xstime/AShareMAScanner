@@ -32,7 +32,11 @@ jobs:
         run: python -m py_compile "A股MA扫描器_dev_AKShare.pyw"
       - name: Offline regression on Windows and macOS
         if: runner.os != 'Linux'
-        run: python -m unittest discover -s tests -p test_dev_akshare_excel.py -v
+        run: |
+          python -m unittest discover -s tests -p test_dev_akshare_excel.py -v
+          python -m unittest discover -s tests -p test_dev_eight_strategy_math.py -v
       - name: Offline regression on Linux
         if: runner.os == 'Linux'
-        run: xvfb-run -a python -m unittest discover -s tests -p test_dev_akshare_excel.py -v
+        run: |
+          xvfb-run -a python -m unittest discover -s tests -p test_dev_akshare_excel.py -v
+          xvfb-run -a python -m unittest discover -s tests -p test_dev_eight_strategy_math.py -v
