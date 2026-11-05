@@ -145,6 +145,12 @@ class AdapterAudit(unittest.TestCase):
             days=self.quotes.index_dates()
         self.assertEqual(days[-1],day)
         tx.assert_called_once()
+        # Explicit recent range prevents years of Tencent index history fetches.
+        kwargs = tx.call_args.kwargs
+        self.assertEqual(kwargs["symbol"], "sh000001")
+        self.assertRegex(kwargs["start_date"], r"^\d{8}$")
+        self.assertRegex(kwargs["end_date"], r"^\d{8}$")
+        self.assertGreater(kwargs["start_date"], "20240101")
         em.assert_not_called()
 
     def test_old_baostock_file_is_never_reused(self):
