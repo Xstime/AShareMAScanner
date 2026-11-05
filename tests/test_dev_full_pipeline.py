@@ -97,7 +97,7 @@ class FullOfflinePipeline(unittest.TestCase):
         self.assertEqual(output.iloc[0]["代码"],"600001")
         self.assertEqual(output.iloc[0]["板块"],"电力设备")
         self.assertAlmostEqual(output.iloc[0]["放量倍数"],1.6)
-        self.assertTrue(self.backend.get_chart_data("sh.600001",today).shape[0]>=45)
+        self.assertEqual(self.backend.get_chart_data("sh.600001",today).shape[0],30)  # Chart intentionally displays last 30 sessions
         sector=self.backend.get_sector_chart_data("电力设备",today)
         self.assertFalse(sector.empty)
         self.assertTrue({"close","MA5","MA10","MA20"}.issubset(sector.columns))
