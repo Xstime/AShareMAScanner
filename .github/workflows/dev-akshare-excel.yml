@@ -35,8 +35,10 @@ jobs:
         run: |
           python -m unittest discover -s tests -p test_dev_akshare_excel.py -v
           python -m unittest discover -s tests -p test_dev_eight_strategy_math.py -v
+          python -m unittest discover -s tests -p test_dev_sector_recovery.py -v
       - name: Offline regression on Linux
         if: runner.os == 'Linux'
         run: |
           xvfb-run -a python -m unittest discover -s tests -p test_dev_akshare_excel.py -v
           xvfb-run -a python -m unittest discover -s tests -p test_dev_eight_strategy_math.py -v
+          xvfb-run -a python -m unittest discover -s tests -p test_dev_sector_recovery.py -v
