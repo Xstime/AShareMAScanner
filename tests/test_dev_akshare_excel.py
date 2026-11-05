@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 from importlib.machinery import SourceFileLoader
 from importlib.util import spec_from_loader, module_from_spec
 
@@ -100,6 +101,51 @@ class AdapterAudit(unittest.TestCase):
         self.assertEqual(bars.iloc[0]["volume"],12000)
         self.assertAlmostEqual(bars.iloc[0]["turn"],3.5)
         self.assertEqual(self.quotes._preferred["sz.000001"],"sina")
+
+    def test_eastmoney_rate_limit_cools_down_without_repeated_requests(self):
+        class Push2RateLimitError(Exception):
+            pass
+        attempts=[]
+        def fake_download(code, first, last, provider):
+            attempts.append((code, provider))
+            if provider == "eastmoney":
+                raise Push2RateLimitError("东方财富 push2 当前 IP 被临时限流")
+            return self.quotes.normalize(pd.DataFrame({
+                "date": [last], "close": [10.0], "volume": [15000],
+                "turnover": [.025]}), code, "sina")
+        self.quotes._download = fake_download
+        first=self.quotes.history("sz.000001","2026-11-04","2026-11-04")
+        self.assertEqual(len(first),1)
+        self.assertGreater(self.quotes._em_banned_until,0)
+        second=self.quotes.history("sh.600111","2026-11-04","2026-11-04")
+        self.assertEqual(len(second),1)
+        self.assertEqual([p for code,p in attempts if p=="eastmoney"],["eastmoney"])
+        self.assertEqual(self.quotes._preferred["sh.600111"],"sina")
+
+    def test_universe_uses_sina_when_eastmoney_is_cooled_down(self):
+        import time
+        self.quotes._em_banned_until=time.monotonic()+60
+        self.quotes.index_dates=lambda:["2026-11-04"]
+        symbols=[f"{600000+i:06d}" for i in range(1001)]
+        with mock.patch.object(m.ak,"stock_zh_a_spot_em",
+                               side_effect=AssertionError("EM should not be requested")), \
+             mock.patch.object(m.ak,"stock_zh_a_spot",
+                               return_value=pd.DataFrame({"symbol":symbols,
+                                                          "name":["模拟"]*1001})):
+            frame=self.quotes.stocks("2026-11-04")
+        self.assertEqual(len(frame),1001)
+
+    def test_index_tries_tencent_before_banned_eastmoney(self):
+        from datetime import datetime, timedelta
+        day=(datetime.now(m.CST)-timedelta(days=1)).strftime("%Y-%m-%d")
+        with mock.patch.object(m.ak,"stock_zh_index_daily_tx",
+                               return_value=pd.DataFrame({"date":[day]})) as tx, \
+             mock.patch.object(m.ak,"index_zh_a_hist",
+                               side_effect=AssertionError("EM should not run")) as em:
+            days=self.quotes.index_dates()
+        self.assertEqual(days[-1],day)
+        tx.assert_called_once()
+        em.assert_not_called()
 
     def test_old_baostock_file_is_never_reused(self):
         self.assertEqual(self.backend.db_path.name,"new_akshare.db")
