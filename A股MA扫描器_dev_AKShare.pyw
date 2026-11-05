@@ -1586,28 +1586,118 @@ class AKShareQuotes:
                 errors.append(f"{source}:{e}")
         raise RuntimeError(f"{code} 三家免费行情均失败："+"; ".join(errors)[:850])
 
-    def industries(self):
-        listing=ak.stock_board_industry_name_em()
-        if listing is None or listing.empty or "板块名称" not in listing:
-            raise ValueError("东财行业列表为空")
-        stocks={}
-        failures=0
-        for sector in listing["板块名称"].dropna().astype(str):
+    def industries(self, batch_callback=None, target_codes=None):
+        """Incrementally fetch EM industry members, with Sina fallback.
+
+        Successful boards are passed to the caller immediately. A failed board
+        never invalidates other boards. Distinct taxonomies are kept separate:
+        Sina sectors carry a source prefix and never overwrite EM membership.
+        """
+        wanted = set(target_codes or ())
+        resolved = {}
+        stats = {"eastmoney_ok": 0, "eastmoney_failed": 0,
+                 "sina_ok": 0, "sina_failed": 0, "errors": []}
+
+        def attempt(label, method):
+            last_error = None
+            for trial in range(2):
+                try:
+                    self._pace()
+                    result = method()
+                    if result is None or result.empty:
+                        raise ValueError("上游返回空表")
+                    return result
+                except Exception as exc:
+                    last_error = exc
+                    if trial == 0:
+                        time.sleep(.45)
+            raise RuntimeError(f"{label}: {last_error}")
+
+        def accept(frame, source, sector, code_column, name_column):
+            if code_column not in frame.columns:
+                raise ValueError(f"{source} {sector} 缺少 {code_column} 字段")
+            if name_column not in frame.columns:
+                raise ValueError(f"{source} {sector} 缺少 {name_column} 字段")
+            fresh = []
+            for code_raw, name_raw in frame[[code_column, name_column]].itertuples(index=False, name=None):
+                code = self.ticker(code_raw)
+                if code is None or code in resolved:
+                    continue
+                # A single stock has one classified industry; never confuse
+                # industry members with multi-membership concept sectors.
+                name = str(name_raw or "").strip()
+                taxonomy = sector if source == "eastmoney" else "新浪·" + sector
+                record = {
+                    "code": code, "code_name": name, "industry": taxonomy,
+                    "updateDate": "", "industryClassification":
+                        "AKShare-EM" if source == "eastmoney" else "AKShare-Sina"}
+                fresh.append(record)
+                resolved[code] = record
+            if not fresh:
+                return False
+            data = pd.DataFrame(fresh)
+            if batch_callback is not None:
+                batch_callback(data, source, sector)
+            return True
+
+        try:
+            boards = attempt("东方财富行业列表", ak.stock_board_industry_name_em)
+            if "板块名称" not in boards:
+                raise ValueError("东方财富行业列表缺少板块名称列")
+            for sector in boards["板块名称"].dropna().astype(str).drop_duplicates():
+                try:
+                    members = attempt(
+                        f"东方财富 {sector}",
+                        lambda name=sector: ak.stock_board_industry_cons_em(symbol=name))
+                    if accept(members, "eastmoney", sector, "代码", "名称"):
+                        stats["eastmoney_ok"] += 1
+                    else:
+                        stats["eastmoney_failed"] += 1
+                except Exception as exc:
+                    stats["eastmoney_failed"] += 1
+                    stats["errors"].append(str(exc))
+        except Exception as exc:
+            stats["eastmoney_failed"] += 1
+            stats["errors"].append(str(exc))
+
+        # If some active stocks remain unclassified, complete them using Sina's
+        # *separate* industry taxonomy. No row from Sina overwrites an EM row.
+        missing = wanted - set(resolved)
+        if (not resolved or stats["eastmoney_failed"] > 0 or
+                (wanted and len(missing) / len(wanted) > .03)):
             try:
-                self._pace()
-                members=ak.stock_board_industry_cons_em(symbol=sector)
-                if not {"代码","名称"}.issubset(members):
-                    raise ValueError("行业成分股字段不完整")
-                for num,name in members[["代码","名称"]].itertuples(index=False,name=None):
-                    code=self.ticker(num)
-                    if code:
-                        stocks[code]={"code":code,"code_name":str(name),"industry":sector,
-                                      "updateDate":"","industryClassification":"AKShare-EM"}
-            except Exception:
-                failures+=1
-        if len(stocks)<3000 or failures>max(3,int(len(listing)*0.2)):
-            raise RuntimeError(f"行业分类不完整，只有{len(stocks)}只股票，失败板块{failures}")
-        return pd.DataFrame(stocks.values())
+                boards = attempt("新浪行业列表",
+                                 lambda: ak.stock_sector_spot(indicator="新浪行业"))
+                if not {"label", "板块"}.issubset(boards.columns):
+                    raise ValueError("新浪行业列表字段不完整")
+                for sector_id, sector in boards[["label", "板块"]].drop_duplicates().itertuples(index=False, name=None):
+                    if wanted and wanted.issubset(resolved):
+                        break
+                    try:
+                        members = attempt(
+                            f"新浪 {sector}",
+                            lambda item=sector_id: ak.stock_sector_detail(sector=str(item)))
+                        if accept(members, "sina", str(sector), "symbol", "name"):
+                            stats["sina_ok"] += 1
+                        else:
+                            stats["sina_failed"] += 1
+                    except Exception as exc:
+                        stats["sina_failed"] += 1
+                        stats["errors"].append(str(exc))
+            except Exception as exc:
+                stats["sina_failed"] += 1
+                stats["errors"].append(str(exc))
+
+        stats["classified"] = len(resolved)
+        stats["target_count"] = len(wanted)
+        stats["coverage"] = (len(wanted & set(resolved)) / len(wanted)
+                             if wanted else 0.0)
+        if not resolved:
+            raise RuntimeError("所有板块分类来源均失败：" + "；".join(stats["errors"][-6:])[:1000])
+        result = pd.DataFrame(resolved.values())
+        result.attrs["industry_statistics"] = stats
+        return result
+
 
 
 class AKShareBackend:
@@ -2394,8 +2484,10 @@ class AKShareBackend:
         cleaned = re.sub(r"^[A-Za-z]\d+\s*", "", value).strip()
         return cleaned or value
 
-    def query_stock_industry_all(self):
-        return self.run_query(self._quotes.industries)
+    def query_stock_industry_all(self, batch_callback=None, target_codes=None):
+        # Industry failures are managed inside the provider adapter; partial
+        # successful board batches must not be thrown away by a full retry.
+        return self._quotes.industries(batch_callback, target_codes)
 
     def get_industry_map(self) -> dict[str, str]:
         with sqlite_connection(self.db_path, timeout=30) as conn:
@@ -2443,122 +2535,80 @@ class AKShareBackend:
         cb: ProgressCallback,
         start_p: float,
         end_p: float,
-    ):
+        force: bool = False,
+    ) -> str:
+        """Update industry members progressively and return a visible warning.
+
+        Retain already committed sector rows after upstream failures. Do not
+        replace unrelated cached taxonomies or fabricate missing memberships.
         """
-        行业分类不是行情更新的硬依赖。
-        若在线刷新失败但已有本地缓存，则继续使用缓存，不阻塞主程序。
-        """
-        cached_count, fresh = self._industry_cache_info()
+        count, fresh = self._industry_cache_info()
+        target = set(latest_stocks["code"].astype(str)) if (
+            latest_stocks is not None and "code" in latest_stocks) else set()
+        cached_codes = set(self.get_industry_map())
+        coverage = len(target & cached_codes) / len(target) if target else 0.
+        if not force and fresh and coverage >= .97:
+            cb(end_p, f"板块分类缓存已就绪 · {coverage:.1%}")
+            return ""
 
-        latest_codes = set(
-            latest_stocks["code"].astype(str).tolist()
-        )
+        cb(start_p, "更新行业板块分类 · 东方财富 / 新浪备用")
+        fetched_batches = 0
+        now = self.now_text()
 
-        if latest_codes:
-            cached_codes = set(self.get_industry_map().keys())
-            coverage = (
-                len(latest_codes & cached_codes)
-                / len(latest_codes)
-            )
-        else:
-            coverage = 0.0
-
-        if fresh and coverage >= 0.90:
-            cb(end_p, "板块分类缓存已就绪")
-            return
-
-        cb(start_p, "更新行业板块分类")
-
-        try:
-            df = self.query_stock_industry_all()
-
-            if df is None or df.empty:
-                raise RuntimeError("行业分类返回空数据")
-
-            required = {"code", "industry"}
-
-            if not required.issubset(df.columns):
-                raise RuntimeError(
-                    "行业分类返回字段不完整"
-                )
-
-            if "code_name" not in df.columns:
-                df["code_name"] = ""
-
-            if "updateDate" not in df.columns:
-                df["updateDate"] = ""
-
-            if "industryClassification" not in df.columns:
-                df["industryClassification"] = ""
-
-            df = df[
-                df["code"].astype(str).map(
-                    self.is_a_share_code
-                )
-            ].copy()
-
-            now = self.now_text()
-
-            rows = []
-
-            for r in df.itertuples(index=False):
-                code = str(getattr(r, "code", "") or "")
-                industry = self.normalize_industry_name(
-                    getattr(r, "industry", "")
-                )
-
-                if not code:
-                    continue
-
-                rows.append((
-                    code,
-                    str(getattr(r, "code_name", "") or ""),
-                    industry,
-                    str(getattr(r, "updateDate", "") or ""),
-                    str(
-                        getattr(
-                            r,
-                            "industryClassification",
-                            "",
-                        ) or ""
-                    ),
-                    now,
-                ))
-
+        def persist(batch, provider, sector):
+            nonlocal fetched_batches
+            self._check_cancel()
+            rows = [
+                (str(r.code), str(r.code_name), str(r.industry), "",
+                 str(r.industryClassification), now)
+                for r in batch.itertuples(index=False)]
             if not rows:
-                raise RuntimeError(
-                    "行业分类没有可用A股记录"
-                )
-
-            with sqlite_connection(self.db_path, timeout=30) as conn:
-                conn.executemany("""
-                    INSERT OR REPLACE INTO industry_cache
-                    (
-                        code, name, industry,
-                        update_date, classification, fetched_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, rows)
-                conn.commit()
-
-            cb(
-                end_p,
-                f"行业板块分类已更新 · {len(rows)}只",
-            )
-
-        except Exception:
-            if cached_count > 0:
-                cb(
-                    end_p,
-                    "板块分类在线更新失败，使用本地缓存",
-                )
                 return
+            # EastMoney can update existing associations; Sina fallback only
+            # fills uncategorized stocks and never replaces EM categories.
+            statement = "INSERT OR REPLACE" if provider == "eastmoney" else "INSERT OR IGNORE"
+            with sqlite_connection(self.db_path) as conn:
+                conn.executemany(
+                    statement + " INTO industry_cache "
+                    "(code,name,industry,update_date,classification,fetched_at) "
+                    "VALUES (?,?,?,?,?,?)", rows)
+                conn.commit()
+            fetched_batches += 1
+            cb(min(end_p - .01, start_p + min(fetched_batches / 110., .98)
+                   * (end_p - start_p)),
+               f"行业分类已保存 {fetched_batches} 个板块 · {sector}")
 
-            # 板块数据失败不影响四个原策略继续运行。
-            cb(
-                end_p,
-                "板块分类暂不可用，个股扫描继续",
-            )
+        error = ""
+        details = {}
+        try:
+            frame = self.query_stock_industry_all(
+                batch_callback=persist, target_codes=target)
+            details = frame.attrs.get("industry_statistics", {})
+        except MarketUpdateCancelled:
+            raise
+        except Exception as exc:
+            error = str(exc)
+        # Every successful industry batch is already committed by persist.
+        # Refresh the in-memory prepared sector signals without touching bars.
+        current_map = self.get_industry_map()
+        total = len(current_map)
+        actual = len(target & set(current_map)) / len(target) if target else 0.
+        self._sector_chart_cache.clear()
+        with self._scan_data_lock:
+            self._scan_prepared_cache = None
+        cb(end_p, f"板块分类 {len(set(current_map.values()))} 个行业 · "
+                  f"{total} 只股票 · 覆盖率 {actual:.1%}")
+        if error:
+            return (f"板块分类获取失败，已保留 {total} 只本地分类；"
+                    f"可点击「重新获取分类」。原因：{error[:260]}")
+        missing = len(target - set(current_map))
+        errors = details.get("errors", [])
+        if missing or errors:
+            return (f"板块分类部分不完整：覆盖 {len(target)-missing}/{len(target)} 只股票，"
+                    f"来源异常 {len(errors)} 项。已保存成功数据，"
+                    "可点击「重新获取分类」。"
+                    + (f"示例：{str(errors[0])[:150]}" if errors else ""))
+        return ""
 
     # -------------------- 近5日行业资金TOP5（仅同花顺） --------------------
 
@@ -3242,7 +3292,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
 
             self._check_cancel()
             # 行业分类用于全部策略的板块联动。
-            self.refresh_industry_cache(
+            industry_warning = self.refresh_industry_cache(
                 latest_stocks,
                 cb,
                 96,
@@ -3279,7 +3329,7 @@ print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_asci
                 else 0.0
             )
 
-            warning_parts = [turnover_warning] if turnover_warning else []
+            warning_parts = [part for part in (turnover_warning, industry_warning) if part]
 
             if today_pending:
                 warning_parts.append(
@@ -4708,6 +4758,40 @@ class ScanWorker(QThread):
             self.failed.emit(self.request_id, traceback.format_exc())
 
 
+
+class IndustryWorker(QThread):
+    """Refresh only industry sectors; do not restart the entire market pipeline."""
+    progress = Signal(str)
+    succeeded = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, backend, date):
+        super().__init__()
+        self.backend = backend
+        self.date = date
+
+    def run(self):
+        try:
+            stocks = self.backend.get_day_universe(self.date)
+            if stocks.empty:
+                with sqlite_connection(self.backend.db_path) as conn:
+                    df = pd.read_sql_query(
+                        "SELECT code, MAX(name) AS name FROM daily "
+                        "WHERE trade_date=? GROUP BY code", conn, params=(self.date,))
+                stocks = df
+            if stocks.empty:
+                raise RuntimeError("本地无有效股票列表，请先更新行情")
+            warning = self.backend.refresh_industry_cache(
+                stocks, lambda _pct, task: self.progress.emit(task),
+                0, 100, force=True)
+            sectors = self.backend.get_industry_map()
+            message = f"已缓存 {len(sectors)} 只股票、{len(set(sectors.values()))} 个行业"
+            if warning:
+                message += "；" + warning
+            self.succeeded.emit(message)
+        except Exception:
+            self.failed.emit(traceback.format_exc())
+
 class ChartWorker(QThread):
     success = Signal(int, object)
     failed = Signal(int, str)
@@ -5007,6 +5091,8 @@ class ScannerWindow(QMainWindow):
         self.chart_token = 0
         self._restart_requested = False
         self._scan_cancel_event = None
+        self._industry_worker = None
+        self._industry_warning_text = ''
         self.selected_stock = None
         self.sector_filter = None
         self.current_filters = RangeFilter()
@@ -5249,6 +5335,10 @@ class ScannerWindow(QMainWindow):
         sector_head = QHBoxLayout()
         sector_head.addWidget(self._text("板块信号", "section"))
         sector_head.addStretch(1)
+        self.industry_retry = QPushButton("重新获取分类")
+        self.industry_retry.clicked.connect(self._reload_industry)
+        self.industry_retry.setEnabled(not self.demo)
+        sector_head.addWidget(self.industry_retry)
         self.sector_reset = QPushButton("全部板块")
         self.sector_reset.clicked.connect(self._reset_sector_filter)
         sector_head.addWidget(self.sector_reset)
@@ -5267,6 +5357,10 @@ class ScannerWindow(QMainWindow):
         self.sector_table.itemSelectionChanged.connect(self._on_sector_selected)
         self.sector_table.cellDoubleClicked.connect(self._open_sector_chart)
         mid.addWidget(self.sector_table)
+        self.industry_notice = self._text("", "small")
+        self.industry_notice.setWordWrap(True)
+        self.industry_notice.hide()
+        mid.addWidget(self.industry_notice)
         results = QHBoxLayout()
         results.addWidget(self._text("选股结果", "section"))
         results.addStretch(1)
@@ -5417,6 +5511,9 @@ class ScannerWindow(QMainWindow):
             f"行情日期 {result.scan_date}"
         )
         self.page.setCurrentIndex(1)
+        self._industry_warning_text = next(
+            (part.strip() for part in result.warning.split("。")
+             if "板块分类" in part), "")
         self.statusBar().showMessage(
             result.warning or f"{result.scan_date} 本地日线已就绪"
         )
@@ -5510,37 +5607,102 @@ class ScannerWindow(QMainWindow):
         self.scan_notice.setText("策略计算未成功，不是正常的零命中。请查看错误详情。")
         self.scan_notice.show()
         self._show_error("策略执行失败", detail)
+    def _reload_industry(self):
+        if self.demo or self.backend is None or self.update_result is None:
+            return
+        if self._industry_worker is not None and self._industry_worker.isRunning():
+            return
+        self.industry_retry.setEnabled(False)
+        self.industry_notice.setText("正在重新获取行业分类…")
+        self.industry_notice.show()
+        worker = IndustryWorker(self.backend, self.update_result.scan_date)
+        self._industry_worker = worker
+        worker.progress.connect(self._industry_progress)
+        worker.succeeded.connect(self._industry_ready)
+        worker.failed.connect(self._industry_failed)
+        worker.finished.connect(lambda: self.industry_retry.setEnabled(True))
+        self._remember(worker)
+        worker.start()
+
+    def _industry_progress(self, message):
+        self.industry_notice.setText(str(message))
+        self.industry_notice.show()
+
+    def _industry_ready(self, message):
+        self._industry_warning_text = "" if "不完整" not in message and "失败" not in message else message
+        self.industry_notice.setText(message)
+        self.industry_notice.show()
+        self._rerun_strategy()
+
+    def _industry_failed(self, details):
+        self._industry_warning_text = "板块分类刷新失败，可再次点击重试"
+        self.industry_notice.setText(self._industry_warning_text)
+        self.industry_notice.show()
+        self._show_error("重新获取分类失败", details)
+
+    def _all_known_industries(self):
+        names = set()
+        if not self.frame.empty and "板块" in self.frame:
+            names.update(self.frame["板块"].dropna().astype(str))
+        if not self.demo and self.backend is not None:
+            try:
+                names.update(self.backend.get_industry_map().values())
+            except Exception as exc:
+                self._industry_warning_text = "读取本地板块分类失败：" + str(exc)
+        return sorted(name for name in names if name and name != "未分类")
+
     def _update_industry_filter(self):
         current = self.industry.currentText()
         self.industry.blockSignals(True)
         self.industry.clear()
         self.industry.addItem("全部行业")
-        if not self.frame.empty and "板块" in self.frame:
-            self.industry.addItems(sorted(set(self.frame["板块"].dropna().astype(str))))
-        index = self.industry.findText(current)
-        self.industry.setCurrentIndex(max(0, index))
+        self.industry.addItems(self._all_known_industries())
+        self.industry.setCurrentIndex(max(0, self.industry.findText(current)))
         self.industry.blockSignals(False)
+        if not self.demo:
+            if self._industry_warning_text:
+                self.industry_notice.setText(self._industry_warning_text)
+                self.industry_notice.show()
+            elif self.industry.count() <= 1:
+                self.industry_notice.setText(
+                    "本地暂无板块分类，请点击「重新获取分类」；个股扫描仍可使用。")
+                self.industry_notice.show()
+            else:
+                self.industry_notice.hide()
 
     def _populate_sector_table(self):
         self.sector_table.blockSignals(True)
         self.sector_table.setRowCount(0)
-        if not self.frame.empty and "板块" in self.frame.columns:
-            data = []
-            for sector, group in self.frame.groupby("板块", dropna=False):
-                name = str(sector or "未分类")
-                triggered = int((group["触发日"].astype(str) == str(self.update_result.scan_date)).sum())
-                status = str(group["板块信号"].iloc[0]) if "板块信号" in group else "未触发"
-                data.append((name, triggered, status))
-            data.sort(key=lambda item: (item[2] == "今日触发", item[1], item[0]), reverse=True)
-            self.sector_table.setRowCount(len(data))
-            for r, (name, count, status) in enumerate(data):
-                for c, value in enumerate((name, count, status)):
-                    item = QTableWidgetItem(str(value))
-                    if c == 0:
-                        item.setToolTip(name)
-                    if c == 1:
-                        item.setData(Qt.ItemDataRole.EditRole, int(count))
-                    self.sector_table.setItem(r, c, item)
+        names = set(self._all_known_industries())
+        if not self.frame.empty and "板块" in self.frame:
+            names.update(self.frame["板块"].dropna().astype(str))
+        groups = (dict(tuple(self.frame.groupby("板块", dropna=False)))
+                  if not self.frame.empty and "板块" in self.frame else {})
+        output = []
+        for name in names:
+            group = groups.get(name)
+            if group is not None and not group.empty:
+                count = int((group["触发日"].astype(str)
+                            == str(self.update_result.scan_date)).sum())
+                status = (str(group["板块信号"].iloc[0])
+                          if "板块信号" in group else "未检测")
+            else:
+                count = 0
+                # A sector can trigger independently even if no constituent
+                # stock triggered; '未触发' here would be an invented signal.
+                status = "待检查"
+            output.append((name, count, status))
+        output.sort(key=lambda entry: (
+            entry[2] == "今日触发", entry[1], entry[0]), reverse=True)
+        self.sector_table.setRowCount(len(output))
+        for index, (name, count, status) in enumerate(output):
+            for col, value in enumerate((name, count, status)):
+                item = QTableWidgetItem(str(value))
+                if col == 0:
+                    item.setToolTip(name)
+                if col == 1:
+                    item.setData(Qt.ItemDataRole.EditRole, int(count))
+                self.sector_table.setItem(index, col, item)
         self.sector_table.blockSignals(False)
         self.sector_table.resizeColumnsToContents()
 
