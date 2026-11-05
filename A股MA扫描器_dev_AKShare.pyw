@@ -1413,7 +1413,8 @@ class AKShareQuotes:
         # Tencent and Sina index dates avoid an unnecessary full EastMoney
         # request when its push2 endpoint has been IP rate-limited.
         for name, load in (
-            ("腾讯", lambda: ak.stock_zh_index_daily_tx(symbol="sh000001")),
+            ("腾讯", lambda: ak.stock_zh_index_daily_tx(
+                symbol="sh000001", start_date=first, end_date=last)),
             ("新浪", lambda: ak.stock_zh_index_daily(symbol="sh000001")),
             ("东财", lambda: ak.index_zh_a_hist(
                 symbol="000001", period="daily", start_date=first, end_date=last)),
