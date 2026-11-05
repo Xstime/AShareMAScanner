@@ -38,8 +38,10 @@ class RetryPolicyTests(unittest.TestCase):
         now = datetime(2026, 11, 6, 12, 0, 0)
         self.assertFalse(m.retry_is_due("2026-11-06 07:00:00", 1, now=now))
         self.assertTrue(m.retry_is_due("2026-11-06 05:00:00", 1, now=now))
-        self.assertFalse(m.retry_is_due("2026-11-05 23:00:00", 2, now=now))
-        self.assertTrue(m.retry_is_due("2026-11-05 23:00:00", 2, now=now))
+        self.assertFalse(m.retry_is_due(
+            "2026-11-06 01:00:00", 2, now=now))
+        self.assertTrue(m.retry_is_due(
+            "2026-11-05 23:00:00", 2, now=now))
         self.assertTrue(m.retry_is_due("invalid", 5, now=now))
 
     def test_akshare_adapter_is_not_wrapped_in_redundant_three_attempt_retry(self):
