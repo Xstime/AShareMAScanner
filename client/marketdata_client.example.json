@@ -1,0 +1,5 @@
+{
+  "manifest_url": "https://your-domain.example:8443/marketdata/latest.json",
+  "min_completeness": 0.995,
+  "offline_cache_max_days": 4
+}
