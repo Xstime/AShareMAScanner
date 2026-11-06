@@ -1,0 +1,25 @@
+--- a/ashare_server/updater.py
++++ b/ashare_server/updater.py
+@@ -149,6 +149,10 @@
+                     consecutive_errors += 1
+                     self.db.queue_init_failure(db, code, name, start_date, end_date, str(exc))
+                     LOG.warning("历史初始化失败 %s %s: %s", code, name, exc)
++                # End each stock's write transaction before the next BaoStock call:
++                # its request counter writes api_usage through a separate connection.
++                # Holding this transaction across calls causes SQLITE_BUSY on stock 2+.
++                db.commit()
+                 attempted += 1
+                 if attempted % 50 == 0 or idx == len(tasks):
+                     db.commit()
+@@ -221,8 +225,10 @@
+                     consecutive_errors += 1
+                     self.db.queue_day_failure(db, code, trade_date, name, str(exc))
+                     LOG.warning("日线失败 %s %s %s: %s", trade_date, code, name, exc)
++                # Avoid retaining a write transaction while the provider writes
++                # api_usage in another SQLite connection for the next request.
++                db.commit()
+                 if idx % 50 == 0 or idx == len(tasks):
+-                    db.commit()
+                     LOG.info("%s 进度 %d/%d；本批失败 %d；API 请求累计 %d",
+                              trade_date, idx, len(tasks), failed, self.db.api_requests_today())
+                 if consecutive_errors >= self.config.max_consecutive_errors:
