@@ -1,0 +1,7211 @@
+# -*- coding: utf-8 -*-
+"""
+A股 MA 扫描器（单文件 Tkinter .pyw · BaoStock + 同花顺资金 TOP5 · v1.3.3）
+=====================================
+
+功能
+----
+- Tkinter 依赖检测与行情更新，PySide6 4:3 三栏主界面。
+- 每次启动先显示独立加载窗口，检查并增量更新 BaoStock 行情完成后才打开选股界面。
+- 更新过程中显示“当前任务 + 百分比进度”，策略按钮与参数输入框保持禁用。
+- 八种策略：
+    1) 放量突破 MA5
+    2) 放量突破 MA10
+    3) 放量突破 MA20
+    4) MA5 上穿 MA10
+    5) MA5 拐头向上：今天MA5>昨日MA5，昨日MA5<=前日MA5
+    6) 均线粘合向上：昨日MA5/10/20偏离度≤2%，今日全线上升、MA5>MA10>MA20并向上发散，且仅首次触发
+    7) 放量 + 换手率筛选（可输入上下限，最大值留空为无上限）
+    8) 低位首板放量（3～5日）：以收盘涨幅近似识别疑似首板
+- 个股结果仅显示最新市场交易日触发，所有策略均显示放量倍数与换手率。
+- MA5拐头策略不以价格上穿MA5、放量或换手率作为附加门槛。
+- 现有策略支持行业板块同规则判断、单击板块筛选、双击查看当前策略的板块走势及历史信号。
+- PySide6 主界面采用左侧八策略、中央筛选与结果、右侧个股详情三栏布局。
+- 放量换手率策略修改参数后，重新点击筛选策略按钮生效。
+- 策略扫描期间可直接切换其他策略；旧扫描自动取消，以最后一次点击为准。
+- 切换策略时立即清空旧板块过滤和旧个股结果，避免新策略标题配上旧策略数据。
+- 结果直接显示在 GUI 表格中，点击表头可排序。
+- 适用于行业的策略都提供行业板块结果，并判断板块本身是否触发当前策略。
+- GUI 采用更简洁的浅色极简排版，接近 Apple 风格。
+- 放量换手率策略板块图增加放量倍数和等权换手率曲线。
+- 双击板块只显示当前所选策略需要的均线：突破MA5/10/20分别显示对应均线，MA5上穿MA10显示MA5与MA10。
+- 双击股票弹出最近 30 个有效交易日的收盘价、MA5、MA10、MA20 走势图。
+- 信号历史追踪（含本地回算与参数记录）。
+- 个股与板块走势图支持悬停读数；板块名称支持悬停完整提示。
+- 个股图增加成交量、放量倍数、换手率与触发日标记。
+- 结果支持代码/名称、市场、行业、涨幅范围快捷过滤。
+- 近5日同花顺行业资金净流入 TOP5 仅展示行业排名与金额，不抓成分股、不按榜单筛选股票。
+- 资金排名仅通过 AKShare 的同花顺五日行业排行获取；保留失败前的同花顺缓存。
+- 资金接口故障不影响八种选股策略，禁止用未验证的板块名称猜测股票。
+- 启动时自动检测并安装缺失的 pandas、baostock、akshare；优先清华镜像，失败改用官方 PyPI。
+- 无 Excel 导出，无数据库位置按钮。
+- 数据库始终固定在程序同级 data/a_share_baostock_hfq.db，不迁移、不清空数据。
+- 启动时自动检查原目录写入权限并尝试移除数据库只读属性。
+- 增强完整率、失败队列清理、数据合法性检验、资金榜单缓存回退、板块查询效率和异常后重试。
+- 同一data数据库只允许一个扫描器进程写入；启动时使用只读快检检查已有SQLite数据库。
+
+
+数据与计算口径
+--------------
+- 数据源：BaoStock，无 Token。
+- 价格：后复权（adjustflag=1），适合长期增量缓存与均线计算。
+- 停牌日不计入个股均线和成交量均线。
+- ST / *ST 股票不进入扫描结果。
+- 放量突破 MA(N)：
+      Close_t > MA(N)_t
+      Close_(t-1) <= MA(N)_(t-1)
+      Volume_t >= 前5个有效交易日平均成交量 × 1.5
+- 放量 + 换手率筛选：当日放量倍数和换手率均落在输入的闭区间内。
+  最大值留空为无上限；板块使用成交量总和与换手率等权平均。
+- MA5 上穿 MA10：
+      MA5_t > MA10_t
+      MA5_(t-1) <= MA10_(t-1)
+- MA5 拐头向上（仅首次转折，不要求放量、不要求换手率门槛）：
+      MA5_t > MA5_(t-1)
+      MA5_(t-1) <= MA5_(t-2)
+  三个MA值均以该股票实际有效交易K线计算，至少需要7根有效K线。
+- 均线粘合向上（使用最近实际有效交易日的MA5、MA10、MA20）：
+      昨日粘合度=(昨日三均线最大值-最小值)/昨日三均线平均值≤2%；
+      今日三均线均较昨日上升；今日MA5>MA10>MA20；
+      今日发散度>昨日发散度（同一归一化计算方式）；
+      昨日没有满足完整的粘合向上形态（首次触发）；
+      不强制放量和换手率，至少保留23根有效K线以确认首次信号。
+
+首次运行
+--------
+- 为当前沪深 A 股建立最近约 45 个市场交易日的历史缓存。
+- 首次运行需要逐股请求，耗时明显长于日常更新。
+- 之后每个新交易日只获取当天缺失的数据；失败项会在下次启动继续补抓。
+
+安装
+----
+正常直接运行：python A股MA扫描器_v1.3.6.pyw
+首次运行自动补装缺少的第三方库（需要联网，不需要任何付费API）。
+若安装失败，可手动运行：python -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple pandas akshare openpyxl
+
+macOS 若使用 Homebrew Python 且缺少 Tkinter，可安装对应版本的 python-tk。
+"""
+
+from __future__ import annotations
+
+import math
+import gc
+import json
+import hashlib
+import os
+import stat
+import tempfile
+import queue
+import re
+import sqlite3
+import threading
+import time
+import traceback
+import urllib.request
+import urllib.error
+import urllib.parse
+import webbrowser
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Callable, Optional
+
+# pythonw.exe (Windows .pyw) can start with stdout/stderr set to None.
+# AKShare's progress indicators and some upstream parsers call .write().
+# Provide writable sinks before dependencies import or market queries begin.
+# Ordinary console execution keeps its original streams unchanged.
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
+def _collect_finished_tk_on_main_thread():
+    """Prevent Python GC finalizing Tk Variable cycles in a Qt/market thread."""
+    if threading.current_thread() is not threading.main_thread():
+        raise RuntimeError("Tk/Tcl 只能在主线程清理")
+    gc.collect()
+    gc.collect()
+
+
+# ============================================================
+# 启动依赖自检：只在直接运行 .py / .pyw 时执行
+# ============================================================
+
+def _bootstrap_dependencies():
+    """自动安装缺失依赖；AKShare失败时不影响核心选股功能。"""
+    import importlib
+    import importlib.util
+    import os
+    import site
+    import subprocess
+    import sys
+
+    # '模块名': ('pip包名', 是否为启动必需)
+    packages = {
+        "pandas": ("pandas", True),
+        "akshare": ("akshare", True),
+        "openpyxl": ("openpyxl", True),
+        "PySide6": ("PySide6", True),
+    }
+    missing = [(module, pip_name, required)
+               for module, (pip_name, required) in packages.items()
+               if importlib.util.find_spec(module) is None]
+    if not missing:
+        # 阶段1：环境检查成功也短暂显示独立的 Tkinter 窗口。
+        # 无桌面 DISPLAY 的 CI 环境自动跳过，不阻断非 GUI 测试。
+        try:
+            import tkinter as _tk
+            root = _tk.Tk()
+            root.title("A股 MA 扫描器 · 1/3 环境检查")
+            root.geometry("500x165")
+            root.configure(bg="#f5f6fa")
+            _tk.Label(root,text="运行环境检查",font=("Segoe UI",15,"bold"),
+                      bg="#f5f6fa",fg="#24334a").pack(anchor="w",padx=25,pady=(24,10))
+            _tk.Label(root,text="运行环境已就绪",
+                      font=("Segoe UI",10),bg="#f5f6fa",fg="#3f785b"
+                      ).pack(anchor="w",padx=25)
+            root.after(700,root.destroy)
+            root.mainloop()
+        except Exception:
+            pass
+        return
+
+    # PyInstaller等独立打包程序不能向其内置Python环境使用pip动态补库。
+    frozen = bool(getattr(sys, "frozen", False))
+    events = queue.Queue()
+    failed = []
+
+    # 显式指定镜像；不依赖用户电脑当前 pip 配置。
+    sources = (
+        ("清华 PyPI 镜像", "https://pypi.tuna.tsinghua.edu.cn/simple"),
+        ("官方 PyPI", "https://pypi.org/simple"),
+    )
+
+    def install_all():
+        windows_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+
+        def run_pip(command):
+            try:
+                cp = subprocess.run(
+                    command,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    errors="replace",
+                    timeout=600,
+                    creationflags=windows_flags,
+                )
+                return cp.returncode == 0, (cp.stdout or "")[-3500:]
+            except subprocess.TimeoutExpired:
+                return False, "安装超过10分钟，已停止等待。"
+            except OSError as exc:
+                return False, str(exc)
+
+        for index, (module, pip_name, required) in enumerate(missing, 1):
+            if frozen:
+                failed.append((
+                    pip_name, required,
+                    "独立打包程序不支持运行时补装依赖，请重新打包。",
+                ))
+                continue
+
+            succeeded = False
+            errors_by_source = []
+            for source_name, source_url in sources:
+                events.put((
+                    "status",
+                    f"正在用{source_name}安装 {pip_name}（{index}/{len(missing)}）…",
+                ))
+
+                args = [
+                    sys.executable, "-m", "pip", "install",
+                    "--disable-pip-version-check", "--no-input",
+                    "--timeout", "20", "--retries", "2",
+                    "--index-url", source_url, pip_name,
+                ]
+                ok, details = run_pip(args)
+
+                # 只有权限相关错误才额外尝试 --user，避免网络失败时重复等待。
+                permission_errors = (
+                    "permission denied", "access is denied", "winerror 5",
+                    "not writable", "write permission", "没有权限", "拒绝访问",
+                )
+                if (not ok and sys.prefix == sys.base_prefix
+                        and site.ENABLE_USER_SITE
+                        and any(term in details.lower() for term in permission_errors)):
+                    events.put((
+                        "status",
+                        f"{source_name}：尝试在当前用户目录安装 {pip_name}…",
+                    ))
+                    ok, details = run_pip(args[:-1] + ["--user", pip_name])
+
+                importlib.invalidate_caches()
+                if ok and importlib.util.find_spec(module) is None:
+                    ok = False
+                    details = "pip报告成功，但当前Python仍然找不到该模块。"
+
+                if ok:
+                    succeeded = True
+                    break
+
+                errors_by_source.append(f"[{source_name}] {details}")
+                if source_name == "清华 PyPI 镜像":
+                    events.put((
+                        "status",
+                        f"清华镜像安装失败，正在切换官方 PyPI：{pip_name}…",
+                    ))
+
+            if not succeeded:
+                failed.append((pip_name, required, "\n".join(errors_by_source)))
+
+        events.put(("done", None))
+
+    def finish():
+        critical = [x for x in failed if x[1]]
+        optional = [x for x in failed if not x[1]]
+        message = "\n\n".join(
+            f"{name} 安装失败：\n{log[-950:]}"
+            for name, _, log in failed
+        )
+        if critical:
+            return False, ("运行所需依赖安装失败。请检查网络及pip，然后重试。\n\n"
+                           + message + "\n\n手动命令：\npython -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple pandas akshare openpyxl")
+        if optional:
+            return True, ("AKShare自动安装失败；全部八种选股策略仍可使用，"
+                          "但资金 TOP5 暂不可用。\n\n" + message
+                          + "\n\n可稍后重试：python -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple akshare")
+        return True, ""
+
+    # Windows .pyw 无控制台，使用轻量Tk窗口明确显示首次安装过程。
+    root = None
+    try:
+        import tkinter as _tk
+        from tkinter import ttk as _ttk, messagebox as _messagebox
+        root = _tk.Tk()
+    except Exception:
+        root = None
+
+    if root is None:
+        # 无图形显示环境时仍可自动补装；错误输出到终端。
+        install_all()
+        ok, notice = finish()
+        if notice:
+            print(notice, file=sys.stderr)
+        if not ok:
+            raise SystemExit(1)
+        return
+
+    root.title("A股 MA 扫描器 · 1/3 库补齐")
+    root.geometry("560x185")
+    root.resizable(False, False)
+    root.configure(bg="#f5f5f7")
+    root.protocol("WM_DELETE_WINDOW", lambda: None)
+    _ttk.Label(root, text="正在配置运行环境", font=("Segoe UI", 14, "bold"),
+               background="#f5f5f7").pack(anchor="w", padx=24, pady=(22, 8))
+    status = _tk.StringVar(value="检测到缺少依赖，首次安装可能需要几分钟…")
+    _ttk.Label(root, textvariable=status, background="#f5f5f7",
+               font=("Segoe UI", 10)).pack(anchor="w", padx=24, pady=(0, 10))
+    bar = _ttk.Progressbar(root, mode="indeterminate", length=442)
+    bar.pack(padx=24, fill="x")
+    bar.start(14)
+    _ttk.Label(root, text="仅安装缺失的依赖库",
+               background="#f5f5f7", foreground="#6e6e73",
+               font=("Segoe UI", 9)).pack(anchor="w", padx=24, pady=(13, 0))
+
+    state = {"ok": True, "notice": ""}
+
+    def poll():
+        while True:
+            try:
+                kind, value = events.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "status":
+                status.set(value)
+            elif kind == "done":
+                bar.stop()
+                state["ok"], state["notice"] = finish()
+                if state["notice"]:
+                    if state["ok"]:
+                        _messagebox.showwarning("部分依赖未安装", state["notice"], parent=root)
+                    else:
+                        _messagebox.showerror("依赖安装失败", state["notice"], parent=root)
+                root.destroy()
+                return
+        root.after(150, poll)
+
+    install_thread = threading.Thread(
+        target=install_all, daemon=True, name="tk-pip-install")
+    install_thread.start()
+    root.after(150, poll)
+    try:
+        root.mainloop()
+    finally:
+        try:
+            if root.winfo_exists():
+                root.destroy()
+        except _tk.TclError:
+            pass
+        install_thread.join(timeout=2)
+    if not state["ok"]:
+        raise SystemExit(1)
+
+
+
+# Query the pinned VPS on EVERY ordinary launch, before Tk/PySide6 dependency
+# bootstrap or any market/SQLite access. Full release validation is later.
+def _probe_startup_vps():
+    url = "https://23.95.88.6:8443/ashare/latest.json"
+    try:
+        request = urllib.request.Request(
+            url, headers={"User-Agent": "AShareMAScanner-startup/1.3.5",
+                          "Accept": "application/json"})
+        with urllib.request.urlopen(request, timeout=8) as response:
+            if response.geturl() != url:
+                return ("invalid", None)
+            body = response.read(128 * 1024 + 1)
+        if len(body) > 128 * 1024:
+            return ("invalid", None)
+        release = json.loads(body)
+        if not isinstance(release, dict):
+            return ("invalid", None)
+        return ("mirror", release)
+    except (urllib.error.HTTPError, urllib.error.URLError,
+            TimeoutError, ConnectionError, OSError):
+        return ("offline", None)
+    except (ValueError, TypeError, UnicodeDecodeError):
+        # A malformed mirror response must not silently fall back to GitHub.
+        return ("invalid", None)
+
+
+_STARTUP_VPS_PROBE = None
+def _should_skip_startup_update(argv):
+    # The updater preview and CI/demo processes must not re-enter the updater.
+    return any(arg in argv for arg in (
+        "--demo", "--screenshot", "--update-preview-ack", "--update-ack",
+        "--skip-startup-update"))
+
+
+if __name__ == "__main__":
+    if not _should_skip_startup_update(sys.argv[1:]):
+        _STARTUP_VPS_PROBE = _probe_startup_vps()
+    try:
+        _bootstrap_dependencies()
+    finally:
+        _collect_finished_tk_on_main_thread()
+
+def _dependency_import_error(name: str, exc: Exception):
+    """依赖虽然存在但导入失败时，.pyw 也必须能显示明确错误。"""
+    import sys
+    message = (
+        f"启动失败：{name} 无法正常导入。\n"
+        f"错误类型：{type(exc).__name__}\n错误详情：{exc}\n\n"
+        "请检查 Python 环境，必要时使用 pip 重新安装该模块。"
+    )
+    try:
+        import tkinter as _tk
+        from tkinter import messagebox as _messagebox
+        root = _tk.Tk()
+        root.withdraw()
+        try:
+            _messagebox.showerror("A股 MA 扫描器 · 启动失败", message, parent=root)
+        finally:
+            root.destroy()
+    except Exception:
+        print(message, file=sys.stderr)
+    raise SystemExit(1) from exc
+
+
+try:
+    import pandas as pd
+except Exception as exc:
+    _dependency_import_error("pandas", exc)
+
+try:
+    import akshare as ak
+except Exception as exc:
+    _dependency_import_error("akshare", exc)
+
+try:
+    import tkinter as tk
+    from tkinter import ttk, messagebox
+except ImportError as exc:
+    raise SystemExit(
+        "当前运行环境缺少图形界面组件。\n"
+        "macOS Homebrew Python 请安装对应版本的 python-tk。"
+    ) from exc
+
+
+# ============================================================
+# 配置
+# ============================================================
+
+APP_TITLE = "A股 MA 扫描器"
+APP_VERSION = "1.3.8"
+RELEASE_API = "https://api.github.com/repos/Xstime/AShareMAScanner/releases/latest"
+RELEASES_PAGE = "https://github.com/Xstime/AShareMAScanner/releases"
+
+# Manual updates are downloaded to a sibling temporary .pyw. The old file is
+# retained until the helper confirms that the replacement bootstrapped.
+MAX_UPDATE_BYTES = 4 * 1024 * 1024
+UPDATE_HELPER = r"""
+import ctypes
+import hashlib
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import time
+import traceback
+
+MAX_SIZE = 4 * 1024 * 1024
+
+
+def wait_previous_process(pid):
+    if os.name == "nt":
+        kernel = ctypes.windll.kernel32
+        handle = kernel.OpenProcess(0x00100000, False, pid)
+        if handle:
+            try:
+                if kernel.WaitForSingleObject(handle, 120000) != 0:
+                    raise TimeoutError("原程序退出超时；保留两个版本文件")
+            finally:
+                kernel.CloseHandle(handle)
+    else:
+        end = time.monotonic() + 120
+        while time.monotonic() < end:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            except PermissionError:
+                raise RuntimeError("无法确认旧程序退出")
+            time.sleep(.2)
+        raise TimeoutError("原程序退出超时；保留两个版本文件")
+
+
+def verified_sha(path, size):
+    if (not path.is_file() or path.is_symlink() or path.stat().st_size != size):
+        raise RuntimeError("更新文件缺失或大小不符")
+    sha = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(128 * 1024), b""):
+            sha.update(chunk)
+    return sha.hexdigest()
+
+
+def put_status(path, status):
+    Path(path).write_text(status, encoding="utf-8")
+
+
+def main():
+    (parent, old_name, staged_name, final_name, backup_name,
+     ack_name, control_name, prior, version, digest, size_text) = sys.argv[1:]
+    old, staged, final, backup, ack, control = map(
+        Path, (old_name, staged_name, final_name, backup_name, ack_name, control_name))
+    size = int(size_text)
+    child = None
+    changed_original = False
+    installed = False
+    try:
+        if (not re.fullmatch(r"\d+\.\d+\.\d+", version)
+                or not re.fullmatch(r"[a-f0-9]{64}", digest)
+                or not 0 < size <= MAX_SIZE):
+            raise RuntimeError("更新版本、摘要或大小异常")
+        if final.name != f"AShareMAScanner_v{version}.pyw":
+            raise RuntimeError("安装文件名与版本不匹配")
+        if (not old.is_absolute() or not staged.is_absolute() or not final.is_absolute()
+                or old.parent != staged.parent or old.parent != final.parent
+                or old.parent != backup.parent
+                or any(p.is_symlink() for p in (old, staged, final))):
+            raise RuntimeError("更新源及目标必须位于当前程序目录")
+        if verified_sha(staged, size) != digest:
+            raise RuntimeError("更新临时文件 SHA-256 验证失败")
+        if not old.is_file():
+            raise RuntimeError("原版程序已丢失；不允许执行清理")
+        if final == old:
+            if backup.exists() or backup.is_symlink():
+                raise RuntimeError("旧备份尚未处理，拒绝同版本修复")
+            preview_source = staged
+        elif final.exists():
+            if verified_sha(final, size) != digest:
+                raise RuntimeError("目标文件已存在且摘要不一致")
+            staged.unlink()
+            preview_source = final
+        else:
+            # Crucial: persist the canonical versioned .pyw before touching old.
+            os.replace(staged, final)
+            preview_source = final
+
+        if verified_sha(preview_source, size) != digest:
+            raise RuntimeError("新版保存到本机后 SHA-256 验证失败")
+
+        # Start the downloaded application's *real imports and Qt runtime*,
+        # but not its market/SQLite pipeline (the old GUI still owns DB).
+        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        child = subprocess.Popen(
+            [sys.executable, str(preview_source),
+             "--update-preview-ack", str(ack),
+             "--update-preview-control", str(control),
+             "--update-preview-target", str(final),
+             "--updated-from", prior],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, creationflags=flags, cwd=str(old.parent))
+
+        # The new process shows "更新完成" BEFORE signaling "ready".
+        # No old file can be touched before receipt from a visible Qt window.
+        deadline = time.monotonic() + 45
+        while time.monotonic() < deadline:
+            if ack.exists() and ack.read_text(encoding="utf-8").strip() == "ready":
+                if child.poll() is not None:
+                    raise RuntimeError("新版窗口启动后立即退出")
+                break
+            if child.poll() is not None:
+                raise RuntimeError("新版未能启动；旧版及新文件均被保留")
+            time.sleep(.15)
+        else:
+            raise TimeoutError("新版图形界面未能按时启动")
+
+        put_status(control, "close-old")
+        # On Windows a running file may be locked, so graceful old-process exit
+        # MUST precede deletion; Unix also follows the safer same order.
+        wait_previous_process(int(parent))
+
+        if final == old:
+            os.replace(old, backup)
+            changed_original = True
+            os.replace(staged, final)
+            installed = True
+        else:
+            if not old.is_file():
+                raise RuntimeError("旧版文件已被外部改变；保留新版")
+            if verified_sha(final, size) != digest:
+                raise RuntimeError("新版内容在等待期间已改变，拒绝删除旧版")
+            old.unlink()
+            installed = True
+        if verified_sha(final, size) != digest:
+            raise RuntimeError("新版最终落盘校验失败")
+        if final == old:
+            backup.unlink(missing_ok=True)
+        # The preview process may now start the normal app pipeline.
+        put_status(control, "done")
+    except Exception:
+        if changed_original and backup.exists():
+            try:
+                os.replace(backup, old)
+            except OSError:
+                # Do not touch the backup if restoration is blocked.
+                pass
+        try:
+            put_status(control, "failed")
+        except OSError:
+            pass
+        traceback.print_exc()
+        raise
+    finally:
+        staged.unlink(missing_ok=True)
+        # ACK/control belong to the preview process until it handles "done".
+        Path(__file__).unlink(missing_ok=True)
+
+
+if __name__ == "__main__":
+    main()
+"""
+
+
+# Deployed, pinned HTTPS release mirror (public CA and IP SAN validation).
+MIRROR_BASE = "https://23.95.88.6:8443/ashare"
+MIRROR_LATEST = MIRROR_BASE + "/latest.json"
+MIRROR_HOST = "23.95.88.6"
+MIRROR_PORT = 8443
+REPO_FULL_NAME = "Xstime/AShareMAScanner"
+
+
+class UpdateDownloadCancelled(Exception):
+    """A user-initiated cancellation never triggers an alternate download."""
+
+
+def _ensure_update_active(cancel_event):
+    if cancel_event is not None and cancel_event.is_set():
+        raise UpdateDownloadCancelled("已取消")
+
+
+class UpdateNetworkError(RuntimeError):
+    """Transport/availability failure, eligible for official GitHub fallback."""
+
+
+class UpdateIntegrityError(RuntimeError):
+    """Invalid metadata, URL, size, digest, or downloaded content. Never fallback."""
+
+
+def _trusted_update_url(url, source, *, tag="", name="", digest="", redirect=False):
+    if not isinstance(url, str) or "#" in url:
+        return False
+    try:
+        p = urllib.parse.urlsplit(url)
+        # Even an empty ? query is forbidden for canonical metadata and files.
+        if "?" in url and not (source == "github" and redirect and
+                               p.hostname == "release-assets.githubusercontent.com"):
+            return False
+        if (p.scheme != "https" or p.username is not None or p.password is not None
+                or not p.hostname or p.fragment):
+            return False
+        if source == "mirror":
+            if (p.hostname != MIRROR_HOST or p.port != MIRROR_PORT
+                    or p.query or p.path == "//"):
+                return False
+            path = "/ashare/latest.json" if not name else (
+                f"/ashare/files/{digest}/{name}")
+            return p.path == path and (not redirect or url == (
+                MIRROR_LATEST if not name else f"{MIRROR_BASE}/files/{digest}/{name}"))
+        if source == "github_api":
+            return p.hostname == "api.github.com" and p.port is None and (
+                p.path == "/repos/Xstime/AShareMAScanner/releases/latest") and not p.query
+        if source == "github":
+            if p.port is not None:
+                return False
+            if p.hostname == "github.com":
+                return p.path == (
+                    f"/Xstime/AShareMAScanner/releases/download/{tag}/{name}"
+                ) and not p.query
+            # GitHub's own signed Release asset redirect.
+            return (redirect and p.hostname == "release-assets.githubusercontent.com"
+                    and p.path.startswith("/") and len(p.path) > 1)
+    except ValueError:
+        return False
+    return False
+
+
+def _fetch_release_json(url, source):
+    if not _trusted_update_url(url, source):
+        raise UpdateIntegrityError("更新源地址不可信")
+    headers = {"User-Agent": f"AShareMAScanner-updater/{APP_VERSION}",
+               "Accept": "application/vnd.github+json" if source == "github_api"
+                         else "application/json"}
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=headers),
+                                    timeout=12) as response:
+            if not _trusted_update_url(response.geturl(), source, redirect=True):
+                raise UpdateIntegrityError("更新清单发生不可信重定向")
+            body = response.read(128 * 1024 + 1)
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError,
+            ConnectionError, OSError) as exc:
+        raise UpdateNetworkError("暂时无法连接更新服务") from exc
+    if len(body) > 128 * 1024:
+        raise UpdateIntegrityError("更新清单超过大小上限")
+    try:
+        value = json.loads(body)
+    except (ValueError, TypeError, UnicodeDecodeError) as exc:
+        raise UpdateIntegrityError("更新清单不是有效 JSON") from exc
+    if not isinstance(value, dict):
+        raise UpdateIntegrityError("更新清单格式错误")
+    return value
+
+
+def _load_update_release():
+    try:
+        return _fetch_release_json(MIRROR_LATEST, "mirror"), "mirror"
+    except UpdateNetworkError:
+        return _fetch_release_json(RELEASE_API, "github_api"), "github"
+
+
+def _expected_release_asset(release, latest, source="github"):
+    tag = "v" + ".".join(map(str, latest))
+    name = f"AShareMAScanner_{tag}.pyw"
+    if release.get("draft") is not False or release.get("prerelease") is not False:
+        raise UpdateIntegrityError("更新清单不是正式发布版本")
+    if source == "mirror":
+        if (type(release.get("schema_version")) is not int
+                or release.get("schema_version") != 1
+                or release.get("repository") != REPO_FULL_NAME
+                or release.get("tag_name") != tag
+                or not isinstance(release.get("id"), (str, int))
+                or not isinstance(release.get("sync_request_id"), str)
+                or not release.get("sync_request_id")
+                or not isinstance(release.get("synced_at"), str)
+                or not release.get("synced_at")
+                or not isinstance(release.get("published_at"), str)
+                or not release.get("published_at")
+                or not isinstance(release.get("name"), str)
+                or not isinstance(release.get("body"), str)
+                or release.get("html_url") != RELEASES_PAGE + "/tag/" + tag):
+            raise UpdateIntegrityError("镜像发布清单身份异常")
+    assets = release.get("assets")
+    if not isinstance(assets, list):
+        raise UpdateIntegrityError("更新附件列表异常")
+    if source == "mirror":
+        expected_names = {name, f"AShareMAScanner_{tag}.zip"}
+        if (len(assets) != 2
+                or any(not isinstance(x, dict) for x in assets)
+                or {x["name"] for x in assets if isinstance(x.get("name"), str)}
+                   != expected_names):
+            raise UpdateIntegrityError("镜像发行附件名称或数量异常")
+        for entry in assets:
+            entry_name = entry["name"]
+            entry_digest = entry.get("digest")
+            entry_size = entry.get("size")
+            if (not isinstance(entry_digest, str)
+                    or not re.fullmatch(r"sha256:[a-f0-9]{64}", entry_digest)
+                    or not isinstance(entry_size, int) or isinstance(entry_size, bool)
+                    or not 0 < entry_size <= MAX_UPDATE_BYTES):
+                raise UpdateIntegrityError("镜像发行附件 SHA 或大小异常")
+            entry_sha = entry_digest.split(":", 1)[1]
+            if (not _trusted_update_url(entry.get("browser_download_url"),
+                                        "mirror", tag=tag, name=entry_name, digest=entry_sha)
+                    or not _trusted_update_url(entry.get("upstream_download_url"),
+                                               "github", tag=tag, name=entry_name)):
+                raise UpdateIntegrityError("镜像发行附件链接不可信")
+    matches = [a for a in assets if isinstance(a, dict) and a.get("name") == name]
+    if len(matches) != 1:
+        raise UpdateIntegrityError("缺少唯一的正式 .pyw 附件")
+    item = matches[0]
+    digest = item.get("digest")
+    if not isinstance(digest, str) or not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
+        raise UpdateIntegrityError("更新文件 SHA-256 信息无效")
+    sha = digest.split(":", 1)[1]
+    size = item.get("size")
+    if not isinstance(size, int) or isinstance(size, bool) or not 0 < size <= MAX_UPDATE_BYTES:
+        raise UpdateIntegrityError("更新文件大小不可信")
+    url = item.get("browser_download_url")
+    if not isinstance(url, str) or not _trusted_update_url(
+            url, source, tag=tag, name=name, digest=sha):
+        raise UpdateIntegrityError("更新附件下载地址不可信")
+    if source == "mirror":
+        upstream = item.get("upstream_download_url")
+        if not isinstance(upstream, str) or not _trusted_update_url(
+                upstream, "github", tag=tag, name=name):
+            raise UpdateIntegrityError("镜像附件的原始 GitHub 地址无效")
+    return url, sha, size
+
+
+def _verify_github_fallback(tag, sha, size):
+    release = _fetch_release_json(RELEASE_API, "github_api")
+    if release.get("tag_name") != tag:
+        raise UpdateIntegrityError("镜像与 GitHub 最新正式版不一致，拒绝混合下载")
+    v = _release_version(tag)
+    if v is None:
+        raise UpdateIntegrityError("更新版本格式错误")
+    url, upstream_sha, upstream_size = _expected_release_asset(release, v, "github")
+    if sha != upstream_sha or size != upstream_size:
+        raise UpdateIntegrityError("镜像与 GitHub 附件摘要或大小不一致")
+    return url
+
+
+def _download_release_asset(url, expected_size, staged, on_progress=None,
+                            on_status=None, cancel_event=None, *,
+                            source="github", tag="", name="", digest=""):
+    """Single sequential stream, validated 206/ETag resume, no total deadline."""
+    if not _trusted_update_url(url, source, tag=tag, name=name, digest=digest):
+        raise UpdateIntegrityError("更新地址不可信")
+    received = 0
+    hasher = hashlib.sha256()
+    etag = None
+    failures = 0
+    started = time.monotonic()
+    while received < expected_size:
+        _ensure_update_active(cancel_event)
+        headers = {"User-Agent": f"AShareMAScanner-updater/{APP_VERSION}"}
+        if received:
+            headers["Range"] = f"bytes={received}-{expected_size - 1}"
+            if etag:
+                headers["If-Range"] = etag
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=30) as response:
+                if not _trusted_update_url(response.geturl(), source, tag=tag,
+                                           name=name, digest=digest, redirect=True):
+                    raise UpdateIntegrityError("下载被重定向到不可信地址")
+                status = getattr(response, "status", 200)
+                if received and status == 206:
+                    header = response.headers.get("Content-Range", "")
+                    match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", header)
+                    if (not match or int(match[1]) != received
+                            or int(match[2]) != expected_size - 1
+                            or int(match[3]) != expected_size):
+                        raise UpdateIntegrityError("断点续传区间不匹配")
+                elif status == 200:
+                    if received:
+                        # Do not append a full response to previous partial data.
+                        received = 0
+                        hasher = hashlib.sha256()
+                        if on_progress:
+                            on_progress(0, expected_size, 0.0)
+                    etag = response.headers.get("ETag")
+                else:
+                    raise UpdateIntegrityError("更新服务器响应状态异常")
+                with staged.open("ab" if received else "wb") as out:
+                    while received < expected_size:
+                        _ensure_update_active(cancel_event)
+                        try:
+                            chunk = response.read(min(32 * 1024, expected_size - received))
+                        except (OSError, TimeoutError, ConnectionError) as exc:
+                            raise UpdateNetworkError("下载连接中断") from exc
+                        _ensure_update_active(cancel_event)
+                        if not chunk:
+                            raise UpdateNetworkError("下载提前结束")
+                        try:
+                            out.write(chunk)
+                        except OSError as exc:
+                            raise UpdateIntegrityError("无法写入更新临时文件") from exc
+                        received += len(chunk)
+                        if received > MAX_UPDATE_BYTES:
+                            raise UpdateIntegrityError("更新文件超过 4 MiB")
+                        hasher.update(chunk)
+                        if on_progress:
+                            on_progress(received, expected_size,
+                                        received / max(time.monotonic() - started, .001))
+                    # Do not silently accept extra bytes beyond the Release
+                    # manifest's declared size, even if the prefix hashes match.
+                    try:
+                        extra = response.read(1)
+                    except (OSError, TimeoutError, ConnectionError) as exc:
+                        raise UpdateNetworkError("下载完整性确认中断") from exc
+                    if extra:
+                        raise UpdateIntegrityError("更新附件实际长度超过发行清单")
+                failures = 0
+        except UpdateIntegrityError:
+            raise
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError,
+                ConnectionError, OSError, UpdateNetworkError) as exc:
+            _ensure_update_active(cancel_event)
+            failures += 1
+            if failures >= (2 if source == "mirror" else 6):
+                raise UpdateNetworkError("下载连接暂时无法恢复") from exc
+            if on_status:
+                on_status("正在下载更新")
+            delay = min(failures, 3)
+            if cancel_event is not None:
+                if cancel_event.wait(delay):
+                    raise UpdateDownloadCancelled("已取消") from exc
+            else:
+                time.sleep(delay)
+    return hasher.hexdigest()
+
+
+def prepare_manual_update(original: Path, on_update_found=None,
+                          on_progress=None, on_status=None, cancel_event=None,
+                          *, newer_only=False, prechecked=None):
+    """Check trusted Release. Startup upgrades newer versions only.
+
+    The early cached VPS manifest is untrusted until full validation below.
+    Transport failures may fall back to official GitHub; integrity errors may not.
+    """
+    _ensure_update_active(cancel_event)
+    if prechecked is None:
+        release, source = _load_update_release()
+    elif prechecked[0] == "mirror":
+        release, source = prechecked[1], "mirror"
+    elif prechecked[0] == "offline":
+        release, source = _fetch_release_json(RELEASE_API, "github_api"), "github"
+    else:
+        raise UpdateIntegrityError("镜像更新清单不可信")
+    _ensure_update_active(cancel_event)
+    latest = _release_version(release.get("tag_name", ""))
+    current = _release_version(APP_VERSION)
+    if latest is None or current is None:
+        raise UpdateIntegrityError("更新版本号异常")
+    if latest < current:
+        return "当前版本较新，不会自动降级", None
+    # Automatic startup does not reinstall the same version; the manual button
+    # retains its intentionally explicit same-version repair functionality.
+    if newer_only and latest == current:
+        return "已是最新版本", None
+    url, expected_digest, size = _expected_release_asset(release, latest, source)
+    original = Path(original).resolve()
+    if original.suffix.lower() != ".pyw" or not original.is_file():
+        raise UpdateIntegrityError("无法校验正在运行的 .pyw 文件")
+    if latest == current:
+        with original.open("rb") as stream:
+            local_sha = hashlib.file_digest(stream, "sha256").hexdigest()
+        if local_sha == expected_digest:
+            return "已是最新版本", None
+    backup = original.with_name(original.name + ".old-update.bak")
+    if backup.exists():
+        raise UpdateIntegrityError("上次更新备份尚未清理")
+    _ensure_update_active(cancel_event)
+    if on_update_found:
+        on_update_found("v" + ".".join(map(str, latest)), size)
+    fd, candidate = tempfile.mkstemp(prefix=".ashare-update-", suffix=".pyw",
+                                     dir=str(original.parent))
+    os.close(fd)
+    staged = Path(candidate)
+    tag = "v" + ".".join(map(str, latest))
+    name = f"AShareMAScanner_{tag}.pyw"
+    try:
+        try:
+            digest = _download_release_asset(
+                url, size, staged, on_progress, on_status, cancel_event,
+                source=source, tag=tag, name=name, digest=expected_digest)
+        except UpdateNetworkError:
+            if source != "mirror":
+                raise
+            # Re-authenticate file identity with the official Release manifest.
+            # Always discard partial bytes when changing origins, even when hashes
+            # match; no mixed-origin append or ETag reuse is permitted.
+            _ensure_update_active(cancel_event)
+            official_url = _verify_github_fallback(tag, expected_digest, size)
+            staged.write_bytes(b"")
+            if on_progress:
+                on_progress(0, size, 0.0)
+            digest = _download_release_asset(
+                official_url, size, staged, on_progress, on_status, cancel_event,
+                source="github", tag=tag, name=name, digest=expected_digest)
+        _ensure_update_active(cancel_event)
+        if digest != expected_digest or staged.stat().st_size != size:
+            raise UpdateIntegrityError("更新文件摘要或大小不匹配")
+        if on_status:
+            on_status("正在验证")
+        program = staged.read_bytes()
+        if not re.search(rb'(?m)^APP_VERSION\s*=\s*["\']' +
+                         re.escape(".".join(map(str, latest)).encode()) +
+                         rb'["\']', program):
+            raise UpdateIntegrityError("更新程序版本不一致")
+        if b"def main():" not in program or b"--update-ack" not in program:
+            raise UpdateIntegrityError("新版本缺少安全启动接口")
+        try:
+            compile(program, str(staged), "exec")
+        except (SyntaxError, ValueError) as exc:
+            raise UpdateIntegrityError("更新程序未通过语法校验") from exc
+        _ensure_update_active(cancel_event)
+        os.chmod(staged, stat.S_IMODE(original.stat().st_mode))
+        return f"已验证 {tag}", staged
+    except Exception:
+        staged.unlink(missing_ok=True)
+        raise
+
+
+def _release_version(value: str):
+    """仅比较正式发布的三段式版本号。"""
+    match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", str(value).strip())
+    return tuple(int(part) for part in match.groups()) if match else None
+
+def fetch_latest_release():
+    """只读取本项目正式 GitHub Release，不执行远程程序。"""
+    request = urllib.request.Request(RELEASE_API, headers={
+        "User-Agent": "AShareMAScanner-update-checker/1.3.3",
+        "Accept": "application/vnd.github+json",
+    })
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            body = response.read(128 * 1024 + 1)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return "尚无正式发布版本", None
+        raise RuntimeError(f"GitHub 响应异常（HTTP {exc.code}）") from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise RuntimeError("无法连接 GitHub，请稍后重试") from exc
+    if len(body) > 128 * 1024:
+        raise RuntimeError("GitHub 返回的数据异常")
+    try:
+        item = json.loads(body)
+        if item.get("draft") or item.get("prerelease"):
+            return "尚无可用正式版本", None
+        latest = _release_version(item.get("tag_name", ""))
+        current = _release_version(APP_VERSION)
+        if latest is None or current is None:
+            raise ValueError("无效版本号")
+        if latest < current:
+            # A higher local version than the latest published release is not
+            # equivalent to being the newest stable version (e.g. recalled 1.2.8).
+            return (f"当前运行 v{'.'.join(map(str, current))} 开发/未发布版本；"
+                    f"GitHub 最新正式版为 v{'.'.join(map(str, latest))}", RELEASES_PAGE)
+        if latest == current:
+            return "当前已是最新正式版本", None
+        url = str(item.get("html_url", ""))
+        if not url.startswith(RELEASES_PAGE + "/tag/"):
+            url = RELEASES_PAGE
+        return f"发现新版本 v{'.'.join(map(str, latest))}", url
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise RuntimeError("GitHub 更新信息格式异常") from exc
+
+
+# 新策略的固定粘合阈值：三条均线极差 / 三均线均值 <= 2%。
+MA_CONVERGENCE_THRESHOLD = 0.02
+
+
+def ma_convergence_up_metrics(frame: pd.DataFrame, pos: int,
+                              tolerance: float = MA_CONVERGENCE_THRESHOLD):
+    """首次出现 MA5/10/20 粘合后共同上行、形成多头排列并扩大间距。
+
+    返回 (昨日粘合度%, 今日发散度%, 发散增加百分点)，不满足则返回 None。
+    frame 必须按交易日期升序，三条均线必须基于有效交易日计算。
+    """
+    columns = ("MA5", "MA10", "MA20")
+    if pos < 2 or pos >= len(frame) or not all(c in frame.columns for c in columns):
+        return None
+
+    def signal_on(index: int):
+        if index < 1:
+            return None
+        previous = frame.iloc[index - 1]
+        today = frame.iloc[index]
+        try:
+            older_values = [float(previous[c]) for c in columns]
+            new_values = [float(today[c]) for c in columns]
+        except (TypeError, ValueError, KeyError):
+            return None
+        if not all(math.isfinite(v) and v > 0 for v in older_values + new_values):
+            return None
+
+        old_spread = (max(older_values) - min(older_values)) / (sum(older_values) / 3)
+        new_spread = (max(new_values) - min(new_values)) / (sum(new_values) / 3)
+        if not (
+            old_spread <= tolerance
+            and all(new > old for new, old in zip(new_values, older_values))
+            and new_values[0] > new_values[1] > new_values[2]
+            and new_spread > old_spread
+        ):
+            return None
+        return old_spread * 100, new_spread * 100, (new_spread - old_spread) * 100
+
+    current = signal_on(pos)
+    if current is None:
+        return None
+    # “刚刚形成”：连续满足时，只保留第一天。
+    if signal_on(pos - 1) is not None:
+        return None
+    return current
+
+
+# This estimates limit-up using post-adjusted DAILY CLOSES, NOT certified
+# exchange closing-limit prices or intraday limit-up order-book data.
+FIRST_BOARD_OFFSETS = (3, 4, 5)    # market trading days ago
+FIRST_BOARD_LOOKBACK = 30          # completed stock trading sessions before board
+FIRST_BOARD_CLEAR_DAYS = 20        # no prior limit-up during these trading sessions
+FIRST_BOARD_LOW_POSITION = 0.35   # lower 35% of preceding 30-session close range
+FIRST_BOARD_VOLUME_RATIO = 1.5    # event volume vs previous 5-session mean
+
+
+def is_approx_limit_up(previous_close, close, code: str) -> bool:
+    """Daily-close proxy for the 10% or 20% A-share closing price limit."""
+    try:
+        before, current = float(previous_close), float(close)
+    except (TypeError, ValueError):
+        return False
+    if not all(math.isfinite(x) and x > 0 for x in (before, current)):
+        return False
+    symbol = str(code).split(".")[-1]
+    if symbol.startswith(("300", "301", "688")):
+        lo, hi = .195, .206
+    elif symbol.startswith(("600", "601", "603", "605",
+                            "000", "001", "002", "003")):
+        lo, hi = .097, .106
+    else:
+        return False
+    return lo <= current / before - 1.0 <= hi
+
+
+def low_first_board_metrics(frame: pd.DataFrame, pos: int, code: str,
+                            market_dates) -> Optional[dict]:
+    """Find a first-board candidate from 3–5 MARKET sessions earlier.
+
+    Uses only history no later than frame[pos]. 'First board' means no
+    approximate limit-up in the prior 20 valid stock sessions.
+    """
+    if (pos < FIRST_BOARD_LOOKBACK + min(FIRST_BOARD_OFFSETS)
+            or pos >= len(frame)):
+        return None
+    calendar = [str(x) for x in market_dates]
+    current_date = str(frame.iloc[pos]["trade_date"])
+    try:
+        calendar_pos = calendar.index(current_date)
+    except ValueError:
+        return None
+    stock_pos = {str(frame.iloc[i]["trade_date"]): i for i in range(pos + 1)}
+    for days_ago in FIRST_BOARD_OFFSETS:
+        calendar_index = calendar_pos - days_ago
+        if calendar_index < 0:
+            continue
+        event_pos = stock_pos.get(calendar[calendar_index])
+        if event_pos is None or event_pos < FIRST_BOARD_LOOKBACK:
+            continue
+        event = frame.iloc[event_pos]
+        name = str(event.get("name", "") or "").strip().upper()
+        if str(event.get("is_st", "0")) in ("1", "1.0") or name.lstrip("*").startswith("ST"):
+            continue
+        previous = frame.iloc[event_pos - 1]
+        if not is_approx_limit_up(previous["close"], event["close"], code):
+            continue
+        # Disallow two-board, three-board, and any limit-up within 20 sessions.
+        if any(is_approx_limit_up(frame.iloc[i - 1]["close"],
+                                  frame.iloc[i]["close"], code)
+               for i in range(event_pos - FIRST_BOARD_CLEAR_DAYS, event_pos)):
+            continue
+        prices = pd.to_numeric(
+            frame.iloc[event_pos - FIRST_BOARD_LOOKBACK:event_pos]["close"],
+            errors="coerce")
+        if len(prices) != FIRST_BOARD_LOOKBACK or prices.isna().any():
+            continue
+        bottom, top = float(prices.min()), float(prices.max())
+        if not (math.isfinite(bottom) and math.isfinite(top)
+                and bottom > 0 and top > bottom):
+            continue
+        previous_close = float(previous["close"])
+        location = (previous_close - bottom) / (top - bottom)
+        if not 0 <= location <= FIRST_BOARD_LOW_POSITION:
+            continue
+        prior_volumes = pd.to_numeric(
+            frame.iloc[event_pos - 5:event_pos]["volume"], errors="coerce")
+        if len(prior_volumes) != 5 or prior_volumes.isna().any():
+            continue
+        mean_volume = float(prior_volumes.mean())
+        if not math.isfinite(mean_volume) or mean_volume <= 0:
+            continue
+        ratio = float(event["volume"]) / mean_volume
+        if not math.isfinite(ratio) or ratio < FIRST_BOARD_VOLUME_RATIO:
+            continue
+        current_close = float(frame.iloc[pos]["close"])
+        event_close = float(event["close"])
+        return {
+            "首板日期": str(event["trade_date"]),
+            "距今交易日": days_ago,
+            "首板涨幅%": (event_close / previous_close - 1) * 100,
+            "首板放量倍数": ratio,
+            "首板前30日位置%": location * 100,
+            "现价较首板%": (current_close / event_close - 1) * 100,
+        }
+    return None
+
+
+MA_WINDOWS = (5, 10, 20)
+# A previous rolling average is needed for comparisons with today's value.
+# Share the exact requirements across current scanning and signal-history replay.
+STRATEGY_MIN_BARS = {
+    "breakout_ma5": 6,
+    "breakout_ma10": 11,
+    "breakout_ma20": 21,
+    "ma5_cross_ma10": 11,
+    "ma5_turn_up": 7,
+    "ma_convergence_up": 22,
+    "volume_turnover": 6,
+    "low_first_board": 34,
+}
+VOLUME_AVG_DAYS = 5
+VOLUME_RATIO = 1.5
+
+# 为 MA20 的“昨日/今日”判断保留足够历史余量。
+INITIAL_TRADING_DAYS = 45
+
+QUERY_RETRY = 3
+RETRY_WAIT = 1.5
+
+# BaoStock 官方不允许并发连接：本程序全程仅用主进程的一个会话顺序抓取。
+# 仍按批次提交 SQLite，并在批次间暂停，保留断点补抓。
+BATCH_SIZE = 200
+BATCH_PAUSE = 2.0
+
+# 长任务定期刷新 BaoStock 会话。
+SESSION_REFRESH_SECONDS = 15 * 60
+
+# BaoStock 行业分类官方说明为每周更新；本地缓存按7天刷新。
+INDUSTRY_CACHE_DAYS = 7
+
+# 数据库路径固定在源文件同级 data 目录，永不迁移到用户目录。
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / "data"
+DB_PATH = DATA_DIR / "a_share_akshare_hfq.db"
+
+CST = timezone(timedelta(hours=8))
+ADJUST_FLAG = "hfq"  # AKShare 后复权
+
+SH_PREFIXES = ("600", "601", "603", "605", "688")
+SZ_PREFIXES = ("000", "001", "002", "003", "300", "301")
+
+ProgressCallback = Callable[[float, str], None]
+
+# 这些权重是更新器已有的步骤百分比，并非剩余时间预测。
+UPDATE_PHASES = (
+    ("环境与交易日", 0, 12),
+    ("历史失败补抓", 12, 20),
+    ("历史缓存准备", 20, 66),
+    ("缺失交易日补齐", 66, 80),
+    ("每日行情更新", 80, 94),
+    ("换手率补齐", 94, 96),
+    ("行业板块资料", 96, 98),
+    ("完整性检查", 98, 100),
+)
+
+
+def describe_update_progress(percent: float, task: str) -> dict:
+    """将后端原有真实任务事件转换为分阶段 GUI 数据，不额外访问数据库。"""
+    value = min(100., max(0., float(percent)))
+    task = str(task)
+    # 优先根据明确的任务词识别阶段，避免范围端点落在下一阶段的误判。
+    explicit = (
+        (r"^(补历史失败|历史失败补抓|没有历史失败项)", 1),
+        (r"^(初始化历史|历史缓存)", 2),
+        (r"^没有未完整交易日", 3),
+        (r"^没有新的交易日", 4),
+        (r"^(补换手率|近期换手率)", 5),
+        (r"^(更新行业|行业板块|板块分类)", 6),
+        (r"^(校验最新交易日|数据检查完成)", 7),
+    )
+    index = next((idx for pattern, idx in explicit if re.search(pattern, task)), None)
+    if index is None:
+        # 更新 YYYY-MM-DD 可能是缺失交易日回补，也可能是增量交易日。
+        if task.startswith("更新 ") or re.match(r"^\d{4}-\d\d-\d\d (更新完成|已完整)", task):
+            index = 3 if value < 80 else 4
+        else:
+            index = next((i for i, (_, start, end) in enumerate(UPDATE_PHASES)
+                          if start <= value < end), 7)
+    title, start, end = UPDATE_PHASES[index]
+    fraction = min(1.0, max(0.0, (value - start) / max(1, end - start)))
+    match = re.search(r"\b(\d+)\s*/\s*(\d+)\b", task)
+    current = total = completed = None
+    stock = None
+    if match:
+        current = int(match.group(1))
+        total = int(match.group(2))
+        if total > 0 and 1 <= current <= total:
+            # 后端在每只股票开始处理前报告，不能将当前股票当成已完成。
+            completed = current - 1
+            fraction = completed / total
+            if " · " in task:
+                stock = task.rsplit(" · ", 1)[-1]
+        else:
+            current = total = completed = None
+    if task in ("没有历史失败项", "历史缓存已就绪", "没有未完整交易日",
+                "没有新的交易日", "近期换手率检查完成", "板块分类缓存已就绪",
+                "数据检查完成") or task.endswith(("更新完成", "补抓完成", "初始化完成")):
+        fraction = 1.0
+    return {
+        "phase": index, "title": title, "fraction": fraction,
+        "completed": completed, "current": current, "total": total,
+        "stock": stock, "task": task, "overall": value,
+    }
+
+
+# ============================================================
+# 数据结构
+# ============================================================
+
+@dataclass(frozen=True)
+class RangeFilter:
+    """换手率单位为百分数；区间两端均包含。"""
+    volume_min: float = 1.5
+    volume_max: Optional[float] = None
+    turnover_min: float = 3.0
+    turnover_max: Optional[float] = None
+
+    def __post_init__(self):
+        for label, low, high in (
+            ("放量倍数", self.volume_min, self.volume_max),
+            ("换手率", self.turnover_min, self.turnover_max),
+        ):
+            if not math.isfinite(low) or low < 0:
+                raise ValueError(f"{label}最小值须为非负有限数字")
+            if high is not None and (not math.isfinite(high) or high < low):
+                raise ValueError(f"{label}最大值须为有限数字且不小于最小值")
+
+    def matches(self, row) -> bool:
+        try:
+            volume = float(row["volume"])
+            average = float(row["VOL5_PREV"])
+            turnover = float(row["turnover"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        if not all(math.isfinite(v) for v in (volume, average, turnover)):
+            return False
+        if average <= 0 or volume < 0 or turnover < 0:
+            return False
+        ratio = volume / average
+        return (self.volume_min <= ratio
+                and (self.volume_max is None or ratio <= self.volume_max)
+                and self.turnover_min <= turnover
+                and (self.turnover_max is None or turnover <= self.turnover_max))
+
+
+@dataclass
+class UpdateResult:
+    scan_date: str
+    previous_trade_date: Optional[str]
+    completeness: float
+    expected: int
+    saved: int
+    failed: int
+    today_pending: bool
+    warning: str = ""
+
+
+# ============================================================
+# 后端
+# ============================================================
+
+@contextmanager
+def sqlite_connection(path: Path, timeout: float = 30):
+    """Transaction-safe and deterministically closed SQLite connection.
+
+    sqlite3.Connection.__exit__ commits/rolls back but DOES NOT close its file
+    handle. Always close explicitly, particularly on Windows where the file
+    cannot be renamed or deleted until all connections are closed.
+    """
+    connection = sqlite3.connect(path, timeout=timeout)
+    try:
+        with connection:
+            yield connection
+    finally:
+        connection.close()
+
+
+class MarketUpdateCancelled(RuntimeError):
+    """The user requested a safe stop. Downloaded progress is committed."""
+
+
+class MarketDataUnavailable(RuntimeError):
+    """Consecutive market source errors; stop instead of retrying thousands of stocks."""
+
+
+
+# AKShare normalized free-price sources: EastMoney, Sina, Tencent.
+class AKShareQuotes:
+    FIELDS = ["date","code","close","volume","tradestatus","isST","turn"]
+
+    def __init__(self, db_path):
+        self.db_path = db_path
+        # AKShare defaults to (10,60); a blocked upstream must not stall the
+        # Tk update stage for minutes before trying the next free provider.
+        if hasattr(ak, "set_timeout"):
+            ak.set_timeout((5, 12))
+        self.names = {}
+        self._preferred = {}
+        self._index_days = None
+        self._index_cache_date = None
+        self._sina_calendar = None
+        self._last_fetch = 0.0
+        self._em_banned_until = 0.0
+
+    @staticmethod
+    def _is_em_rate_limit(exc):
+        return ("Push2RateLimitError" in type(exc).__name__
+                or "东方财富 push2" in str(exc)
+                or "当前 IP 被临时限流" in str(exc))
+
+    def _remember_em_limit(self, exc):
+        if self._is_em_rate_limit(exc):
+            # Do not hammer a banned IP for every one of 5,000 stocks.
+            self._em_banned_until = max(
+                self._em_banned_until, time.monotonic() + 30 * 60)
+
+    def _pace(self):
+        delay = 0.18 - (time.monotonic() - self._last_fetch)
+        if delay > 0:
+            time.sleep(delay)
+        self._last_fetch = time.monotonic()
+
+    @staticmethod
+    def _ymd(value):
+        return str(value).replace("-", "")
+
+    @staticmethod
+    def _dates(frame, names):
+        if frame is None or frame.empty:
+            return []
+        col = next((name for name in names if name in frame.columns), None)
+        if col is None:
+            raise ValueError("交易日期字段缺失")
+        dates = pd.to_datetime(frame[col], errors="coerce").dropna()
+        return sorted(set(dates.dt.strftime("%Y-%m-%d").tolist()))
+
+    def index_dates(self):
+        today = datetime.now(CST).date()
+        if self._index_days is not None and self._index_cache_date == today:
+            return self._index_days
+        first = (today - timedelta(days=800)).strftime("%Y%m%d")
+        last = today.strftime("%Y%m%d")
+        failures = []
+        # Tencent and Sina index dates avoid an unnecessary full EastMoney
+        # request when its push2 endpoint has been IP rate-limited.
+        for name, load in (
+            ("腾讯", lambda: ak.stock_zh_index_daily_tx(
+                symbol="sh000001", start_date=first, end_date=last)),
+            ("新浪", lambda: ak.stock_zh_index_daily(symbol="sh000001")),
+            ("东财", lambda: ak.index_zh_a_hist(
+                symbol="000001", period="daily", start_date=first, end_date=last)),
+        ):
+            if name == "东财" and time.monotonic() < self._em_banned_until:
+                continue
+            try:
+                self._pace()
+                dates = self._dates(load(), ["日期", "date"])
+                if not dates or dates[-1] < (today - timedelta(days=14)).isoformat():
+                    raise ValueError("指数数据过旧")
+                self._index_days = dates
+                self._index_cache_date = today
+                return dates
+            except Exception as e:
+                if name == "东财":
+                    self._remember_em_limit(e)
+                failures.append(f"{name}: {e}")
+        raise RuntimeError("指数行情三个来源均失败：" + "；".join(failures)[:500])
+
+    def calendar(self, first, last):
+        if self._sina_calendar is None:
+            try:
+                self._pace()
+                self._sina_calendar = self._dates(ak.tool_trade_date_hist_sina(), ["trade_date"])
+            except Exception:
+                self._sina_calendar = []
+        known = set(self.index_dates())
+        # Ignore truncated legacy Sina calendars (e.g. ending in 2025).
+        if self._sina_calendar and self._sina_calendar[-1] >= last:
+            known.update(self._sina_calendar)
+        a = datetime.strptime(first, "%Y-%m-%d").date()
+        b = datetime.strptime(last, "%Y-%m-%d").date()
+        return pd.DataFrame([
+            {"calendar_date": d.isoformat(), "is_trading_day": "1" if d.isoformat() in known else "0"}
+            for d in (a + timedelta(days=i) for i in range((b-a).days+1))
+        ], columns=["calendar_date", "is_trading_day"])
+
+    def index_exact(self, date):
+        now = datetime.now(CST)
+        if date == now.strftime("%Y-%m-%d") and now.hour < 18:
+            return pd.DataFrame(columns=["date","code","close","volume"])
+        if date not in self.index_dates():
+            return pd.DataFrame(columns=["date","code","close","volume"])
+        return pd.DataFrame([{"date":date,"code":"sh.000001","close":1.0,"volume":1.0}])
+
+    @staticmethod
+    def ticker(raw):
+        text = str(raw or "").lower().strip()
+        if text.startswith(("sh","sz")):
+            text = text[2:]
+        if text.endswith(".0"):
+            text = text[:-2]
+        if not text.isdigit() or len(text)>6:
+            return None
+        code = text.zfill(6)
+        if code.startswith(("600","601","603","605","688")):
+            return "sh." + code
+        if code.startswith(("000","001","002","003","300","301")):
+            return "sz." + code
+        return None
+
+    def stocks(self, date):
+        problems = []
+        for provider, fetch in (
+            ("东财", lambda: ak.stock_zh_a_spot_em()),
+            ("新浪", lambda: ak.stock_zh_a_spot()),
+            ("交易所", lambda: ak.stock_info_a_code_name()),
+        ):
+            if provider == "东财" and time.monotonic() < self._em_banned_until:
+                continue
+            try:
+                self._pace()
+                df = fetch()
+                if df is None or df.empty:
+                    raise ValueError("列表为空")
+                code_col = next((x for x in ("代码","code","item","symbol") if x in df), None)
+                name_col = next((x for x in ("名称","name","value") if x in df), None)
+                if code_col is None or name_col is None:
+                    raise ValueError("未知股票列表字段")
+                latest = date == self.index_dates()[-1]
+                rows = {}
+                for r in df.to_dict("records"):
+                    code = self.ticker(r.get(code_col))
+                    if not code:
+                        continue
+                    name = str(r.get(name_col) or "")
+                    self.names[code] = name
+                    status = "1"
+                    if provider == "东财" and latest and "成交量" in r:
+                        try:
+                            if float(r["成交量"]) == 0:
+                                status = "0"
+                        except (TypeError,ValueError):
+                            pass
+                    rows[code] = {"code":code,"tradeStatus":status,"code_name":name}
+                if len(rows) < 1000:
+                    raise ValueError(f"股票数异常：{len(rows)}")
+                return pd.DataFrame(rows.values())
+            except Exception as e:
+                if provider == "东财":
+                    self._remember_em_limit(e)
+                problems.append(f"{provider}: {e}")
+        raise RuntimeError("全A股股票池获取失败：" + "；".join(problems)[:600])
+
+    def normalize(self, df, code, source):
+        if df is None or df.empty:
+            return pd.DataFrame(columns=self.FIELDS)
+        if source == "eastmoney":
+            if not {"日期","收盘","成交量"}.issubset(df):
+                raise ValueError("东财日线字段缺失")
+            dates, close = df["日期"], df["收盘"]
+            volume = pd.to_numeric(df["成交量"],errors="coerce")*100.0  # 手 -> 股
+            turn = pd.to_numeric(df["换手率"],errors="coerce") if "换手率" in df else float("nan")
+        else:
+            if not {"date","close","volume"}.issubset(df):
+                raise ValueError("备用源没有明确的成交股数列 volume")
+            dates, close = df["date"], df["close"]
+            volume = pd.to_numeric(df["volume"],errors="coerce")     # 新浪/腾讯均为股
+            if source == "sina" and "turnover" in df:
+                turn = pd.to_numeric(df["turnover"],errors="coerce")*100.0  # 比率 -> %
+            elif source == "sina" and "outstanding_share" in df:
+                shares = pd.to_numeric(df["outstanding_share"],errors="coerce").replace(0,float("nan"))
+                turn = volume/shares*100.0
+            else:
+                turn = float("nan")   # 腾讯不提供可靠换手率时绝不编造
+        name = self.names.get(code,"").strip().upper()
+        result = pd.DataFrame({
+            "date":pd.to_datetime(dates,errors="coerce").dt.strftime("%Y-%m-%d"),
+            "code":code, "close":pd.to_numeric(close,errors="coerce"),
+            "volume":volume, "tradestatus":1,
+            "isST":int(name.startswith("ST") or name.startswith("*ST")),
+            "turn":turn
+        })
+        for field in ("close","volume","turn"):
+            result.loc[~result[field].apply(lambda v: pd.notna(v) and math.isfinite(float(v))),field] = float("nan")
+        result = result[result["date"].notna() & result["close"].gt(0) & result["volume"].ge(0)].copy()
+        if (result["turn"].dropna()<0).any():
+            raise ValueError("负换手率")
+        result.loc[result["volume"].eq(0),"tradestatus"] = 0
+        return result.drop_duplicates("date",keep="last").sort_values("date").reset_index(drop=True)
+
+    def _download(self, code, first, last, source):
+        market, symbol = str(code).split(".",1)
+        self._pace()
+        if source == "eastmoney":
+            raw = ak.stock_zh_a_hist(
+                symbol=symbol, period="daily",start_date=self._ymd(first),
+                end_date=self._ymd(last),adjust="hfq")
+        elif source == "sina":
+            raw = ak.stock_zh_a_daily(
+                symbol=market+symbol,start_date=self._ymd(first),
+                end_date=self._ymd(last),adjust="hfq")
+        else:
+            raw = ak.stock_zh_a_hist_tx(
+                symbol=market+symbol,start_date=self._ymd(first),
+                end_date=self._ymd(last),adjust="hfq")
+        return self.normalize(raw,code,source)
+
+    @staticmethod
+    def compatible(fresh, cached):
+        rows = fresh[fresh["date"].isin(cached)]
+        if rows.empty:
+            return False
+        for r in rows.itertuples(index=False):
+            original = float(cached[r.date])
+            if not math.isfinite(original) or original<=0 or abs(float(r.close)/original-1)>0.002:
+                return False
+        return True
+
+    def history(self, code, first, last):
+        if first>last:
+            return pd.DataFrame(columns=self.FIELDS)
+        with sqlite_connection(self.db_path) as db:
+            cache = dict(db.execute(
+                "SELECT trade_date,close FROM daily WHERE code=? AND trade_date<=? "
+                "ORDER BY trade_date DESC LIMIT 5",(code,last)).fetchall())
+        # Overlap with cached history before writing even one new daily bar.
+        query_from = min(first,min(cache)) if cache else first
+        favorite = self._preferred.get(code)
+        order = ([favorite] if favorite else []) + [
+            p for p in ("eastmoney","sina","tencent") if p!=favorite]
+        if time.monotonic() < self._em_banned_until:
+            order = [p for p in order if p != "eastmoney"]
+        errors=[]
+        for source in order:
+            try:
+                bars = self._download(code,query_from,last,source)
+                if bars.empty:
+                    raise ValueError("返回空数据")
+                if cache and not self.compatible(bars,cache):
+                    raise ValueError("后复权价格与既有缓存不一致，拒绝混存")
+                selected = bars[bars["date"].between(first,last)]
+                if selected.empty:
+                    raise ValueError("目标交易日无记录")
+                self._preferred[code] = source
+                return selected.reset_index(drop=True)
+            except Exception as e:
+                if source == "eastmoney":
+                    self._remember_em_limit(e)
+                errors.append(f"{source}:{e}")
+        raise RuntimeError(f"{code} 三家免费行情均失败："+"; ".join(errors)[:850])
+
+    def industries(self, batch_callback=None, target_codes=None, check_cancel=None):
+        """Incrementally fetch EM industry members, with Sina fallback.
+
+        Successful boards are passed to the caller immediately. A failed board
+        never invalidates other boards. Distinct taxonomies are kept separate:
+        Sina sectors carry a source prefix and never overwrite EM membership.
+        """
+        wanted = set(target_codes or ())
+        resolved = {}
+        stats = {"eastmoney_ok": 0, "eastmoney_failed": 0,
+                 "sina_ok": 0, "sina_failed": 0, "errors": []}
+
+        def attempt(label, method):
+            last_error = None
+            for trial in range(2):
+                if check_cancel is not None:
+                    check_cancel()
+                try:
+                    self._pace()
+                    result = method()
+                    if result is None or result.empty:
+                        raise ValueError("上游返回空表")
+                    return result
+                except Exception as exc:
+                    last_error = exc
+                    if label.startswith("东方财富") and self._is_em_rate_limit(exc):
+                        self._remember_em_limit(exc)
+                        raise
+                    if trial == 0:
+                        time.sleep(.45)
+            raise RuntimeError(f"{label}: {last_error}")
+
+        def accept(frame, source, sector, code_column, name_column):
+            if code_column not in frame.columns:
+                raise ValueError(f"{source} {sector} 缺少 {code_column} 字段")
+            if name_column not in frame.columns:
+                raise ValueError(f"{source} {sector} 缺少 {name_column} 字段")
+            fresh = []
+            pending_codes = set()
+            for code_raw, name_raw in frame[[code_column, name_column]].itertuples(index=False, name=None):
+                code = self.ticker(code_raw)
+                if code is None or code in resolved or code in pending_codes:
+                    continue
+                # A single stock has one classified industry; never confuse
+                # industry members with multi-membership concept sectors.
+                name = str(name_raw or "").strip()
+                taxonomy = sector if source == "eastmoney" else "新浪·" + sector
+                record = {
+                    "code": code, "code_name": name, "industry": taxonomy,
+                    "updateDate": "", "industryClassification":
+                        "AKShare-EM" if source == "eastmoney" else "AKShare-Sina"}
+                fresh.append(record)
+                pending_codes.add(code)
+            if not fresh:
+                return False
+            data = pd.DataFrame(fresh)
+            if batch_callback is not None:
+                batch_callback(data, source, sector)
+            # Only mark a symbol classified after it has been durably saved.
+            for record in fresh:
+                resolved[record["code"]] = record
+            return True
+
+        try:
+            if time.monotonic() < self._em_banned_until:
+                raise RuntimeError("东方财富 IP 限流冷却中，使用新浪备用分类")
+            boards = attempt("东方财富行业列表", ak.stock_board_industry_name_em)
+            if "板块名称" not in boards:
+                raise ValueError("东方财富行业列表缺少板块名称列")
+            consecutive_em_errors = 0
+            for sector in boards["板块名称"].dropna().astype(str).drop_duplicates():
+                if check_cancel is not None:
+                    check_cancel()
+                try:
+                    members = attempt(
+                        f"东方财富 {sector}",
+                        lambda name=sector: ak.stock_board_industry_cons_em(symbol=name))
+                    if accept(members, "eastmoney", sector, "代码", "名称"):
+                        stats["eastmoney_ok"] += 1
+                        consecutive_em_errors = 0
+                    else:
+                        stats["eastmoney_failed"] += 1
+                        consecutive_em_errors += 1
+                except MarketUpdateCancelled:
+                    raise
+                except Exception as exc:
+                    consecutive_em_errors += 1
+                    stats["eastmoney_failed"] += 1
+                    stats["errors"].append(str(exc))
+                if time.monotonic() < self._em_banned_until:
+                    stats["errors"].append("东方财富 IP 限流，本轮切换新浪备用源")
+                    break
+                if consecutive_em_errors >= 4:
+                    stats["errors"].append("东方财富连续4个板块失败，本轮切换备用源")
+                    break
+        except MarketUpdateCancelled:
+            raise
+        except Exception as exc:
+            stats["eastmoney_failed"] += 1
+            stats["errors"].append(str(exc))
+
+        # If some active stocks remain unclassified, complete them using Sina's
+        # *separate* industry taxonomy. No row from Sina overwrites an EM row.
+        missing = wanted - set(resolved)
+        if (not resolved or stats["eastmoney_failed"] > 0 or
+                (wanted and len(missing) / len(wanted) > .03)):
+            try:
+                boards = attempt("新浪行业列表",
+                                 lambda: ak.stock_sector_spot(indicator="新浪行业"))
+                if not {"label", "板块"}.issubset(boards.columns):
+                    raise ValueError("新浪行业列表字段不完整")
+                consecutive_sina_errors = 0
+                for sector_id, sector in boards[["label", "板块"]].drop_duplicates().itertuples(index=False, name=None):
+                    if check_cancel is not None:
+                        check_cancel()
+                    if wanted and wanted.issubset(resolved):
+                        break
+                    try:
+                        members = attempt(
+                            f"新浪 {sector}",
+                            lambda item=sector_id: ak.stock_sector_detail(sector=str(item)))
+                        if accept(members, "sina", str(sector), "symbol", "name"):
+                            stats["sina_ok"] += 1
+                            consecutive_sina_errors = 0
+                        else:
+                            stats["sina_failed"] += 1
+                            consecutive_sina_errors += 1
+                    except MarketUpdateCancelled:
+                        raise
+                    except Exception as exc:
+                        stats["sina_failed"] += 1
+                        consecutive_sina_errors += 1
+                        stats["errors"].append(str(exc))
+                    if consecutive_sina_errors >= 4:
+                        stats["errors"].append("新浪连续4个板块失败，停止本轮重试")
+                        break
+            except MarketUpdateCancelled:
+                raise
+            except Exception as exc:
+                stats["sina_failed"] += 1
+                stats["errors"].append(str(exc))
+
+        stats["classified"] = len(resolved)
+        stats["target_count"] = len(wanted)
+        stats["coverage"] = (len(wanted & set(resolved)) / len(wanted)
+                             if wanted else 0.0)
+        if not resolved:
+            raise RuntimeError("所有板块分类来源均失败：" + "；".join(stats["errors"][-6:])[:1000])
+        result = pd.DataFrame(resolved.values())
+        result.attrs["industry_statistics"] = stats
+        return result
+
+
+
+class AKShareBackend:
+    HISTORY_FIELDS = "date,code,close,volume,tradestatus,isST,turn"
+
+    def __init__(self, db_path: Path):
+        self.db_path = db_path
+        self._last_login_mono = 0.0
+        self._quotes = AKShareQuotes(db_path)
+        # 同一次运行多个策略共用只读板块K线计算，避免重复全表读取。
+        self._sector_chart_cache: dict[tuple[str, str], pd.DataFrame] = {}
+        # Cache read-only 80-session prepared bars for this application session.
+        # A strategy switch must not read/rebuild 400k SQLite rows again.
+        self._scan_data_lock = threading.Lock()
+        self._scan_prepared_cache = None
+        self._instance_lock_file = None
+        self._cancel_update_event = threading.Event()
+
+    def cancel_update(self):
+        self._cancel_update_event.set()
+
+    def _check_cancel(self, conn=None):
+        if self._cancel_update_event.is_set():
+            if conn is not None:
+                conn.commit()
+            raise MarketUpdateCancelled("已安全停止；已保存行情，下次更新将断点续传")
+
+    # -------------------- 通用 --------------------
+
+    @staticmethod
+    def now_text() -> str:
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    @staticmethod
+    def today_cn() -> str:
+        return datetime.now(CST).strftime("%Y-%m-%d")
+
+    @staticmethod
+    def safe_float(value):
+        try:
+            if value in ("", None):
+                return None
+            return float(value)
+        except Exception:
+            return None
+
+    @staticmethod
+    def safe_int(value):
+        try:
+            if value in ("", None):
+                return None
+            return int(float(value))
+        except Exception:
+            return None
+
+    @staticmethod
+    def is_a_share_code(code: str) -> bool:
+        if not isinstance(code, str) or "." not in code:
+            return False
+
+        market, symbol = code.split(".", 1)
+
+        if len(symbol) != 6 or not symbol.isdigit():
+            return False
+
+        if market == "sh":
+            return symbol.startswith(SH_PREFIXES)
+
+        if market == "sz":
+            return symbol.startswith(SZ_PREFIXES)
+
+        return False
+
+    @staticmethod
+    def symbol_only(code: str) -> str:
+        return code.split(".", 1)[1] if "." in code else code
+
+    @staticmethod
+    def pct(part: int, total: int) -> float:
+        if total <= 0:
+            return 1.0
+        return max(0.0, min(1.0, part / total))
+
+    @staticmethod
+    def stage_progress(
+        cb: ProgressCallback,
+        start: float,
+        end: float,
+        part: int,
+        total: int,
+        task: str,
+    ):
+        fraction = AKShareBackend.pct(part, total)
+        cb(start + (end - start) * fraction, task)
+
+    # -------------------- SQLite --------------------
+
+    def prepare_storage(self, cb: ProgressCallback):
+        """仅检查程序同级 data 文件夹，不移动、不删除现有数据库。
+
+        SQLite 的 WAL 模式不仅要求 .db 可写，也要求 data 文件夹可创建
+        -wal、-shm 文件。Windows 的“只读”属性可尝试自动移除；若受 NTFS
+        权限控制，必须提示用户调整权限，不能悄悄迁移数据库。
+        """
+        cb(0, "检查原 data 目录的数据库写入权限")
+        storage_dir = self.db_path.parent
+
+        try:
+            storage_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise RuntimeError(
+                f"无法创建程序旁的数据目录：\n{storage_dir}\n"
+                "请将整个程序文件夹放在有写入权限的位置，"
+                "或在文件夹属性 → 安全中授予当前 Windows 用户修改权限。"
+                f"\n原始错误：{exc}"
+            ) from exc
+
+        # Windows os.chmod() 可取消文件的“只读”属性；
+        # 无法覆盖 NTFS ACL 的拒绝写入规则，出错时仍需明确提示。
+        for path in (self.db_path,
+                     self.db_path.with_name(self.db_path.name + "-wal"),
+                     self.db_path.with_name(self.db_path.name + "-shm")):
+            if not path.is_file():
+                continue
+            try:
+                current_mode = path.stat().st_mode
+                if not (current_mode & stat.S_IWUSR):
+                    os.chmod(path, current_mode | stat.S_IWUSR)
+            except OSError as exc:
+                raise RuntimeError(
+                    f"数据库文件仍是只读，且无法自动取消只读属性：\n{path}\n"
+                    "请关闭其他运行中的扫描器，右键该文件 → 属性 → 取消只读；"
+                    "同时检查 data 文件夹的安全权限。"
+                    f"\n原始错误：{exc}"
+                ) from exc
+
+        # 真实创建临时文件来测试目录写权限，不能只用 os.access，
+        # 因为 Windows NTFS ACL 与 os.access 的检测可能不一致。
+        try:
+            with tempfile.TemporaryFile(dir=storage_dir):
+                pass
+        except OSError as exc:
+            raise RuntimeError(
+                f"data 文件夹没有写入权限：\n{storage_dir}\n"
+                "SQLite 需要在此目录创建 WAL/SHM 日志文件。"
+                "请在文件夹属性 → 安全中为当前 Windows 用户启用修改权限，"
+                "或将程序和 data 一起放到有写入权限的普通文件夹。"
+                "不会移动或删除数据库。"
+                f"\n原始错误：{exc}"
+            ) from exc
+
+        # Windows/Unix跨进程单实例锁，避免两份扫描器同时更新同一个SQLite库。
+        # 锁文件仅位于原data目录；进程退出后文件句柄自动释放。
+        if self._instance_lock_file is None:
+            lock = None
+            try:
+                lock = (storage_dir / ".scanner.lock").open("a+b")
+                lock.seek(0, 2)
+                if lock.tell() == 0:
+                    lock.write(b"0")
+                    lock.flush()
+                lock.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self._instance_lock_file = lock
+            except OSError as exc:
+                if lock is not None:
+                    lock.close()
+                raise RuntimeError(
+                    "检测到另一个扫描器进程正在使用同一个data数据库，"
+                    "或无法创建单实例锁。请先关闭其他扫描器，再点击重试更新。"
+                    f"\n具体原因：{exc}"
+                ) from exc
+
+        # 检测已有数据库是否存在SQLite逻辑损坏，不自动清空或重建用户数据。
+        if self.db_path.exists():
+            try:
+                with sqlite_connection(self.db_path, timeout=30) as conn:
+                    result = conn.execute("PRAGMA quick_check").fetchone()
+                    if result is None or result[0] != "ok":
+                        raise RuntimeError(
+                            f"SQLite数据完整性检查失败：{result}。"
+                            "请先备份整个data文件夹，暂时不要删除数据库。"
+                        )
+            except sqlite3.DatabaseError as exc:
+                raise RuntimeError(
+                    "SQLite数据库文件可能损坏。请先备份整个data文件夹，"
+                    "不要删除或覆盖现有数据库。"
+                    f"\n错误：{exc}"
+                ) from exc
+
+        # 在原数据库上验证能开启写事务；ROLLBACK 不改变用户的历史行情。
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=12)
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.rollback()
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:
+            raise RuntimeError(
+                f"原数据库无法写入：\n{self.db_path}\n"
+                "请关闭正在使用该数据库的其他程序，"
+                "检查数据库文件是否为只读及 data 文件夹的 NTFS 修改权限。"
+                "不会自动迁移或重建数据库。"
+                f"\nSQLite 错误：{exc}"
+            ) from exc
+
+        cb(1, "原 data 文件夹可写，继续使用现有数据库")
+
+    def init_db(self):
+        with sqlite_connection(self.db_path, timeout=30) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS daily (
+                code TEXT NOT NULL,
+                trade_date TEXT NOT NULL,
+                name TEXT,
+                close REAL,
+                volume REAL,
+                trade_status INTEGER,
+                is_st INTEGER,
+                PRIMARY KEY (code, trade_date)
+            )
+            """)
+
+            conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_daily_date
+            ON daily(trade_date)
+            """)
+
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS day_universe (
+                trade_date TEXT NOT NULL,
+                code TEXT NOT NULL,
+                name TEXT,
+                trade_status INTEGER,
+                PRIMARY KEY (trade_date, code)
+            )
+            """)
+
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS day_status (
+                trade_date TEXT PRIMARY KEY,
+                expected_count INTEGER NOT NULL DEFAULT 0,
+                saved_count INTEGER NOT NULL DEFAULT 0,
+                failed_count INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'partial',
+                updated_at TEXT
+            )
+            """)
+
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS fetch_queue (
+                code TEXT NOT NULL,
+                trade_date TEXT NOT NULL,
+                name TEXT,
+                reason TEXT,
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT,
+                PRIMARY KEY (code, trade_date)
+            )
+            """)
+
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS stock_state (
+                code TEXT PRIMARY KEY,
+                name TEXT,
+                history_ready INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT
+            )
+            """)
+
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS init_queue (
+                code TEXT PRIMARY KEY,
+                name TEXT,
+                start_date TEXT,
+                end_date TEXT,
+                reason TEXT,
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT
+            )
+            """)
+
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS industry_cache (
+                code TEXT PRIMARY KEY,
+                name TEXT,
+                industry TEXT,
+                update_date TEXT,
+                classification TEXT,
+                fetched_at TEXT
+            )
+            """)
+
+            conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_industry_name
+            ON industry_cache(industry)
+            """)
+
+            # 东方财富行业资金流排名与行业成分股代码缓存。
+            # 刷新结果使用同一事务替换，避免排名和成分股错配。
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS fund_top5_snapshot (
+                rank INTEGER PRIMARY KEY,
+                industry TEXT NOT NULL,
+                net_yuan REAL NOT NULL,
+                fetched_at TEXT NOT NULL
+            )
+            """)
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS fund_top5_member (
+                rank INTEGER NOT NULL,
+                stock_code TEXT NOT NULL,
+                PRIMARY KEY(rank, stock_code)
+            )
+            """)
+            existing={r[1] for r in conn.execute("PRAGMA table_info(fund_top5_snapshot)")}
+            if "source" not in existing:
+                conn.execute("ALTER TABLE fund_top5_snapshot ADD COLUMN source TEXT NOT NULL DEFAULT '东方财富'")
+            conn.execute("""CREATE TABLE IF NOT EXISTS fund_source_health(
+                source TEXT PRIMARY KEY, successes INTEGER NOT NULL DEFAULT 0,
+                consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                last_latency REAL, last_success TEXT, last_failure TEXT
+            )""")
+
+            conn.executescript("""
+            CREATE TABLE IF NOT EXISTS signal_history (
+                code TEXT NOT NULL, signal_date TEXT NOT NULL, strategy TEXT NOT NULL,
+                filter_key TEXT NOT NULL, name TEXT, payload TEXT NOT NULL,
+                source TEXT NOT NULL, recorded_at TEXT,
+                PRIMARY KEY(code, signal_date, strategy, filter_key));
+            CREATE INDEX IF NOT EXISTS idx_signal_code_date ON signal_history(code, signal_date);
+            """)
+            # 兼容原版数据库：旧行保留，缺失换手率以 NULL 表示。
+            columns = {r[1] for r in conn.execute("PRAGMA table_info(daily)")}
+            if "turnover" not in columns:
+                conn.execute("ALTER TABLE daily ADD COLUMN turnover REAL")
+            conn.commit()
+
+    def upsert_daily_rows(self, conn, rows):
+        if not rows:
+            return
+
+        conn.executemany("""
+        INSERT OR REPLACE INTO daily
+        (
+            code, trade_date, name,
+            close, volume, trade_status, is_st, turnover
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, rows)
+
+    def mark_history_ready(self, conn, code, name):
+        conn.execute("""
+        INSERT INTO stock_state
+        (code, name, history_ready, updated_at)
+        VALUES (?, ?, 1, ?)
+        ON CONFLICT(code) DO UPDATE SET
+            name=excluded.name,
+            history_ready=1,
+            updated_at=excluded.updated_at
+        """, (code, name, self.now_text()))
+
+        conn.execute(
+            "DELETE FROM init_queue WHERE code=?",
+            (code,)
+        )
+
+    def queue_init_failure(
+        self,
+        conn,
+        code,
+        name,
+        start_date,
+        end_date,
+        reason,
+    ):
+        conn.execute("""
+        INSERT INTO init_queue
+        (
+            code, name, start_date, end_date,
+            reason, retry_count, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, 1, ?)
+        ON CONFLICT(code) DO UPDATE SET
+            name=excluded.name,
+            start_date=excluded.start_date,
+            end_date=excluded.end_date,
+            reason=excluded.reason,
+            retry_count=init_queue.retry_count + 1,
+            updated_at=excluded.updated_at
+        """, (
+            code,
+            name,
+            start_date,
+            end_date,
+            str(reason)[:500],
+            self.now_text(),
+        ))
+
+    def queue_day_failure(
+        self,
+        conn,
+        code,
+        trade_date,
+        name,
+        reason,
+    ):
+        conn.execute("""
+        INSERT INTO fetch_queue
+        (
+            code, trade_date, name,
+            reason, retry_count, updated_at
+        )
+        VALUES (?, ?, ?, ?, 1, ?)
+        ON CONFLICT(code, trade_date) DO UPDATE SET
+            name=excluded.name,
+            reason=excluded.reason,
+            retry_count=fetch_queue.retry_count + 1,
+            updated_at=excluded.updated_at
+        """, (
+            code,
+            trade_date,
+            name,
+            str(reason)[:500],
+            self.now_text(),
+        ))
+
+    @staticmethod
+    def clear_day_failure(conn, code, trade_date):
+        conn.execute("""
+        DELETE FROM fetch_queue
+        WHERE code=? AND trade_date=?
+        """, (code, trade_date))
+
+    def get_history_ready_codes(self) -> set[str]:
+        # 四种策略中 MA20 的“昨日/今日”判断至少需要21根
+        # 个股实际正常交易K线。这里直接以数据库实际行数为准，
+        # 可兼容之前只为 MA10 建过较短历史的旧数据库。
+        with sqlite_connection(self.db_path, timeout=30) as conn:
+            existing = conn.execute("""
+                SELECT code
+                FROM daily
+                WHERE trade_status=1 AND close > 0 AND close < 1.0e308
+                  AND volume IS NOT NULL AND volume >= 0 AND volume < 1.0e308
+                GROUP BY code
+                HAVING COUNT(*) >= 23
+            """).fetchall()
+            # IPO等不足23根有效K线的股票历史只需初始化一次，
+            # 以后按每日增量更新即可，不在每次启动全量重抓。
+            recorded = conn.execute("""
+                SELECT code FROM stock_state WHERE history_ready=1
+            """).fetchall()
+
+        return {r[0] for r in existing} | {r[0] for r in recorded}
+
+    def get_existing_codes_for_date(self, trade_date: str) -> set[str]:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
+            rows = conn.execute("""
+                SELECT code
+                FROM daily
+                WHERE trade_date=? AND trade_status=1
+                  AND close > 0 AND close < 1.0e308
+                  AND volume IS NOT NULL AND volume >= 0 AND volume < 1.0e308
+            """, (trade_date,)).fetchall()
+
+        return {r[0] for r in rows}
+
+    def get_day_universe(self, trade_date: str) -> pd.DataFrame:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
+            return pd.read_sql_query("""
+                SELECT trade_date, code, name, trade_status
+                FROM day_universe
+                WHERE trade_date=?
+                ORDER BY code
+            """, conn, params=(trade_date,))
+
+    def get_partial_dates(self) -> list[str]:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
+            rows = conn.execute("""
+                SELECT trade_date
+                FROM day_status
+                WHERE status <> 'complete'
+                ORDER BY trade_date
+            """).fetchall()
+
+        return [r[0] for r in rows]
+
+    def get_latest_processed_date(self) -> Optional[str]:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
+            row = conn.execute("""
+                SELECT MAX(trade_date)
+                FROM day_status
+            """).fetchone()
+
+        return row[0] if row and row[0] else None
+
+    def get_latest_daily_date(self) -> Optional[str]:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
+            row = conn.execute("""
+                SELECT MAX(trade_date)
+                FROM daily
+                WHERE trade_status=1 AND close > 0 AND close < 1.0e308
+                  AND volume IS NOT NULL AND volume >= 0 AND volume < 1.0e308
+            """).fetchone()
+
+        return row[0] if row and row[0] else None
+
+    def get_day_status_info(self, trade_date: str):
+        with sqlite_connection(self.db_path, timeout=30) as conn:
+            row = conn.execute("""
+                SELECT
+                    expected_count,
+                    saved_count,
+                    failed_count,
+                    status
+                FROM day_status
+                WHERE trade_date=?
+            """, (trade_date,)).fetchone()
+
+        if not row:
+            return None
+
+        return {
+            "expected": int(row[0]),
+            "saved": int(row[1]),
+            "failed": int(row[2]),
+            "status": str(row[3]),
+        }
+
+    def update_day_status(self, trade_date: str):
+        with sqlite_connection(self.db_path, timeout=30) as conn:
+            expected = conn.execute("""
+                SELECT COUNT(*)
+                FROM day_universe
+                WHERE trade_date=? AND trade_status=1
+            """, (trade_date,)).fetchone()[0]
+
+            # 仅统计“该交易日应当交易的股票”中实际下载成功的条目；
+            # 旧日多余股票记录不能把完整率虚增到100%。
+            saved = conn.execute("""
+                SELECT COUNT(*)
+                FROM day_universe AS u
+                INNER JOIN daily AS d
+                    ON d.code=u.code AND d.trade_date=u.trade_date
+                WHERE u.trade_date=? AND u.trade_status=1
+                  AND d.trade_status=1 AND d.close > 0 AND d.close < 1.0e308
+                  AND d.volume IS NOT NULL AND d.volume >= 0 AND d.volume < 1.0e308
+            """, (trade_date,)).fetchone()[0]
+
+            # 以前失败、现在已写入成功行情的项目，应自动清理队列。
+            conn.execute("""
+                DELETE FROM fetch_queue
+                WHERE trade_date=?
+                  AND EXISTS (
+                    SELECT 1 FROM daily AS d
+                    WHERE d.code=fetch_queue.code
+                      AND d.trade_date=fetch_queue.trade_date
+                      AND d.trade_status=1 AND d.close > 0 AND d.close < 1.0e308
+                      AND d.volume IS NOT NULL AND d.volume >= 0 AND d.volume < 1.0e308
+                  )
+            """, (trade_date,))
+            failed = conn.execute("""
+                SELECT COUNT(*) FROM fetch_queue
+                WHERE trade_date=?
+                  AND code IN (
+                    SELECT code FROM day_universe
+                    WHERE trade_date=? AND trade_status=1
+                  )
+            """, (trade_date, trade_date)).fetchone()[0]
+
+            status = (
+                "complete"
+                if expected > 0 and saved >= expected and failed == 0
+                else "partial"
+            )
+
+            conn.execute("""
+                INSERT INTO day_status
+                (
+                    trade_date, expected_count,
+                    saved_count, failed_count,
+                    status, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(trade_date) DO UPDATE SET
+                    expected_count=excluded.expected_count,
+                    saved_count=excluded.saved_count,
+                    failed_count=excluded.failed_count,
+                    status=excluded.status,
+                    updated_at=excluded.updated_at
+            """, (
+                trade_date,
+                int(expected),
+                int(saved),
+                int(failed),
+                status,
+                self.now_text(),
+            ))
+
+            conn.commit()
+
+        return {
+            "expected": int(expected),
+            "saved": int(saved),
+            "failed": int(failed),
+            "status": status,
+        }
+
+    # -------------------- BaoStock 会话 --------------------
+
+    def login(self):
+        self._last_login_mono=time.monotonic()
+
+    def logout(self):
+        pass
+
+    def reconnect(self):
+        pass
+
+    def ensure_session_fresh(self):
+        pass
+
+    @staticmethod
+    def result_to_df(rs) -> pd.DataFrame:
+        if rs.error_code != "0":
+            raise RuntimeError(
+                f"{rs.error_code} {rs.error_msg}"
+            )
+
+        rows = []
+        while rs.next():
+            rows.append(rs.get_row_data())
+
+        return pd.DataFrame(rows, columns=rs.fields)
+
+    def run_query(self, query_func) -> pd.DataFrame:
+        last_error = None
+
+        for attempt in range(1, QUERY_RETRY + 1):
+            try:
+                self.ensure_session_fresh()
+                return query_func()
+            except Exception as exc:
+                last_error = exc
+                if attempt < QUERY_RETRY:
+                    try:
+                        self.reconnect()
+                    except Exception:
+                        pass
+                    time.sleep(RETRY_WAIT * attempt)
+
+        raise last_error
+
+    # -------------------- BaoStock 查询 --------------------
+
+    def query_trade_dates(self, first, last):
+        return self.run_query(lambda:self._quotes.calendar(first,last))
+
+    def query_index_exact_day(self, date):
+        return self.run_query(lambda:self._quotes.index_exact(date))
+
+    def get_recent_calendar_trade_dates(
+        self,
+        days_back: int = 90,
+    ) -> list[str]:
+        end = datetime.now(CST).date()
+        start = end - timedelta(days=days_back)
+
+        df = self.query_trade_dates(
+            start.strftime("%Y-%m-%d"),
+            end.strftime("%Y-%m-%d"),
+        )
+
+        if df.empty:
+            raise RuntimeError("AKShare交易日历返回空数据")
+
+        return sorted(set(
+            df.loc[
+                df["is_trading_day"].astype(str) == "1",
+                "calendar_date",
+            ].astype(str).tolist()
+        ))
+
+    def is_today_trading_day(self) -> bool:
+        today = self.today_cn()
+        df = self.query_trade_dates(today, today)
+
+        if df.empty:
+            raise RuntimeError("今日交易日历返回空数据")
+
+        return str(df.iloc[0].get("is_trading_day", "0")) == "1"
+
+    def get_latest_available_trade_date(self) -> str:
+        dates = self.get_recent_calendar_trade_dates()
+
+        if not dates:
+            raise RuntimeError("未找到最近交易日")
+
+        # 交易日历告诉我们“应该交易”，指数K线告诉我们“数据已入库”。
+        for trade_date in reversed(dates[-12:]):
+            if not self.query_index_exact_day(trade_date).empty:
+                return trade_date
+
+        raise RuntimeError("最近交易日均未找到已入库日线")
+
+    def recent_n_trade_dates(self, end_date: str, n: int) -> list[str]:
+        end = datetime.strptime(end_date, "%Y-%m-%d").date()
+        start = end - timedelta(days=max(80, n * 3))
+
+        df = self.query_trade_dates(
+            start.strftime("%Y-%m-%d"),
+            end_date,
+        )
+
+        dates = sorted(set(
+            df.loc[
+                df["is_trading_day"].astype(str) == "1",
+                "calendar_date",
+            ].astype(str).tolist()
+        ))
+
+        if len(dates) < n:
+            raise RuntimeError(
+                f"只找到 {len(dates)} 个交易日，少于需要的 {n} 个"
+            )
+
+        return dates[-n:]
+
+    def get_previous_market_trade_date(
+        self,
+        trade_date: str,
+    ) -> Optional[str]:
+        end = (
+            datetime.strptime(trade_date, "%Y-%m-%d").date()
+            - timedelta(days=1)
+        )
+        start = end - timedelta(days=15)
+
+        df = self.query_trade_dates(
+            start.strftime("%Y-%m-%d"),
+            end.strftime("%Y-%m-%d"),
+        )
+
+        if df.empty:
+            return None
+
+        dates = sorted(set(
+            df.loc[
+                df["is_trading_day"].astype(str) == "1",
+                "calendar_date",
+            ].astype(str).tolist()
+        ))
+
+        return dates[-1] if dates else None
+
+    def query_all_a_stocks(self,trade_date):
+        df=self.run_query(lambda:self._quotes.stocks(trade_date))
+        df=df[df["code"].astype(str).map(self.is_a_share_code)].copy()
+        df["tradeStatus"]=pd.to_numeric(df["tradeStatus"],errors="coerce").fillna(0).astype(int)
+        return (df[["code","tradeStatus","code_name"]]
+                .rename(columns={"tradeStatus":"trade_status","code_name":"name"})
+                .drop_duplicates("code").sort_values("code").reset_index(drop=True))
+
+    @staticmethod
+    def normalize_industry_name(value: str) -> str:
+        """
+        BaoStock 常见行业值类似 J66货币金融服务、I65软件和信息技术服务。
+        GUI 中去掉前面的行业编码，只保留可读名称。
+        """
+        value = str(value or "").strip()
+
+        if not value or value.lower() == "nan":
+            return "未分类"
+
+        cleaned = re.sub(r"^[A-Za-z]\d+\s*", "", value).strip()
+        return cleaned or value
+
+    def query_stock_industry_all(self, batch_callback=None, target_codes=None):
+        # Industry failures are managed inside the provider adapter; partial
+        # successful board batches must not be thrown away by a full retry.
+        return self._quotes.industries(batch_callback, target_codes, self._check_cancel)
+
+    def get_industry_map(self) -> dict[str, str]:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
+            rows = conn.execute("""
+                SELECT code, industry
+                FROM industry_cache
+            """).fetchall()
+
+        return {
+            str(code): self.normalize_industry_name(industry)
+            for code, industry in rows
+            if code
+        }
+
+    def _industry_cache_info(self):
+        with sqlite_connection(self.db_path, timeout=30) as conn:
+            row = conn.execute("""
+                SELECT COUNT(*), MAX(fetched_at)
+                FROM industry_cache
+            """).fetchone()
+
+        count = int(row[0] or 0)
+        fetched_at = row[1] if row else None
+
+        fresh = False
+
+        if fetched_at:
+            try:
+                dt = datetime.strptime(
+                    fetched_at,
+                    "%Y-%m-%d %H:%M:%S",
+                )
+                fresh = (
+                    datetime.now() - dt
+                    < timedelta(days=INDUSTRY_CACHE_DAYS)
+                )
+            except Exception:
+                fresh = False
+
+        return count, fresh
+
+    def refresh_industry_cache(
+        self,
+        latest_stocks: pd.DataFrame,
+        cb: ProgressCallback,
+        start_p: float,
+        end_p: float,
+        force: bool = False,
+    ) -> str:
+        """Update industry members progressively and return a visible warning.
+
+        Retain already committed sector rows after upstream failures. Do not
+        replace unrelated cached taxonomies or fabricate missing memberships.
+        """
+        count, fresh = self._industry_cache_info()
+        target = set(latest_stocks["code"].astype(str)) if (
+            latest_stocks is not None and "code" in latest_stocks) else set()
+        cached_codes = set(self.get_industry_map())
+        coverage = len(target & cached_codes) / len(target) if target else 0.
+        if not force and fresh and coverage >= .97:
+            cb(end_p, f"板块分类缓存已就绪 · {coverage:.1%}")
+            return ""
+
+        cb(start_p, "更新行业板块分类 · 东方财富 / 新浪备用")
+        fetched_batches = 0
+        now = self.now_text()
+
+        def persist(batch, provider, sector):
+            nonlocal fetched_batches
+            self._check_cancel()
+            rows = [
+                (str(r.code), str(r.code_name), str(r.industry), "",
+                 str(r.industryClassification), now)
+                for r in batch.itertuples(index=False)]
+            if not rows:
+                return
+            # EastMoney can update existing associations; Sina fallback only
+            # fills uncategorized stocks and never replaces EM categories.
+            statement = "INSERT OR REPLACE" if provider == "eastmoney" else "INSERT OR IGNORE"
+            with sqlite_connection(self.db_path) as conn:
+                conn.executemany(
+                    statement + " INTO industry_cache "
+                    "(code,name,industry,update_date,classification,fetched_at) "
+                    "VALUES (?,?,?,?,?,?)", rows)
+                conn.commit()
+            fetched_batches += 1
+            cb(min(end_p - .01, start_p + min(fetched_batches / 110., .98)
+                   * (end_p - start_p)),
+               f"行业分类已保存 {fetched_batches} 个板块 · {sector}")
+
+        error = ""
+        details = {}
+        try:
+            frame = self.query_stock_industry_all(
+                batch_callback=persist, target_codes=target)
+            details = frame.attrs.get("industry_statistics", {})
+        except MarketUpdateCancelled:
+            raise
+        except Exception as exc:
+            error = str(exc)
+        # Every successful industry batch is already committed by persist.
+        # Refresh the in-memory prepared sector signals without touching bars.
+        current_map = self.get_industry_map()
+        total = len(current_map)
+        actual = len(target & set(current_map)) / len(target) if target else 0.
+        self._sector_chart_cache.clear()
+        with self._scan_data_lock:
+            self._scan_prepared_cache = None
+        cb(end_p, f"板块分类 {len(set(current_map.values()))} 个行业 · "
+                  f"{total} 只股票 · 覆盖率 {actual:.1%}")
+        if error:
+            return (f"板块分类获取失败，已保留 {total} 只本地分类；"
+                    f"可点击「重新获取分类」。原因：{error[:260]}")
+        missing = len(target - set(current_map))
+        errors = details.get("errors", [])
+        if missing or errors:
+            return (f"板块分类部分不完整：覆盖 {len(target)-missing}/{len(target)} 只股票，"
+                    f"来源异常 {len(errors)} 项。已保存成功数据，"
+                    "可点击「重新获取分类」。"
+                    + (f"示例：{str(errors[0])[:150]}" if errors else ""))
+        return ""
+
+    # -------------------- 近5日行业资金TOP5（仅同花顺） --------------------
+
+    FUND_RANK_TIMEOUT=25
+    FUND_JSON_PREFIX='__AShareMA_Fund_JSON__='
+    FUND_CHILD=r"""
+import sys
+import akshare as ak
+if len(sys.argv)!=2 or sys.argv[1]!='ths_rank':
+    raise ValueError('only ths_rank is supported')
+data=ak.stock_fund_flow_industry(symbol='5日排行')
+fields=['行业','净额']
+if data is None or data.empty or any(x not in data.columns for x in fields):
+    raise RuntimeError('同花顺五日行业资金排名为空或缺少字段')
+print('__AShareMA_Fund_JSON__='+data[fields].to_json(orient='records',force_ascii=False),flush=True)
+"""
+
+    @classmethod
+    def _fund_request(cls,endpoint,sector='',timeout=20):
+        if endpoint != 'ths_rank':
+            raise ValueError('invalid fund endpoint')
+        args=[sys.executable,'-c',cls.FUND_CHILD,endpoint]
+        if sector: args.append(sector)
+        env=os.environ.copy()
+        env['PYTHONIOENCODING']='utf-8'
+        try:
+            done=subprocess.run(args,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
+                                encoding='utf-8',errors='replace',text=True,env=env,timeout=timeout,
+                                creationflags=(subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0),check=False)
+        except subprocess.TimeoutExpired as exc:
+            raise TimeoutError(f'{endpoint} 请求超过{timeout}秒') from exc
+        except OSError as exc:
+            raise RuntimeError(f'资金接口子进程启动失败：{exc}') from exc
+        if done.returncode:
+            raise RuntimeError((done.stderr or done.stdout or '子进程错误')[-500:])
+        if cls.FUND_JSON_PREFIX not in done.stdout:
+            raise RuntimeError('资金接口未返回可解析数据')
+        raw=done.stdout.rsplit(cls.FUND_JSON_PREFIX,1)[-1].splitlines()[0]
+        try: records=json.loads(raw)
+        except (ValueError,TypeError) as exc: raise RuntimeError('资金解析失败') from exc
+        if not isinstance(records,list):
+            raise RuntimeError('资金结果格式错误')
+        return pd.DataFrame(records)
+
+
+
+
+
+    def load_fund_top5(self) -> tuple[list[dict], dict[int, set[str]]]:
+        """仅查询五日资金净流入 TOP5 行业榜单。
+
+        兼容旧调用方返回 (rows, {})，但不读取或请求成分股数据。
+        """
+        with sqlite_connection(self.db_path, timeout=30) as conn:
+            rows = conn.execute("""
+                SELECT rank,industry,net_yuan,fetched_at,source
+                FROM fund_top5_snapshot WHERE source='同花顺' ORDER BY rank
+            """).fetchall()
+        return ([dict(rank=int(rank),name=name,net_yuan=float(amount),
+                      fetched_at=fetched_at,source=source)
+                 for rank,name,amount,fetched_at,source in rows], {})
+
+
+    def _fund_complete_snapshot(self,notify,now):
+        """仅使用同花顺五日行业资金净流入排名，不访问任何成分股接口。"""
+        notify('同花顺 · 正在获取近5日行业主力资金净流入排名…')
+        ranked=self._fund_request('ths_rank',timeout=self.FUND_RANK_TIMEOUT)
+        if ranked.empty or not {'行业','净额'}.issubset(ranked.columns):
+            raise RuntimeError('同花顺五日行业资金榜单缺少必要字段')
+        ranked=ranked[['行业','净额']].copy()
+        ranked['净额']=pd.to_numeric(ranked['净额'],errors='coerce')
+        ranked=ranked.dropna(subset=['行业','净额'])
+        ranked=ranked.loc[ranked['净额'].map(math.isfinite)]
+        ranked['行业']=ranked['行业'].astype(str).str.strip()
+        ranked=ranked[ranked['行业'].ne('')].drop_duplicates('行业')
+        ranked=ranked.sort_values('净额',ascending=False).head(5)
+        if len(ranked)!=5:
+            raise RuntimeError(f'同花顺有效行业只有{len(ranked)}个，不足5个')
+        stamp=now.strftime('%Y-%m-%d %H:%M:%S')
+        # AKShare 同花顺该接口的资金单位为亿元，数据库仍保存元。
+        rows=[(i,str(item['行业']),float(item['净额'])*100000000,stamp,'同花顺')
+              for i,(_,item) in enumerate(ranked.iterrows(),1)]
+        notify('同花顺 · 近5日行业资金TOP5排名获取完成（5/5）')
+        return rows
+
+
+    def refresh_fund_top5(self,force=False,progress=None):
+        """单数据源：失败保留旧榜单，不影响八种选股策略。"""
+        notify=progress or (lambda _:None)
+        previous,_=self.load_fund_top5()
+        now=datetime.now(CST)
+        if (not force and len(previous)==5
+            and previous[0]['fetched_at'][:10]==now.strftime('%Y-%m-%d')
+            and (now.hour<18 or previous[0]['fetched_at'][11:13]>='18')):
+            return '已使用今日同花顺近5日资金TOP5缓存'
+        if now.weekday()<5 and now.hour<18:
+            if previous:
+                return '今日行情未结算，沿用缓存；18:00后可刷新'
+            raise RuntimeError('交易日18:00后可获取完整的近5日资金榜单')
+        errors=[]
+        # 对短暂网络故障进行一次重试，彻底失败时不删除旧快照。
+        for attempt in (1,2):
+            try:
+                if attempt>1:
+                    notify('同花顺 · 首次请求失败，正在重试（2/2）…')
+                rows=self._fund_complete_snapshot(notify,now)
+                with sqlite_connection(self.db_path, timeout=20) as conn:
+                    conn.execute('DELETE FROM fund_top5_snapshot')
+                    # 清理早期程序遗留的成分股缓存，新版本不再使用。
+                    conn.execute('DELETE FROM fund_top5_member')
+                    conn.executemany(
+                        'INSERT INTO fund_top5_snapshot(rank,industry,net_yuan,fetched_at,source) VALUES(?,?,?,?,?)',
+                        rows)
+                return '同花顺 · 近5日行业资金TOP5排名已更新'
+            except (RuntimeError,TimeoutError,ValueError,sqlite3.Error) as exc:
+                errors.append(f'第{attempt}次：{exc}')
+                if attempt==1:
+                    time.sleep(0.8)
+        raise RuntimeError('同花顺五日资金TOP5排名刷新失败，保留旧缓存。\n'
+                           +'\n'.join(errors)[:2500])
+
+
+    def persist_day_universe(
+        self,
+        trade_date: str,
+        stocks: pd.DataFrame,
+    ):
+        rows = [
+            (
+                trade_date,
+                str(r.code),
+                str(r.name or ""),
+                int(r.trade_status),
+            )
+            for r in stocks.itertuples(index=False)
+        ]
+
+        with sqlite_connection(self.db_path, timeout=30) as conn:
+            conn.executemany("""
+                INSERT OR REPLACE INTO day_universe
+                (trade_date, code, name, trade_status)
+                VALUES (?, ?, ?, ?)
+            """, rows)
+
+            active_count = sum(1 for row in rows if row[3] == 1)
+
+            conn.execute("""
+                INSERT INTO day_status
+                (
+                    trade_date, expected_count,
+                    saved_count, failed_count,
+                    status, updated_at
+                )
+                VALUES (?, ?, 0, 0, 'partial', ?)
+                ON CONFLICT(trade_date) DO UPDATE SET
+                    expected_count=excluded.expected_count,
+                    updated_at=excluded.updated_at
+            """, (
+                trade_date,
+                active_count,
+                self.now_text(),
+            ))
+
+            conn.commit()
+
+    def query_stock_history(self,code,start_date,end_date):
+        return self.run_query(lambda:self._quotes.history(code,start_date,end_date))
+
+    def dataframe_to_daily_rows(
+        self,
+        df: pd.DataFrame,
+        name: str,
+    ) -> list[tuple]:
+        if df is None or df.empty:
+            return []
+
+        rows = []
+
+        for r in df.itertuples(index=False):
+            close = self.safe_float(getattr(r, "close", None))
+            volume = self.safe_float(getattr(r, "volume", None))
+
+            # NaN、inf、非法价格/成交量不得进入SQLite，避免污染均线和完整率。
+            if (close is None or volume is None
+                    or not math.isfinite(close) or close <= 0
+                    or not math.isfinite(volume) or volume < 0):
+                continue
+
+            rows.append((
+                str(getattr(r, "code")),
+                str(getattr(r, "date")),
+                name,
+                close,
+                volume,
+                self.safe_int(getattr(r, "tradestatus", 1)),
+                self.safe_int(getattr(r, "isST", 0)),
+                self.valid_turnover(getattr(r, "turn", None)),
+            ))
+
+        return rows
+
+    @staticmethod
+    def valid_turnover(value):
+        value = AKShareBackend.safe_float(value)
+        return value if value is not None and math.isfinite(value) and value >= 0 else None
+
+    def backfill_turnover(self, end_date: str, cb: ProgressCallback) -> str:
+        """仅补近期正常交易记录的缺失换手率；逐股提交，NULL 即续传标记。"""
+        with sqlite_connection(self.db_path, timeout=30) as conn:
+            dates = conn.execute("SELECT DISTINCT trade_date FROM daily WHERE trade_date<=? "
+                                 "ORDER BY trade_date DESC LIMIT 80", (end_date,)).fetchall()
+            if not dates:
+                return ""
+            start = dates[-1][0]
+            jobs = conn.execute("SELECT code, MIN(trade_date), MAX(trade_date) FROM daily "
+                                "WHERE trade_date BETWEEN ? AND ? AND trade_status=1 "
+                                "AND turnover IS NULL GROUP BY code ORDER BY code",
+                                (start, end_date)).fetchall()
+            self._check_cancel()
+        for idx, (code, first, last) in enumerate(jobs, 1):
+            self.stage_progress(cb, 94, 96, idx-1, len(jobs),
+                                f"补换手率 {idx}/{len(jobs)} · {self.symbol_only(code)}")
+            try:
+                data = self.query_stock_history(code, first, last)
+                rows = []
+                for row in data.itertuples(index=False):
+                    value = self.valid_turnover(getattr(row, "turn", None))
+                    if value is not None:
+                        rows.append((value, code, str(row.date)))
+                with sqlite_connection(self.db_path, timeout=30) as conn:
+                    conn.executemany("UPDATE daily SET turnover=? WHERE code=? AND trade_date=? "
+                                     "AND turnover IS NULL", rows)
+            except Exception:
+                # 行情不受影响；缺失值保留，下次启动继续重试。
+                pass
+            if idx % BATCH_SIZE == 0:
+                time.sleep(BATCH_PAUSE)
+        cb(96, "近期换手率检查完成")
+        with sqlite_connection(self.db_path, timeout=30) as conn:
+            missing = conn.execute("SELECT COUNT(*) FROM daily WHERE trade_date BETWEEN ? AND ? "
+                                   "AND trade_status=1 AND turnover IS NULL", (start, end_date)).fetchone()[0]
+        return (f"近期有 {missing} 条换手率缺失，放量换手率策略结果可能不完整；下次启动继续补抓。"
+                if missing else "")
+
+    # -------------------- 历史初始化 --------------------
+
+    def retry_init_queue(
+        self,
+        cb: ProgressCallback,
+        start_p: float,
+        end_p: float,
+    ):
+        with sqlite_connection(self.db_path, timeout=30) as conn:
+            rows = conn.execute("""
+                SELECT code, name, start_date, end_date
+                FROM init_queue
+                ORDER BY code
+            """).fetchall()
+
+        if not rows:
+            cb(end_p, "没有历史失败项")
+            return
+
+        total = len(rows)
+
+        with sqlite_connection(self.db_path, timeout=30) as conn:
+            for idx, (code, name, start_date, end_date) in enumerate(
+                rows,
+                start=1,
+            ):
+                self._check_cancel(conn)
+                self.stage_progress(
+                    cb,
+                    start_p,
+                    end_p,
+                    idx - 1,
+                    total,
+                    f"补历史失败 {idx}/{total} · {self.symbol_only(code)}",
+                )
+
+                try:
+                    df = self.query_stock_history(
+                        code,
+                        start_date,
+                        end_date,
+                    )
+                    data_rows = self.dataframe_to_daily_rows(
+                        df,
+                        name or "",
+                    )
+
+                    if not data_rows:
+                        raise RuntimeError("历史补抓返回空数据")
+
+                    self.upsert_daily_rows(conn, data_rows)
+                    self.mark_history_ready(conn, code, name or "")
+
+                except Exception as exc:
+                    self.queue_init_failure(
+                        conn,
+                        code,
+                        name or "",
+                        start_date,
+                        end_date,
+                        exc,
+                    )
+
+                if idx % BATCH_SIZE == 0:
+                    conn.commit()
+                    time.sleep(BATCH_PAUSE)
+
+            conn.commit()
+
+        cb(end_p, "历史失败补抓完成")
+
+    def initialize_missing_histories(
+        self,
+        latest_stocks: pd.DataFrame,
+        latest_date: str,
+        cb: ProgressCallback,
+        start_p: float,
+        end_p: float,
+    ):
+        trade_dates = self.recent_n_trade_dates(latest_date, INITIAL_TRADING_DAYS)
+        start_date = trade_dates[0]
+        ready_codes = self.get_history_ready_codes()
+        todo = latest_stocks[~latest_stocks["code"].isin(ready_codes)].copy()
+
+        if todo.empty:
+            cb(end_p, "历史缓存已就绪")
+            return
+
+        tasks = [(str(r.code), str(r.name or ""), start_date, latest_date)
+                 for r in todo.itertuples(index=False)]
+        total = len(tasks)
+        completed = set()
+        began = time.monotonic()
+        consecutive_errors = 0
+
+        def record(conn, code, name, fields=None, values=None, error=""):
+            nonlocal consecutive_errors
+            self._check_cancel(conn)
+            if code in completed:
+                return
+            try:
+                if error:
+                    raise RuntimeError(error)
+                if fields is None:
+                    df = self.query_stock_history(code, start_date, latest_date)
+                else:
+                    df = pd.DataFrame(values, columns=fields)
+                rows = self.dataframe_to_daily_rows(df, name)
+                rows = [row for row in rows if row[0] == code
+                        and start_date <= row[1] <= latest_date]
+                if not rows:
+                    raise RuntimeError("历史初始化返回空数据")
+                self.upsert_daily_rows(conn, rows)
+                self.mark_history_ready(conn, code, name)
+                consecutive_errors = 0
+            except Exception as exc:
+                consecutive_errors += 1
+                self.queue_init_failure(
+                    conn, code, name, start_date, latest_date, exc)
+            completed.add(code)
+            elapsed = time.monotonic() - began
+            eta = ""
+            if len(completed) >= 10:
+                sec = int(elapsed / len(completed) * (total-len(completed)))
+                hours, mins = divmod(sec // 60, 60)
+                eta = f" · 预计剩余 {hours}小时{mins:02d}分"
+            self.stage_progress(cb, start_p, end_p, len(completed), total,
+                                f"初始化历史 {len(completed)}/{total} · "
+                                f"{self.symbol_only(code)}{eta}")
+            if len(completed) % BATCH_SIZE == 0:
+                conn.commit()
+            if consecutive_errors >= 25:
+                conn.commit()
+                raise MarketDataUnavailable(
+                    "历史初始化连续25只股票下载失败，已安全停止；"
+                    "已获取数据仍保留，下次启动可继续")
+
+        # 全量历史初始化顺序执行，绝不创建额外 BaoStock 会话。
+        with sqlite_connection(self.db_path, timeout=30) as conn:
+            for code, name, _, _ in tasks:
+                self._check_cancel(conn)
+                if code in completed:
+                    continue
+                record(conn, code, name)
+                if len(completed) % BATCH_SIZE == 0:
+                    time.sleep(BATCH_PAUSE)
+            conn.commit()
+        cb(end_p, "历史缓存初始化完成")
+
+    # -------------------- 单日增量 --------------------
+
+    def fetch_exact_day_for_stock(
+        self,
+        code: str,
+        name: str,
+        trade_date: str,
+    ) -> list[tuple]:
+        df = self.query_stock_history(
+            code,
+            trade_date,
+            trade_date,
+        )
+
+        rows = self.dataframe_to_daily_rows(df, name)
+
+        exact = [
+            row for row in rows
+            if row[1] == trade_date and row[5] == 1
+        ]
+
+        if not exact:
+            raise RuntimeError("未返回目标交易日日K")
+
+        return exact
+
+    def process_trade_date(
+        self,
+        trade_date: str,
+        cb: ProgressCallback,
+        start_p: float,
+        end_p: float,
+    ):
+        self._check_cancel()
+        universe = self.get_day_universe(trade_date)
+
+        if universe.empty:
+            cb(start_p, f"读取 {trade_date} 股票列表")
+            universe = self.query_all_a_stocks(trade_date)
+            self.persist_day_universe(trade_date, universe)
+
+        active = universe[
+            universe["trade_status"] == 1
+        ].copy()
+
+        existing = self.get_existing_codes_for_date(trade_date)
+
+        todo = active[
+            ~active["code"].isin(existing)
+        ].copy()
+
+        if todo.empty:
+            info = self.update_day_status(trade_date)
+            cb(end_p, f"{trade_date} 已完整")
+            return info
+
+        total = len(todo)
+
+        tasks = [(str(r.code), str(r.name or ""), trade_date)
+                 for r in todo.itertuples(index=False)]
+        finished = set()
+        started = time.monotonic()
+        consecutive_errors = 0
+
+        def progress(code):
+            count = len(finished)
+            elapsed = time.monotonic() - started
+            eta_text = ""
+            if count >= 10 and elapsed > 0:
+                remaining = int(elapsed / count * (total - count))
+                hours, minutes = divmod(remaining // 60, 60)
+                eta_text = f" · 预计剩余 {hours}小时{minutes:02d}分"
+            self.stage_progress(cb, start_p, end_p, count, total,
+                                f"更新 {trade_date} · {count}/{total} · "
+                                f"{self.symbol_only(code)}{eta_text}")
+
+        def record(conn, code, name, fields=None, values=None, error=""):
+            nonlocal consecutive_errors
+            self._check_cancel(conn)
+            if code in finished:
+                return
+            try:
+                if error:
+                    raise RuntimeError(error)
+                if fields is None:
+                    rows = self.fetch_exact_day_for_stock(code, name, trade_date)
+                else:
+                    raw = pd.DataFrame(values, columns=fields)
+                    rows = self.dataframe_to_daily_rows(raw, name)
+                    rows = [row for row in rows
+                            if row[0] == code and row[1] == trade_date and row[5] == 1]
+                    if not rows:
+                        raise RuntimeError("未返回目标交易日日K")
+                self.upsert_daily_rows(conn, rows)
+                self.clear_day_failure(conn, code, trade_date)
+                consecutive_errors = 0
+            except Exception as exc:
+                consecutive_errors += 1
+                self.queue_day_failure(conn, code, trade_date, name, exc)
+            finished.add(code)
+            progress(code)
+            if consecutive_errors >= 25:
+                conn.commit()
+                raise MarketDataUnavailable(
+                    "连续25只股票请求失败，已停止以防长时间无效重试；"
+                    "数据已保存，下次联网正常后继续抓取")
+            if len(finished) % BATCH_SIZE == 0:
+                conn.commit()
+
+        # 每日增量顺序执行；即使环境变量要求多工作进程也保持单连接。
+        with sqlite_connection(self.db_path, timeout=30) as conn:
+            for code, name, _ in tasks:
+                self._check_cancel(conn)
+                if code in finished:
+                    continue
+                record(conn, code, name)
+                if len(finished) % BATCH_SIZE == 0:
+                    time.sleep(BATCH_PAUSE)
+            conn.commit()
+
+        info = self.update_day_status(trade_date)
+        cb(end_p, f"{trade_date} 更新完成")
+        return info
+
+    def retry_partial_dates(
+        self,
+        latest_date: str,
+        cb: ProgressCallback,
+        start_p: float,
+        end_p: float,
+    ):
+        dates = [
+            d for d in self.get_partial_dates()
+            if d <= latest_date
+        ]
+
+        if not dates:
+            cb(end_p, "没有未完整交易日")
+            return
+
+        total = len(dates)
+
+        for idx, trade_date in enumerate(dates, start=1):
+            self._check_cancel()
+            s = start_p + (end_p - start_p) * ((idx - 1) / total)
+            e = start_p + (end_p - start_p) * (idx / total)
+
+            self.process_trade_date(
+                trade_date,
+                cb,
+                s,
+                e,
+            )
+
+    def process_new_trade_dates(
+        self,
+        latest_available: str,
+        cb: ProgressCallback,
+        start_p: float,
+        end_p: float,
+    ):
+        last_processed = self.get_latest_processed_date()
+        last_daily = self.get_latest_daily_date()
+        anchor = last_processed or last_daily
+
+        if anchor is None:
+            dates = [latest_available]
+
+        elif anchor >= latest_available:
+            # 首次历史建库通常已经有 latest_available，
+            # 但还需要建立该日的 universe/完整率状态。
+            dates = (
+                [latest_available]
+                if last_processed is None
+                else []
+            )
+
+        else:
+            start_date = (
+                datetime.strptime(anchor, "%Y-%m-%d").date()
+                + timedelta(days=1)
+            ).strftime("%Y-%m-%d")
+
+            df = self.query_trade_dates(
+                start_date,
+                latest_available,
+            )
+
+            if df.empty:
+                dates = []
+            else:
+                dates = sorted(set(
+                    df.loc[
+                        df["is_trading_day"].astype(str) == "1",
+                        "calendar_date",
+                    ].astype(str).tolist()
+                ))
+
+        if not dates:
+            cb(end_p, "没有新的交易日")
+            return
+
+        total = len(dates)
+
+        for idx, trade_date in enumerate(dates, start=1):
+            self._check_cancel()
+            s = start_p + (end_p - start_p) * ((idx - 1) / total)
+            e = start_p + (end_p - start_p) * (idx / total)
+
+            self.process_trade_date(
+                trade_date,
+                cb,
+                s,
+                e,
+            )
+
+    # -------------------- 启动更新 --------------------
+
+    def update_all(self, cb: ProgressCallback) -> UpdateResult:
+        self._cancel_update_event.clear()
+        # 数据库位置固定在程序同级 data：启动前仅做权限检查和原地修复。
+        self.prepare_storage(cb)
+        self.init_db()
+        self._sector_chart_cache.clear()
+        # A new market-data refresh invalidates the immutable per-session
+        # prepared-price cache; signal-history writes do not.
+        self._scan_prepared_cache = None
+
+        cb(1, "准备 AKShare 免费行情接口")
+        self.login()
+
+        try:
+            cb(5, "检查今天是否为交易日")
+            today = self.today_cn()
+            today_is_trading = self.is_today_trading_day()
+
+            cb(8, "确认最近已更新的交易日")
+            latest_available = self.get_latest_available_trade_date()
+
+            today_pending = (
+                today_is_trading
+                and latest_available != today
+            )
+
+            cb(11, f"读取 {latest_available} 股票列表")
+            latest_stocks = self.query_all_a_stocks(
+                latest_available
+            )
+
+            self._check_cancel()
+            # 先处理以前失败的历史初始化。
+            self.retry_init_queue(
+                cb,
+                12,
+                20,
+            )
+
+            self._check_cancel()
+            # 首次或有新上市股票时补历史。
+            self.initialize_missing_histories(
+                latest_stocks,
+                latest_available,
+                cb,
+                20,
+                66,
+            )
+
+            self._check_cancel()
+            # 以前中途失败的交易日优先补齐。
+            self.retry_partial_dates(
+                latest_available,
+                cb,
+                66,
+                80,
+            )
+
+            self._check_cancel()
+            # 数据库断点之后的新交易日。
+            self.process_new_trade_dates(
+                latest_available,
+                cb,
+                80,
+                94,
+            )
+
+            self._check_cancel()
+            turnover_warning = self.backfill_turnover(latest_available, cb)
+
+            self._check_cancel()
+            # 行业分类用于全部策略的板块联动。
+            industry_warning = self.refresh_industry_cache(
+                latest_stocks,
+                cb,
+                96,
+                97,
+            )
+
+            self._check_cancel()
+            cb(98, "校验最新交易日完整性")
+
+            # 确保 latest_available 至少建立 day_status。
+            universe = self.get_day_universe(latest_available)
+
+            if universe.empty:
+                self.process_trade_date(
+                    latest_available,
+                    cb,
+                    98,
+                    99,
+                )
+
+            status = self.update_day_status(
+                latest_available
+            )
+
+            previous_date = self.get_previous_market_trade_date(
+                latest_available
+            )
+
+            expected = status["expected"]
+            saved = status["saved"]
+            completeness = (
+                saved / expected * 100
+                if expected
+                else 0.0
+            )
+
+            warning_parts = [part for part in (turnover_warning, industry_warning) if part]
+
+            if today_pending:
+                warning_parts.append(
+                    "今日数据未更新，请在18:00后尝试更新；"
+                    f"当前显示 {latest_available}。"
+                )
+
+            if status["status"] != "complete":
+                warning_parts.append(
+                    f"{latest_available} 数据完整率 "
+                    f"{completeness:.2f}%，结果可能不完整。"
+                )
+
+            cb(100, "数据检查完成")
+
+            return UpdateResult(
+                scan_date=latest_available,
+                previous_trade_date=previous_date,
+                completeness=completeness,
+                expected=expected,
+                saved=saved,
+                failed=status["failed"],
+                today_pending=today_pending,
+                warning=" ".join(warning_parts),
+            )
+
+        finally:
+            self.logout()
+
+    @staticmethod
+    def filter_key(strategy: str, filters: Optional[RangeFilter] = None) -> str:
+        if strategy != "volume_turnover":
+            return "固定规则"
+        f = filters or RangeFilter()
+        return json.dumps([float(f.volume_min), float(f.volume_max) if f.volume_max is not None else None,
+                           float(f.turnover_min), float(f.turnover_max) if f.turnover_max is not None else None],
+                          ensure_ascii=False, separators=(",", ":"))
+
+    def record_signals(self, strategy: str, data: pd.DataFrame,
+                       filters: Optional[RangeFilter] = None, source: str = "扫描"):
+        if data.empty:
+            return
+        rows = []
+        key = self.filter_key(strategy, filters)
+        with sqlite_connection(self.db_path, timeout=30) as conn:
+            for item in data.to_dict("records"):
+                payload = {k: (None if pd.isna(v) else v) for k, v in item.items()}
+                code, day = str(item["_code_full"]), str(item["触发日"])
+                # 保存扫描当日的成交指标，便于以后查看当时的信号。
+                bar = conn.execute("SELECT volume,turnover FROM daily WHERE code=? AND trade_date=?",
+                                   (code, day)).fetchone()
+                if bar:
+                    payload.setdefault("换手率%", bar[1])
+                    if "放量倍数" not in payload:
+                        volumes = conn.execute("SELECT volume FROM daily WHERE code=? AND trade_date<? "
+                                               "AND trade_status=1 AND close IS NOT NULL AND volume IS NOT NULL "
+                                               "ORDER BY trade_date DESC LIMIT 5", (code, day)).fetchall()
+                        average = sum(v[0] for v in volumes)/5 if len(volumes)==5 else 0
+                        payload["放量倍数"] = bar[0]/average if average>0 else None
+                rows.append((code, day, strategy, key, str(item.get("名称", "")),
+                             json.dumps(payload, ensure_ascii=False, allow_nan=False), source, self.now_text()))
+        with sqlite_connection(self.db_path, timeout=30) as conn:
+            conn.executemany("""
+                INSERT INTO signal_history VALUES(?,?,?,?,?,?,?,?)
+                ON CONFLICT(code,signal_date,strategy,filter_key) DO UPDATE SET
+                    name=excluded.name,payload=CASE WHEN signal_history.source='扫描' AND excluded.source='本地回算'
+                    THEN signal_history.payload ELSE excluded.payload END,
+                    source=CASE WHEN signal_history.source='扫描' THEN '扫描' ELSE excluded.source END,
+                    recorded_at=excluded.recorded_at
+            """, rows)
+
+    def get_signal_history(self, code: str, end_date: str,
+                           filters: Optional[RangeFilter] = None) -> pd.DataFrame:
+        """回算这只股票的本地全部历史；保留已扫描过的其他参数方案。"""
+        filters = filters or RangeFilter()
+        with sqlite_connection(self.db_path, timeout=30) as conn:
+            raw = pd.read_sql_query("SELECT * FROM daily WHERE code=? AND trade_date<=? ORDER BY trade_date",
+                                    conn, params=(code, end_date))
+        if not raw.empty:
+            with sqlite_connection(self.db_path, timeout=30) as conn:
+                calendar = [r[0] for r in conn.execute(
+                    "SELECT DISTINCT trade_date FROM daily WHERE trade_date<=? "
+                    "ORDER BY trade_date", (end_date,)).fetchall()]
+            g = self._prepare_group(raw)
+            results = {key: [] for key, _, _ in STRATEGIES}
+            for pos in range(1, len(g)):
+                row, prev = g.iloc[pos], g.iloc[pos-1]
+                name_on_day = str(row.get("name", "") or "").strip().upper()
+                if (self.safe_int(row["is_st"]) == 1
+                        or name_on_day.lstrip("*").startswith("ST")):
+                    continue
+                for strategy in results:
+                    match = False
+                    if strategy == "volume_turnover":
+                        match = pos >= 5 and filters.matches(row)
+                    elif strategy == "ma5_turn_up":
+                        # MA5(t-2)要求至少7根有效K线（pos从0开始）。
+                        if pos >= 6:
+                            before = g.iloc[pos - 2]
+                            match = (
+                                pd.notna(row["MA5"])
+                                and pd.notna(prev["MA5"])
+                                and pd.notna(before["MA5"])
+                                and row["MA5"] > prev["MA5"]
+                                and prev["MA5"] <= before["MA5"]
+                            )
+                    elif strategy == "ma_convergence_up":
+                        match = pos + 1 >= STRATEGY_MIN_BARS[strategy] and ma_convergence_up_metrics(g, pos) is not None
+                    elif strategy == "low_first_board":
+                        match = low_first_board_metrics(g, pos, code, calendar) is not None
+                    elif pos + 1 >= STRATEGY_MIN_BARS[strategy] and prev["close"] > 0:
+                        if strategy.startswith("breakout_ma"):
+                            ma = 'MA' + strategy.replace('breakout_ma', '')
+                            match = (pd.notna(row[ma]) and pd.notna(prev[ma]) and row[ma] > 0
+                                     and pd.notna(row["VOL5_PREV"]) and row["VOL5_PREV"] > 0
+                                     and row["close"] > row[ma] and prev["close"] <= prev[ma]
+                                     and row["volume"] >= row["VOL5_PREV"] * VOLUME_RATIO)
+                        elif strategy == "ma5_cross_ma10":
+                            match = (pd.notna(prev["MA10"]) and row["MA10"] > 0
+                                     and row["MA5"] > row["MA10"] and prev["MA5"] <= prev["MA10"])
+                    if match:
+                        average = row["VOL5_PREV"]
+                        ratio = row["volume"] / average if pd.notna(average) and average > 0 else None
+                        payload = {"_code_full": code, "代码": self.symbol_only(code),
+                            "名称": row["name"], "触发日": row["trade_date"], "收盘价": row["close"],
+                            "放量倍数": ratio, "换手率%": row.get("turnover")}
+                        if strategy == "low_first_board":
+                            details = low_first_board_metrics(g, pos, code, calendar)
+                            payload.update({k: round(v, 3) if isinstance(v, float) else v
+                                            for k, v in details.items()})
+                        if strategy == "ma_convergence_up":
+                            old_gap, new_gap, gain = ma_convergence_up_metrics(g, pos)
+                            payload.update({"昨日粘合度%": round(old_gap, 3),
+                                            "今日发散度%": round(new_gap, 3),
+                                            "发散增加百分点": round(gain, 3)})
+                        results[strategy].append(payload)
+            for strategy, rows in results.items():
+                self.record_signals(strategy, pd.DataFrame(rows), filters, "本地回算")
+        with sqlite_connection(self.db_path, timeout=30) as conn:
+            history = pd.read_sql_query("SELECT * FROM signal_history WHERE code=? AND signal_date<=? "
+                                        "ORDER BY signal_date DESC,strategy,filter_key", conn, params=(code,end_date))
+            days = [r[0] for r in conn.execute("SELECT DISTINCT trade_date FROM daily WHERE trade_date<=? ORDER BY trade_date",
+                                             (end_date,))]
+        history["streak"] = 1
+        order = {day: i for i, day in enumerate(days)}
+        for _, group in history.groupby(["strategy", "filter_key"]):
+            last, streak = None, 0
+            for idx, row in group.sort_values("signal_date").iterrows():
+                position = order.get(row.signal_date)
+                streak = streak+1 if last is not None and position is not None and position==last+1 else 1
+                history.loc[idx,"streak"] = streak
+                last = position
+        return history
+
+    @staticmethod
+    def filter_results(data: pd.DataFrame, search: str = "", market: str = "全部市场",
+                       industry: str = "全部行业", low=None, high=None, sector=None) -> pd.DataFrame:
+        """快捷过滤只作用于当前策略的结果，不重新联网或改变信号。"""
+        if data.empty:
+            return data.copy()
+        mask = pd.Series(True, index=data.index)
+        if search.strip():
+            text = search.strip().casefold()
+            mask &= (data["代码"].astype(str).str.casefold().str.contains(text, regex=False)
+                     | data["名称"].astype(str).str.casefold().str.contains(text, regex=False))
+        codes = data["代码"].astype(str).str.zfill(6)
+        if market == "创业板":
+            mask &= codes.str.startswith(("300", "301"))
+        elif market == "科创板":
+            mask &= codes.str.startswith("688")
+        elif market == "主板":
+            mask &= ~codes.str.startswith(("300", "301", "688"))
+        if industry != "全部行业":
+            mask &= data["板块"].astype(str).eq(industry)
+        if sector:
+            mask &= data["板块"].astype(str).eq(sector)
+        change = pd.to_numeric(data["当日涨幅%"], errors="coerce")
+        if low is not None:
+            mask &= change >= low
+        if high is not None:
+            mask &= change <= high
+        return data.loc[mask].copy()
+
+    # -------------------- 扫描 --------------------
+
+    def _load_scan_data(
+        self,
+        end_date: str,
+        distinct_days: int = 80,
+    ) -> pd.DataFrame:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
+            dates = conn.execute("""
+                SELECT DISTINCT trade_date
+                FROM daily
+                WHERE trade_date <= ?
+                ORDER BY trade_date DESC
+                LIMIT ?
+            """, (
+                end_date,
+                distinct_days,
+            )).fetchall()
+
+            if not dates:
+                return pd.DataFrame()
+
+            oldest = dates[-1][0]
+
+            return pd.read_sql_query("""
+                SELECT
+                    code,
+                    trade_date,
+                    name,
+                    close,
+                    volume,
+                    trade_status,
+                    is_st,
+                    turnover
+                FROM daily
+                WHERE trade_date BETWEEN ? AND ?
+                ORDER BY code, trade_date
+            """, conn, params=(oldest, end_date))
+
+    @staticmethod
+    def _prepare_group(g: pd.DataFrame) -> pd.DataFrame:
+        g = g.copy()
+
+        g["close"] = pd.to_numeric(
+            g["close"],
+            errors="coerce",
+        )
+        g["volume"] = pd.to_numeric(
+            g["volume"],
+            errors="coerce",
+        )
+        g["trade_status"] = pd.to_numeric(
+            g["trade_status"],
+            errors="coerce",
+        )
+        g["is_st"] = pd.to_numeric(
+            g["is_st"],
+            errors="coerce",
+        )
+        if "turnover" not in g.columns:
+            g["turnover"] = float("nan")
+        g["turnover"] = pd.to_numeric(
+            g["turnover"],
+            errors="coerce",
+        )
+
+        # 排除无效行情（含旧版本遗留的0价、inf、异常负成交量）。
+        g[["close", "volume"]] = g[["close", "volume"]].replace(
+            [float("inf"), float("-inf")], float("nan")
+        )
+        g = (
+            g.dropna(subset=["close", "volume"])
+            .loc[lambda x: (x["trade_status"] == 1)
+                 & (x["close"] > 0) & (x["volume"] >= 0)]
+            .sort_values("trade_date")
+            .copy()
+        )
+
+        if g.empty:
+            return g
+
+        for window in MA_WINDOWS:
+            g[f"MA{window}"] = (
+                g["close"]
+                .rolling(window)
+                .mean()
+            )
+
+        g["VOL5_PREV"] = (
+            g["volume"]
+            .shift(1)
+            .rolling(VOLUME_AVG_DAYS)
+            .mean()
+        )
+
+        return g
+
+    def _prepared_scan_session(self, target_date: str,
+                               cancel_event: Optional[threading.Event] = None):
+        """Prepare historical bars once for every strategy in this GUI session.
+
+        Market update always runs before the Qt workspace and restarts the
+        process for further updates; signal_history writes do not alter
+        daily prices. A one-session cache never changes source data or DB.
+        Cooperative lock acquisition lets a newer strategy cancel stale scans.
+        """
+        def cancelled():
+            return cancel_event is not None and cancel_event.is_set()
+
+        if cancelled():
+            return None
+        while not self._scan_data_lock.acquire(timeout=.1):
+            if cancelled():
+                return None
+        try:
+            cached = self._scan_prepared_cache
+            if cached is not None and cached[0] == target_date:
+                return cached[1:]
+            raw = self._load_scan_data(target_date)
+            if cancelled():
+                return None
+            if raw.empty:
+                prepared = ([], [], {})
+            else:
+                dates = sorted(raw["trade_date"].astype(str).unique().tolist())
+                groups = []
+                for code, frame in raw.groupby("code", sort=False):
+                    if cancelled():
+                        return None
+                    stock = self._prepare_group(frame)
+                    if not stock.empty:
+                        groups.append((code, stock))
+                industries = self.get_industry_map()
+                prepared = (dates, groups, industries)
+            if cancelled():
+                return None
+            self._scan_prepared_cache = (target_date, *prepared)
+            return prepared
+        finally:
+            self._scan_data_lock.release()
+
+    def scan_strategy(
+        self,
+        strategy: str,
+        target_date: str,
+        include_previous: bool,
+        previous_trade_date: Optional[str],
+        filters: Optional[RangeFilter] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> pd.DataFrame:
+        # 第5策略才使用用户输入的区间；其他策略保持各自固定规则。
+        active_filters = filters if strategy == "volume_turnover" else None
+        filters = active_filters or RangeFilter()
+
+        def cancelled() -> bool:
+            return bool(cancel_event and cancel_event.is_set())
+        scan_dates = [target_date]
+
+        if include_previous and previous_trade_date:
+            scan_dates.append(previous_trade_date)
+
+        prepared = self._prepared_scan_session(target_date, cancel_event)
+        if prepared is None:
+            return pd.DataFrame()
+        market_dates, groups, industry_map = prepared
+        if not groups:
+            empty = pd.DataFrame()
+            empty.attrs["scan_diagnostics"] = {
+                "stock_count": 0, "target_stocks": 0,
+                "enough_history": 0, "latest_data_date": (
+                    market_dates[-1] if market_dates else ""),
+                "target_date": target_date,
+            }
+            return empty
+        result = []
+        daily_metrics = {}
+        target_stocks = 0
+        enough_history = 0
+
+        for code, g in groups:
+            if cancelled():
+                return pd.DataFrame()
+            # Read-only precomputed moving averages; slicing by row position
+            # avoids repeated per-stock Pandas string-conversion and filtering.
+            date_positions = {str(day): i
+                              for i, day in enumerate(g["trade_date"])}
+            for signal_date in scan_dates:
+                pos = date_positions.get(signal_date)
+                if pos is None:
+                    continue
+                if signal_date == target_date:
+                    target_stocks += 1
+                    if pos + 1 >= STRATEGY_MIN_BARS[strategy]:
+                        enough_history += 1
+                sub = g.iloc[:pos + 1]
+
+                today = sub.iloc[-1]
+                average = today["VOL5_PREV"]
+                ratio = (float(today["volume"] / average)
+                         if pd.notna(average) and average > 0 else None)
+                turnover = self.valid_turnover(today.get("turnover"))
+                daily_metrics[(code, signal_date)] = (ratio, turnover)
+
+                name_today = str(today.get("name", "") or "").strip().upper()
+                if (self.safe_int(today["is_st"]) == 1
+                        or name_today.lstrip("*").startswith("ST")):
+                    continue
+
+                minimum_bars = STRATEGY_MIN_BARS.get(strategy)
+                if minimum_bars is None:
+                    raise ValueError(f"未知的选股策略: {strategy}")
+                if len(sub) < minimum_bars:
+                    continue
+
+                prev = sub.iloc[-2]
+
+                if strategy == "volume_turnover":
+                    if not filters.matches(today):
+                        continue
+                    change = ((today["close"] / prev["close"] - 1) * 100
+                              if prev["close"] > 0 else float("nan"))
+                    result.append({
+                        "代码": self.symbol_only(code), "名称": str(today["name"] or ""),
+                        "板块": industry_map.get(code, "未分类"), "触发日": signal_date,
+                        "收盘价": round(float(today["close"]), 2),
+                        "当日涨幅%": round(float(change), 2),
+                        "放量倍数": round(float(today["volume"] / today["VOL5_PREV"]), 2),
+                        "换手率%": round(float(today["turnover"]), 3), "_code_full": code,
+                    })
+
+                elif strategy == "low_first_board":
+                    # Screen TODAY for a qualifying event 3–5 market days ago.
+                    metrics = low_first_board_metrics(
+                        sub, len(sub) - 1, code, market_dates)
+                    if metrics is None or float(prev["close"]) <= 0:
+                        continue
+                    change = (float(today["close"]) / float(prev["close"]) - 1) * 100
+                    result.append({
+                        "代码": self.symbol_only(code),
+                        "名称": str(today["name"] or ""),
+                        "板块": industry_map.get(code, "未分类"),
+                        "触发日": signal_date,
+                        "收盘价": round(float(today["close"]), 2),
+                        "当日涨幅%": round(float(change), 2),
+                        **{k: round(v, 3) if isinstance(v, float) else v
+                           for k, v in metrics.items()},
+                        "_code_full": code,
+                    })
+
+                elif strategy.startswith("breakout_ma"):
+                    ma_n = int(strategy.replace("breakout_ma", ""))
+                    ma_col = f"MA{ma_n}"
+
+                    if (
+                        pd.isna(today[ma_col])
+                        or pd.isna(prev[ma_col])
+                        or pd.isna(today["VOL5_PREV"])
+                        or today["VOL5_PREV"] <= 0
+                        or prev["close"] <= 0
+                        or today[ma_col] <= 0
+                    ):
+                        continue
+
+                    triggered = (
+                        today["close"] > today[ma_col]
+                        and prev["close"] <= prev[ma_col]
+                        and today["volume"]
+                        >= today["VOL5_PREV"] * VOLUME_RATIO
+                    )
+
+                    if not triggered:
+                        continue
+
+                    daily_change = (
+                        today["close"] / prev["close"] - 1
+                    ) * 100
+
+                    breakout_pct = (
+                        today["close"] / today[ma_col] - 1
+                    ) * 100
+
+                    volume_ratio = (
+                        today["volume"] / today["VOL5_PREV"]
+                    )
+
+                    result.append({
+                        "代码": self.symbol_only(code),
+                        "名称": str(today["name"] or ""),
+                        "板块": industry_map.get(
+                            code,
+                            "未分类",
+                        ),
+                        "触发日": signal_date,
+                        "收盘价": round(float(today["close"]), 2),
+                        "当日涨幅%": round(float(daily_change), 2),
+                        f"MA{ma_n}": round(float(today[ma_col]), 2),
+                        f"突破MA{ma_n}幅度%": round(
+                            float(breakout_pct),
+                            3,
+                        ),
+                        "放量倍数": round(float(volume_ratio), 2),
+                        "_code_full": code,
+                    })
+
+                elif strategy == "ma5_turn_up":
+                    # 严格的一次性向上转折：昨日走平/下行，今天首次转升。
+                    before = sub.iloc[-3]
+                    if (
+                        pd.isna(today["MA5"])
+                        or pd.isna(prev["MA5"])
+                        or pd.isna(before["MA5"])
+                        or prev["close"] <= 0
+                        or prev["MA5"] <= 0
+                        or not (
+                            today["MA5"] > prev["MA5"]
+                            and prev["MA5"] <= before["MA5"]
+                        )
+                    ):
+                        continue
+
+                    change = (today["close"] / prev["close"] - 1) * 100
+                    turn_pct = (today["MA5"] / prev["MA5"] - 1) * 100
+                    result.append({
+                        "代码": self.symbol_only(code),
+                        "名称": str(today["name"] or ""),
+                        "板块": industry_map.get(code, "未分类"),
+                        "触发日": signal_date,
+                        "收盘价": round(float(today["close"]), 2),
+                        "当日涨幅%": round(float(change), 2),
+                        "MA5": round(float(today["MA5"]), 3),
+                        "昨日MA5": round(float(prev["MA5"]), 3),
+                        "MA5上拐幅度%": round(float(turn_pct), 3),
+                        "_code_full": code,
+                    })
+
+                elif strategy == "ma_convergence_up":
+                    # 先验证昨日粘合、今日三均线上升并多头排列、间距扩大；再排除连续触发。
+                    metrics = ma_convergence_up_metrics(sub, len(sub) - 1)
+                    if metrics is None or prev["close"] <= 0:
+                        continue
+                    old_gap, new_gap, gap_gain = metrics
+                    change = (today["close"] / prev["close"] - 1) * 100
+                    result.append({
+                        "代码": self.symbol_only(code),
+                        "名称": str(today["name"] or ""),
+                        "板块": industry_map.get(code, "未分类"),
+                        "触发日": signal_date,
+                        "收盘价": round(float(today["close"]), 2),
+                        "当日涨幅%": round(float(change), 2),
+                        "MA5": round(float(today["MA5"]), 3),
+                        "MA10": round(float(today["MA10"]), 3),
+                        "MA20": round(float(today["MA20"]), 3),
+                        "昨日粘合度%": round(old_gap, 3),
+                        "今日发散度%": round(new_gap, 3),
+                        "发散增加百分点": round(gap_gain, 3),
+                        "_code_full": code,
+                    })
+
+                elif strategy == "ma5_cross_ma10":
+                    if (
+                        pd.isna(today["MA5"])
+                        or pd.isna(today["MA10"])
+                        or pd.isna(prev["MA5"])
+                        or pd.isna(prev["MA10"])
+                        or prev["close"] <= 0
+                        or today["MA10"] <= 0
+                    ):
+                        continue
+
+                    triggered = (
+                        today["MA5"] > today["MA10"]
+                        and prev["MA5"] <= prev["MA10"]
+                    )
+
+                    if not triggered:
+                        continue
+
+                    daily_change = (
+                        today["close"] / prev["close"] - 1
+                    ) * 100
+
+                    spread_pct = (
+                        today["MA5"] / today["MA10"] - 1
+                    ) * 100
+
+                    result.append({
+                        "代码": self.symbol_only(code),
+                        "名称": str(today["name"] or ""),
+                        "板块": industry_map.get(
+                            code,
+                            "未分类",
+                        ),
+                        "触发日": signal_date,
+                        "收盘价": round(float(today["close"]), 2),
+                        "当日涨幅%": round(float(daily_change), 2),
+                        "MA5": round(float(today["MA5"]), 2),
+                        "MA10": round(float(today["MA10"]), 2),
+                        "MA5高于MA10%": round(
+                            float(spread_pct),
+                            3,
+                        ),
+                        "_code_full": code,
+                    })
+
+        out = pd.DataFrame(result)
+        scan_diagnostics = {
+            "stock_count": len(groups),
+            "target_stocks": target_stocks,
+            "enough_history": enough_history,
+            "latest_data_date": market_dates[-1] if market_dates else "",
+            "target_date": target_date,
+        }
+
+        if out.empty:
+            out.attrs["scan_diagnostics"] = scan_diagnostics
+            return out
+
+        # 七个策略统一显示触发当天的成交指标，缺失值不冒充零。
+        metrics = [daily_metrics[(str(row["_code_full"]), str(row["触发日"]))]
+                   for row in out.to_dict("records")]
+        volume_digits = 6 if strategy == "volume_turnover" else 2
+        turnover_digits = 6 if strategy == "volume_turnover" else 3
+        out["放量倍数"] = [round(pair[0], volume_digits) if pair[0] is not None else float("nan") for pair in metrics]
+        out["换手率%"] = [round(pair[1], turnover_digits) if pair[1] is not None else float("nan") for pair in metrics]
+
+        # 第5策略的精准区间判定已经由 RangeFilter.matches(today) 在原始数据上完成。
+        # 不得对显示用的两/三位小数再筛一次，否则临界值会被错误剔除。
+
+        # 板块本身也只按当前选中的策略判断。
+        sector_status = {}
+
+        if "板块" in out.columns:
+            for sector_name in (
+                out["板块"]
+                .fillna("未分类")
+                .astype(str)
+                .drop_duplicates()
+                .tolist()
+            ):
+                if cancelled():
+                    return pd.DataFrame()
+                if sector_name == "未分类":
+                    sector_status[sector_name] = "未分类"
+                    continue
+
+                sector_status[sector_name] = (
+                    self.get_sector_strategy_status(
+                        sector_name=sector_name,
+                        strategy=strategy,
+                        target_date=target_date,
+                        include_previous=include_previous,
+                        previous_trade_date=previous_trade_date,
+                        filters=filters,
+                    )
+                )
+
+            out["板块信号"] = (
+                out["板块"]
+                .fillna("未分类")
+                .astype(str)
+                .map(sector_status)
+                .fillna("未分类")
+            )
+
+        # 最新触发日在前；同日内优先显示信号强度较大的股票。
+        if strategy.startswith("breakout_ma"):
+            ma_n = int(strategy.replace("breakout_ma", ""))
+            out = out.sort_values(
+                ["触发日", "放量倍数", f"突破MA{ma_n}幅度%"],
+                ascending=[False, False, False],
+            )
+        elif strategy == "volume_turnover":
+            out = out.sort_values(["触发日", "放量倍数", "换手率%"], ascending=[False, False, False])
+        elif strategy == "ma5_turn_up":
+            out = out.sort_values(
+                ["触发日", "MA5上拐幅度%", "当日涨幅%"],
+                ascending=[False, False, False],
+            )
+        elif strategy == "low_first_board":
+            out = out.sort_values(["距今交易日", "首板放量倍数"], ascending=[True, False])
+        elif strategy == "ma_convergence_up":
+            out = out.sort_values(
+                ["触发日", "发散增加百分点", "当日涨幅%"],
+                ascending=[False, False, False],
+            )
+        else:
+            out = out.sort_values(
+                ["触发日", "MA5高于MA10%", "当日涨幅%"],
+                ascending=[False, False, False],
+            )
+
+        if cancelled():
+            return pd.DataFrame()
+
+        self.record_signals(strategy, out, active_filters)
+        out = out.reset_index(drop=True)
+        out.attrs["scan_diagnostics"] = scan_diagnostics
+        return out
+
+    # -------------------- 图表数据 --------------------
+
+    def get_chart_data(self, code_full: str, end_date: str) -> pd.DataFrame:
+        with sqlite_connection(self.db_path, timeout=30) as conn:
+            df = pd.read_sql_query("SELECT * FROM daily WHERE code=? AND trade_date<=? "
+                                   "AND trade_status=1 ORDER BY trade_date DESC LIMIT 80",
+                                   conn, params=(code_full, end_date))
+        if df.empty:
+            return df
+        df = self._prepare_group(df)
+        df["放量倍数"] = df["volume"] / df["VOL5_PREV"].where(df["VOL5_PREV"] > 0)
+        df["turnover"] = df["turnover"].map(self.valid_turnover)
+        return df.tail(30).reset_index(drop=True)
+
+    def get_sector_chart_data(
+        self,
+        sector_name: str,
+        end_date: str,
+    ) -> pd.DataFrame:
+        """
+        板块走势图：
+        - 取行业板块全部成分股；
+        - 每只股票后复权收盘价先归一化到100，再做等权平均；
+        - 板块成交量用当日全部有效成分股成交量求和；
+        - 在板块等权指数上计算 MA5 / MA10 / MA20；
+        - 同时计算板块前5个交易日平均成交量，供“放量突破”策略判断。
+        """
+        cache_key = (str(sector_name), str(end_date))
+        cached = self._sector_chart_cache.get(cache_key)
+        if cached is not None:
+            return cached.copy()
+
+        # SQLite窗口函数：先从行业成员中检索各股最近70根K线，
+        # 不再将该板块历年全部日线读入内存，也不受IN列表绑定参数数量限制。
+        sql = """
+            WITH recent AS (
+                SELECT d.code,d.trade_date,d.close,d.volume,
+                       d.trade_status,d.turnover,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY d.code ORDER BY d.trade_date DESC
+                       ) AS rn
+                FROM daily AS d
+                INNER JOIN industry_cache AS i ON i.code=d.code
+                WHERE i.industry=? AND d.trade_date<=?
+                  AND d.trade_status=1 AND d.close>0
+                  AND d.volume IS NOT NULL AND d.volume>=0
+            )
+            SELECT code,trade_date,close,volume,trade_status,turnover
+            FROM recent WHERE rn<=70 ORDER BY code,trade_date DESC
+        """
+        with sqlite_connection(self.db_path, timeout=20) as conn:
+            raw = pd.read_sql_query(sql, conn, params=(sector_name, end_date))
+
+        if raw.empty:
+            return pd.DataFrame()
+
+        raw["close"] = pd.to_numeric(
+            raw["close"],
+            errors="coerce",
+        )
+        raw["volume"] = pd.to_numeric(
+            raw["volume"],
+            errors="coerce",
+        )
+        raw["trade_status"] = pd.to_numeric(
+            raw["trade_status"],
+            errors="coerce",
+        )
+
+        raw[["close", "volume"]] = raw[["close", "volume"]].replace(
+            [float("inf"), float("-inf")], float("nan")
+        )
+        raw = (
+            raw.dropna(subset=["close", "volume"])
+            .loc[lambda x: (x["trade_status"] == 1)
+                 & (x["close"] > 0) & (x["volume"] >= 0)]
+            .copy()
+        )
+
+        if raw.empty:
+            return pd.DataFrame()
+
+        raw["turnover"] = raw["turnover"].map(self.valid_turnover)
+
+        # 每只股票保留最近约70个有效交易日。
+        raw = (
+            raw.groupby("code", group_keys=False)
+            .head(70)
+            .sort_values(["code", "trade_date"])
+            .copy()
+        )
+
+        normalized_rows = []
+
+        for code, g in raw.groupby("code", sort=False):
+            if g.empty:
+                continue
+
+            base = float(g.iloc[0]["close"])
+
+            if base <= 0:
+                continue
+
+            g = g.copy()
+            g["norm_close"] = (
+                g["close"] / base * 100.0
+            )
+
+            normalized_rows.append(
+                g[
+                    [
+                        "trade_date",
+                        "norm_close",
+                        "volume",
+                        "turnover",
+                    ]
+                ]
+            )
+
+        if not normalized_rows:
+            return pd.DataFrame()
+
+        merged = pd.concat(
+            normalized_rows,
+            ignore_index=True,
+        )
+
+        sector = (
+            merged.groupby("trade_date", as_index=False)
+            .agg(
+                close=("norm_close", "mean"),
+                volume=("volume", "sum"),
+                turnover=("turnover", "mean"),
+                turnover_members=("turnover", "count"),
+                members=("norm_close", "count"),
+            )
+            .sort_values("trade_date")
+            .reset_index(drop=True)
+        )
+
+        for window in MA_WINDOWS:
+            sector[f"MA{window}"] = (
+                sector["close"]
+                .rolling(window)
+                .mean()
+            )
+
+        sector["VOL5_PREV"] = (
+            sector["volume"]
+            .shift(1)
+            .rolling(VOLUME_AVG_DAYS)
+            .mean()
+        )
+
+        sector["放量倍数"] = sector["volume"] / sector["VOL5_PREV"].where(sector["VOL5_PREV"] > 0)
+        result = sector.tail(40).reset_index(drop=True)
+        # 有上限的轻量缓存，避免大量策略来回切换时内存无限增长。
+        if len(self._sector_chart_cache) >= 120:
+            self._sector_chart_cache.clear()
+        self._sector_chart_cache[cache_key] = result.copy()
+        return result
+
+    @staticmethod
+    def _sector_strategy_triggered(
+        data: pd.DataFrame,
+        strategy: str,
+        signal_date: str,
+        filters: Optional[RangeFilter] = None,
+    ) -> bool:
+        if data is None or data.empty:
+            return False
+
+        sub = data[
+            data["trade_date"].astype(str)
+            <= str(signal_date)
+        ]
+
+        if (
+            sub.empty
+            or str(sub.iloc[-1]["trade_date"])
+            != str(signal_date)
+            or len(sub) < 2
+        ):
+            return False
+
+        today = sub.iloc[-1]
+        prev = sub.iloc[-2]
+
+        if strategy == "volume_turnover":
+            return (filters or RangeFilter()).matches(today)
+
+        if strategy.startswith("breakout_ma"):
+            ma_n = int(
+                strategy.replace(
+                    "breakout_ma",
+                    "",
+                )
+            )
+            ma_col = f"MA{ma_n}"
+
+            if (
+                ma_col not in sub.columns
+                or pd.isna(today[ma_col])
+                or pd.isna(prev[ma_col])
+                or pd.isna(today["VOL5_PREV"])
+                or today["VOL5_PREV"] <= 0
+            ):
+                return False
+
+            return bool(
+                today["close"] > today[ma_col]
+                and prev["close"] <= prev[ma_col]
+                and today["volume"]
+                >= today["VOL5_PREV"] * VOLUME_RATIO
+            )
+
+        if strategy == "ma5_turn_up":
+            if len(sub) < 3 or "MA5" not in sub.columns:
+                return False
+            before = sub.iloc[-3]
+            if any(pd.isna(bar["MA5"]) for bar in (today, prev, before)):
+                return False
+            return bool(
+                today["MA5"] > prev["MA5"]
+                and prev["MA5"] <= before["MA5"]
+            )
+
+        if strategy == "ma_convergence_up":
+            return ma_convergence_up_metrics(sub, len(sub) - 1) is not None
+
+        if strategy == "ma5_cross_ma10":
+            if (
+                pd.isna(today["MA5"])
+                or pd.isna(today["MA10"])
+                or pd.isna(prev["MA5"])
+                or pd.isna(prev["MA10"])
+            ):
+                return False
+
+            return bool(
+                today["MA5"] > today["MA10"]
+                and prev["MA5"] <= prev["MA10"]
+            )
+
+        return False
+
+    def get_sector_strategy_status(
+        self,
+        sector_name: str,
+        strategy: str,
+        target_date: str,
+        include_previous: bool,
+        previous_trade_date: Optional[str],
+        filters: Optional[RangeFilter] = None,
+    ) -> str:
+        # An industry index cannot have an individual-stock first limit-up.
+        if strategy == "low_first_board":
+            return "仅个股适用"
+        data = self.get_sector_chart_data(
+            sector_name,
+            target_date,
+        )
+
+        if self._sector_strategy_triggered(
+            data,
+            strategy,
+            target_date,
+            filters,
+        ):
+            return "今日触发"
+
+        if (
+            include_previous
+            and previous_trade_date
+            and self._sector_strategy_triggered(
+                data,
+                strategy,
+                previous_trade_date,
+                filters,
+            )
+        ):
+            return "昨日触发"
+
+        return "未触发"
+
+
+# ============================================================
+# GUI
+# ============================================================
+
+BaoStockBackend=AKShareBackend  # legacy type alias only
+
+class HoverTip:
+    """轻量提示框：不抢焦点，离开控件或销毁窗口时立即关闭。"""
+    def __init__(self, owner):
+        self.owner = owner
+        self.window = None
+        self.text = ""
+        owner.bind("<Destroy>", lambda event: self.hide() if event.widget == owner else None, add="+")
+
+    def hide(self):
+        if self.window is not None:
+            try:
+                self.window.destroy()
+            except tk.TclError:
+                pass
+            self.window = None
+        self.text = ""
+
+    def show(self, text, x, y):
+        if not text:
+            self.hide()
+            return
+        if self.window is None:
+            self.window = tk.Toplevel(self.owner)
+            self.window.withdraw()
+            self.window.overrideredirect(True)
+            self.window.attributes("-topmost", True)
+            self.label = tk.Label(self.window, text=text, justify="left", anchor="w",
+                                  background="#ffffff", foreground="#1d1d1f", font=("Segoe UI", 10),
+                                  padx=10, pady=7, relief="solid", borderwidth=1, wraplength=420)
+            self.label.pack()
+        if text != self.text:
+            self.label.configure(text=text)
+            self.text = text
+        self.window.update_idletasks()
+        width, height = self.window.winfo_reqwidth(), self.window.winfo_reqheight()
+        screen_w, screen_h = self.owner.winfo_screenwidth(), self.owner.winfo_screenheight()
+        x = max(4, min(int(x) + 16, screen_w - width - 4))
+        y = int(y) + 18
+        if y + height > screen_h - 4:
+            y = max(4, int(y) - height - 12)
+        self.window.geometry(f"+{x}+{y}")
+        self.window.deiconify()
+
+
+def attach_sector_tip(tree):
+    """个股及板块表的板块名称悬停提示；延迟出现，避免扫过时闪烁。"""
+    tip = HoverTip(tree)
+    state = {"key": None, "timer": None, "position": None}
+    def hide(_event=None):
+        if state["timer"]:
+            try:
+                tree.after_cancel(state["timer"])
+            except tk.TclError:
+                pass
+        state.update(key=None, timer=None, position=None)
+        tip.hide()
+    def motion(event):
+        columns = list(tree["columns"])
+        row = tree.identify_row(event.y)
+        column = tree.identify_column(event.x)
+        if not row or not column or tree.identify_region(event.x, event.y) != "cell":
+            hide()
+            return
+        index = int(column[1:]) - 1
+        if index < 0 or index >= len(columns) or columns[index] != "板块":
+            hide()
+            return
+        name = tree.set(row, "板块")
+        key = (row, name)
+        if not name or name == "全部板块":
+            hide()
+            return
+        state["position"] = (event.x, event.y, event.x_root, event.y_root)
+        if key == state["key"]:
+            return
+        hide()
+        state["key"] = key
+        state["position"] = (event.x, event.y, event.x_root, event.y_root)
+        def show():
+            state["timer"] = None
+            if state["key"] != key or not tree.winfo_exists():
+                return
+            x, y, root_x, root_y = state["position"]
+            if tree.exists(row) and tree.identify_row(y) == row and tree.set(row, "板块") == name:
+                tip.show(name, root_x, root_y)
+        state["timer"] = tree.after(350, show)
+    tree.bind("<Motion>", motion, add="+")
+    for event in ("<Leave>", "<ButtonPress>", "<MouseWheel>", "<Button-4>", "<Button-5>", "<Configure>", "<Unmap>", "<Destroy>"):
+        tree.bind(event, hide, add="+")
+    tree._sector_tip = tip
+
+
+def attach_chart_hover(canvas):
+    """所有图表共用同一读数逻辑，按日期就近吸附，提示完整成交信息。"""
+    if hasattr(canvas, "_hover_tip"):
+        return
+    canvas._hover_tip = HoverTip(canvas)
+    def hide(_event=None):
+        canvas._hover_tip.hide()
+        if canvas.winfo_exists():
+            canvas.delete("hover_cursor")
+    def motion(event):
+        state = getattr(canvas, "_chart_state", None)
+        if not state:
+            hide()
+            return
+        frame, series, left, top, plot_w, plot_h, ymin, ymax = state
+        if not (left <= event.x <= left + plot_w and top <= event.y <= top + plot_h):
+            hide()
+            return
+        count = len(frame)
+        index = 0 if count == 1 else max(0, min(count-1, round((event.x-left)/plot_w*(count-1))))
+        row = frame.iloc[index]
+        x = left + plot_w/2 if count == 1 else left + plot_w*index/(count-1)
+        canvas.delete("hover_cursor")
+        canvas.create_line(x, top, x, top+plot_h, fill="#6e6e73", dash=(3,3), tags="hover_cursor")
+        for column, color in series.items():
+            value = AKShareBackend.safe_float(row.get(column))
+            if value is not None and math.isfinite(value):
+                y = top + plot_h*(ymax-value)/(ymax-ymin)
+                canvas.create_oval(x-3,y-3,x+3,y+3,fill=color,outline="white",tags="hover_cursor")
+        def number(column, suffix="", volume=False):
+            value = AKShareBackend.safe_float(row.get(column))
+            if value is None or not math.isfinite(value):
+                return "缺失"
+            return (f"{value:,.0f}" if volume else f"{value:.3f}") + suffix
+        sector = "members" in frame.columns
+        text = [str(row["trade_date"]),
+                ("板块等权指数：" if sector else "收盘价：") + number("close"),
+                ("成交量总和：" if sector else "成交量：") + number("volume", " 股", True),
+                "放量倍数：" + number("放量倍数", " 倍"),
+                ("等权换手率：" if sector else "换手率：") + number("turnover", "%")]
+        for column in series:
+            if column.startswith("MA"):
+                text.append(column + "：" + number(column))
+        canvas._hover_index = index
+        canvas._hover_tip.show("\n".join(text), event.x_root, event.y_root)
+    canvas.bind("<Motion>", motion, add="+")
+    for event in ("<Leave>", "<Unmap>"):
+        canvas.bind(event, hide, add="+")
+    canvas._hover_hide = hide
+
+
+
+
+# ============================================================
+# VPS BaoStock 数据快照（单文件发行版内嵌，逻辑见 client/remote_marketdata.py）
+# ============================================================
+
+"""Verified BaoStock snapshot synchronizer for AShareMAScanner stage 2.
+
+The module is also inlined into the development .pyw for single-file delivery.
+No server URL is assumed: configure data/marketdata_client.json or
+ASHARE_MARKETDATA_URL.  Existing AKShare storage is never modified.
+"""
+import contextlib
+import hashlib
+import json
+import os
+import re
+import shutil
+import sqlite3
+import tempfile
+import urllib.parse
+import urllib.request
+import zipfile
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+
+class RemoteMarketdataError(RuntimeError):
+    """A remote dataset is not available, safe or complete."""
+
+
+class RemoteMarketdataCancelled(RemoteMarketdataError):
+    """The user stopped the stage-2 import."""
+
+
+class RemoteMarketdataClient:
+    MAX_MANIFEST_BYTES = 65536
+    MAX_ZIP_BYTES = 128 * 1024 * 1024
+    MAX_SQLITE_BYTES = 384 * 1024 * 1024
+    SNAPSHOT_MEMBER = "marketdata.sqlite3"
+    TABLE_COLUMNS = {
+        "daily": "code,trade_date,name,close,volume,trade_status,is_st,turnover",
+        "day_universe": "trade_date,code,name,trade_status",
+        "day_status": "trade_date,expected_count,saved_count,failed_count,status,updated_at",
+        "industry_cache": "code,name,industry,update_date,classification,fetched_at",
+        "server_meta": "key,value",
+    }
+
+    def __init__(self, data_dir: Path):
+        self.data_dir = Path(data_dir)
+        self.db_path = self.data_dir / "a_share_baostock_hfq.db"
+        self.config_path = self.data_dir / "marketdata_client.json"
+        cfg = {}
+        if self.config_path.exists():
+            try:
+                cfg = json.loads(self.config_path.read_text(encoding="utf-8"))
+                if not isinstance(cfg, dict):
+                    raise ValueError("配置必须是 JSON 对象")
+            except (OSError, ValueError) as exc:
+                raise RemoteMarketdataError(f"远程数据配置无效：{exc}") from exc
+        raw_url = os.environ.get("ASHARE_MARKETDATA_URL", "").strip() or str(cfg.get("manifest_url", "")).strip()
+        if raw_url and not raw_url.endswith(".json"):
+            raw_url = raw_url.rstrip("/") + "/latest.json"
+        self.manifest_url = raw_url
+        self.min_completeness = max(0.995, float(cfg.get("min_completeness", 0.995)))
+        self.cached_max_days = max(0, min(10, int(cfg.get("offline_cache_max_days", 4))))
+        if self.manifest_url:
+            self._validate_url(self.manifest_url)
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.manifest_url)
+
+    @staticmethod
+    def _validate_url(url: str):
+        parsed = urllib.parse.urlsplit(url)
+        if (parsed.scheme == "https" and parsed.hostname and not parsed.username
+                and not parsed.password):
+            return
+        if (parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1", "::1")
+                and not parsed.username and not parsed.password):
+            return
+        raise RemoteMarketdataError("远程行情仅允许 HTTPS；本机测试可使用 localhost HTTP")
+
+    def _validate_final_url(self, response):
+        original = urllib.parse.urlsplit(self.manifest_url)
+        actual = urllib.parse.urlsplit(response.geturl())
+        if (original.scheme, original.hostname, original.port) != (actual.scheme, actual.hostname, actual.port):
+            raise RemoteMarketdataError("远程接口重定向到了其他站点，拒绝下载")
+
+    @staticmethod
+    def _check_cancel(cancel_event):
+        if cancel_event is not None and cancel_event.is_set():
+            raise RemoteMarketdataCancelled("已停止远程数据同步；原数据库保持不变")
+
+    @staticmethod
+    def _sha256(path: Path) -> str:
+        h = hashlib.sha256()
+        with path.open("rb") as stream:
+            for part in iter(lambda: stream.read(1024 * 1024), b""):
+                h.update(part)
+        return h.hexdigest()
+
+    def _read_manifest(self, cancel_event):
+        self._check_cancel(cancel_event)
+        request = urllib.request.Request(self.manifest_url, headers={
+            "Accept": "application/json", "Cache-Control": "no-cache",
+            "User-Agent": "AShareMAScanner-RemoteData/1.0",
+        })
+        try:
+            with urllib.request.urlopen(request, timeout=12) as resp:
+                self._validate_final_url(resp)
+                content = resp.read(self.MAX_MANIFEST_BYTES + 1)
+        except (OSError, ValueError) as exc:
+            raise RemoteMarketdataError(f"服务器清单暂不可用：{exc}") from exc
+        if len(content) > self.MAX_MANIFEST_BYTES:
+            raise RemoteMarketdataError("服务器清单超过大小限制")
+        try:
+            manifest = json.loads(content.decode("utf-8"))
+            if not isinstance(manifest, dict):
+                raise ValueError("清单不是 JSON 对象")
+            if manifest.get("provider") != "BaoStock" or int(manifest.get("schema_version", -1)) != 1:
+                raise ValueError("不是受支持的 BaoStock 快照")
+            market_date = str(manifest["market_date"])
+            if datetime.strptime(market_date, "%Y-%m-%d").strftime("%Y-%m-%d") != market_date:
+                raise ValueError("行情日期格式无效")
+            digest = str(manifest["snapshot_sha256"]).lower()
+            if not re.fullmatch(r"[0-9a-f]{64}", digest):
+                raise ValueError("缺少合法的 SHA-256 校验值")
+            size = int(manifest["snapshot_size"])
+            if size < 100 or size > self.MAX_ZIP_BYTES:
+                raise ValueError("ZIP 文件大小超出安全范围")
+            completeness = float(manifest["completeness"])
+            expected, saved = int(manifest["expected_count"]), int(manifest["saved_count"])
+            if (expected <= 0 or saved <= 0 or saved > expected
+                    or completeness < self.min_completeness or completeness > 1.0
+                    or saved / expected + 1e-6 < self.min_completeness):
+                raise ValueError("服务器数据完整率不足，拒绝覆盖本地缓存")
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise RemoteMarketdataError(f"服务器清单校验失败：{exc}") from exc
+        self._check_cancel(cancel_event)
+        return manifest
+
+    def _read_cached(self):
+        if not self.db_path.is_file():
+            return None
+        try:
+            with contextlib.closing(sqlite3.connect(self.db_path, timeout=3)) as db:
+                if db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                    return None
+                meta = dict(db.execute("SELECT key,value FROM server_meta WHERE key IN "
+                                       "('remote_snapshot_sha256','remote_snapshot_market_date')"))
+                market_date = meta.get("remote_snapshot_market_date")
+                if not market_date or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", market_date):
+                    return None
+                row = db.execute("SELECT expected_count,saved_count,failed_count "
+                                 "FROM day_status WHERE trade_date=?", (market_date,)).fetchone()
+                if not row or row[0] <= 0 or row[1] / row[0] < self.min_completeness:
+                    return None
+                prior = db.execute("SELECT MAX(trade_date) FROM daily WHERE trade_date<?", (market_date,)).fetchone()[0]
+                return {"market_date": market_date, "digest": meta.get("remote_snapshot_sha256"),
+                        "expected": int(row[0]), "saved": int(row[1]), "failed": int(row[2]),
+                        "previous": prior}
+        except (OSError, sqlite3.Error):
+            return None
+
+    @staticmethod
+    def _to_result(cached, warning):
+        return {
+            "scan_date": cached["market_date"],
+            "previous_trade_date": cached["previous"],
+            "completeness": cached["saved"] / cached["expected"] * 100,
+            "expected": cached["expected"], "saved": cached["saved"],
+            "failed": cached["failed"], "today_pending": False,
+            "warning": warning,
+        }
+
+    def use_offline_cache(self, reason):
+        cached = self._read_cached()
+        if cached is None:
+            return None
+        age = (datetime.now(timezone(timedelta(hours=8))).date()
+               - datetime.strptime(cached["market_date"], "%Y-%m-%d").date()).days
+        if not 0 <= age <= self.cached_max_days:
+            return None
+        return self._to_result(cached,
+                               f"VPS 暂不可用（{reason}）；使用已验证的 BaoStock 缓存 {cached['market_date']}，请注意行情时效。")
+
+    def _download_snapshot(self, manifest, dest, cb, cancel_event):
+        # Deliberately derive the snapshot URL from the validated manifest origin.
+        # An untrusted snapshot_url in JSON cannot redirect to a different host.
+        snapshot_url = urllib.parse.urljoin(self.manifest_url, "snapshot.zip")
+        self._validate_url(snapshot_url)
+        request = urllib.request.Request(snapshot_url, headers={
+            "Accept": "application/zip", "User-Agent": "AShareMAScanner-RemoteData/1.0",
+        })
+        received = 0
+        expected = int(manifest["snapshot_size"])
+        h = hashlib.sha256()
+        try:
+            with urllib.request.urlopen(request, timeout=45) as resp, dest.open("wb") as stream:
+                self._validate_final_url(resp)
+                while True:
+                    self._check_cancel(cancel_event)
+                    part = resp.read(1024 * 1024)
+                    if not part:
+                        break
+                    received += len(part)
+                    if received > expected or received > self.MAX_ZIP_BYTES:
+                        raise RemoteMarketdataError("下载文件超过清单指定大小")
+                    h.update(part)
+                    stream.write(part)
+                    cb(10 + 45 * received / expected,
+                       f"从 VPS 下载行情快照 {received / 1048576:.1f}/{expected / 1048576:.1f} MiB")
+        except (OSError, ValueError) as exc:
+            raise RemoteMarketdataError(f"下载行情快照失败：{exc}") from exc
+        if received != expected or h.hexdigest() != manifest["snapshot_sha256"].lower():
+            raise RemoteMarketdataError("下载文件大小或 SHA-256 不匹配，已拒绝导入")
+
+    def _extract(self, path, dest, cancel_event):
+        try:
+            with zipfile.ZipFile(path) as archive:
+                members = archive.infolist()
+                if len(members) != 1 or members[0].filename != self.SNAPSHOT_MEMBER:
+                    raise RemoteMarketdataError("ZIP 内容不符合服务器快照格式")
+                info = members[0]
+                if not 4096 <= info.file_size <= self.MAX_SQLITE_BYTES:
+                    raise RemoteMarketdataError("SQLite 文件大小不在安全范围")
+                total = 0
+                with archive.open(info) as src, dest.open("wb") as dst:
+                    while True:
+                        self._check_cancel(cancel_event)
+                        part = src.read(1024 * 1024)
+                        if not part:
+                            break
+                        total += len(part)
+                        if total > self.MAX_SQLITE_BYTES:
+                            raise RemoteMarketdataError("解压内容超过安全大小")
+                        dst.write(part)
+                if total != info.file_size:
+                    raise RemoteMarketdataError("SQLite 解压长度不一致")
+        except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
+            raise RemoteMarketdataError(f"ZIP 校验失败：{exc}") from exc
+
+    def _validate_sqlite(self, path, manifest):
+        try:
+            with contextlib.closing(sqlite3.connect(path, timeout=5)) as db:
+                if db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                    raise ValueError("SQLite quick_check 失败")
+                for table, fields in self.TABLE_COLUMNS.items():
+                    columns = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+                    if not set(fields.split(",")).issubset(columns):
+                        raise ValueError(f"{table} 表缺失必要字段")
+                meta = dict(db.execute("SELECT key,value FROM server_meta"))
+                if (meta.get("provider") != "BaoStock"
+                        or meta.get("market_date") != manifest["market_date"]
+                        or meta.get("schema_version") != "1"):
+                    raise ValueError("SQLite 内部元信息与清单不一致")
+                date = manifest["market_date"]
+                expected = db.execute("SELECT COUNT(*) FROM day_universe WHERE trade_date=? "
+                                      "AND trade_status=1", (date,)).fetchone()[0]
+                saved = db.execute("SELECT COUNT(*) FROM day_universe u JOIN daily d "
+                                   "ON d.trade_date=u.trade_date AND d.code=u.code "
+                                   "WHERE u.trade_date=? AND u.trade_status=1 AND d.trade_status=1 "
+                                   "AND d.close>0 AND d.volume>=0", (date,)).fetchone()[0]
+                if expected != int(manifest["expected_count"]) or saved != int(manifest["saved_count"]):
+                    raise ValueError("SQLite 当日数据量与清单不符")
+                row = db.execute("SELECT expected_count,saved_count FROM day_status "
+                                 "WHERE trade_date=?", (date,)).fetchone()
+                if not row or tuple(row) != (expected, saved):
+                    raise ValueError("SQLite 当日状态与实际数据不符")
+        except (sqlite3.Error, ValueError) as exc:
+            raise RemoteMarketdataError(f"SQLite 快照校验失败：{exc}") from exc
+
+    def _install(self, incoming, manifest, stage, cancel_event):
+        target = self.db_path
+        staged_db = stage / "new-local.sqlite3"
+        self._check_cancel(cancel_event)
+        if target.is_file():
+            # Stage 2 runs before Qt / scanner workers. Checkpoint old WAL before
+            # replacement; a busy database must not be silently overwritten.
+            with contextlib.closing(sqlite3.connect(target, timeout=5)) as old:
+                old.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                old.execute("PRAGMA journal_mode=DELETE")
+                old.commit()
+                with contextlib.closing(sqlite3.connect(staged_db)) as new:
+                    old.backup(new)
+                    new.commit()
+            with contextlib.closing(sqlite3.connect(staged_db)) as db:
+                db.execute("PRAGMA journal_mode=DELETE")
+                db.execute("ATTACH DATABASE ? AS incoming", (str(incoming),))
+                try:
+                    start = db.execute("SELECT MIN(trade_date) FROM incoming.daily").fetchone()[0]
+                    end = manifest["market_date"]
+                    if not start:
+                        raise RemoteMarketdataError("快照没有历史交易记录")
+                    with db:
+                        for name in ("daily", "day_universe", "day_status"):
+                            db.execute(f"DELETE FROM main.{name} WHERE trade_date BETWEEN ? AND ?", (start, end))
+                            cols = self.TABLE_COLUMNS[name]
+                            db.execute(f"INSERT INTO main.{name} ({cols}) SELECT {cols} FROM incoming.{name}")
+                        db.execute("DELETE FROM main.industry_cache")
+                        db.execute("INSERT INTO main.industry_cache SELECT * FROM incoming.industry_cache")
+                        db.execute("CREATE TABLE IF NOT EXISTS main.server_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+                        db.execute("INSERT OR REPLACE INTO main.server_meta SELECT key,value FROM incoming.server_meta")
+                finally:
+                    db.execute("DETACH DATABASE incoming")
+        else:
+            shutil.copyfile(incoming, staged_db)
+        with contextlib.closing(sqlite3.connect(staged_db, timeout=5)) as db:
+            with db:
+                db.execute("CREATE TABLE IF NOT EXISTS server_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+                db.execute("INSERT OR REPLACE INTO server_meta VALUES ('remote_snapshot_sha256', ?)",
+                           (manifest["snapshot_sha256"].lower(),))
+                db.execute("INSERT OR REPLACE INTO server_meta VALUES ('remote_snapshot_market_date', ?)",
+                           (manifest["market_date"],))
+            if db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                raise RemoteMarketdataError("导入后的数据库完整性校验失败")
+        self._check_cancel(cancel_event)
+        os.replace(staged_db, target)
+
+    def sync(self, cb, cancel_event=None):
+        if not self.enabled:
+            raise RemoteMarketdataError("未配置远程市场数据地址")
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        cb(1, "连接 VPS 行情服务，读取最新数据清单")
+        manifest = self._read_manifest(cancel_event)
+        cached = self._read_cached()
+        if cached and cached["market_date"] > manifest["market_date"]:
+            cb(97, "本地 BaoStock 快照比服务器新，保留本地数据")
+            return self._to_result(cached, f"使用本地较新快照 {cached['market_date']}，未覆盖旧版服务器数据")
+        if cached and cached["digest"] == manifest["snapshot_sha256"].lower():
+            cb(97, f"VPS 行情无变化，直接使用本地快照 {cached['market_date']}")
+            return self._to_result(cached, "已使用验证过的 VPS BaoStock 行情缓存")
+        cb(8, f"发现 VPS 新快照：{manifest['market_date']}，准备校验下载")
+        with tempfile.TemporaryDirectory(prefix=".marketdata-", dir=self.data_dir) as temp:
+            stage = Path(temp)
+            archive = stage / "snapshot.zip"
+            incoming = stage / self.SNAPSHOT_MEMBER
+            self._download_snapshot(manifest, archive, cb, cancel_event)
+            cb(58, "校验 ZIP 并提取 SQLite 快照")
+            self._extract(archive, incoming, cancel_event)
+            cb(67, "验证 SQLite 数据库结构、行情日期及数据完整率")
+            self._validate_sqlite(incoming, manifest)
+            cb(78, "将远程行情安全导入独立 BaoStock 本地缓存")
+            self._install(incoming, manifest, stage, cancel_event)
+        cb(97, f"BaoStock 行情已更新至 {manifest['market_date']}")
+        current = self._read_cached()
+        if not current or current["digest"] != manifest["snapshot_sha256"].lower():
+            raise RemoteMarketdataError("安装完成但本地数据库校验失败")
+        return self._to_result(current, "行情来自 VPS BaoStock 已验证快照")
+
+# ============================================================
+# 阶段 2/3：Tkinter 每日行情抓取，Tk 完全关闭后才创建 QApplication
+# ============================================================
+
+def _run_tk_data_phase_inner(backend=None, *, autostart=True):
+    """运行 8 阶段数据检查。成功返回 (backend, UpdateResult)，失败可重试。
+    后台线程只向 Queue 发送状态，所有 Tk 组件操作只在主线程完成。
+    """
+    import tkinter as _tk
+    from tkinter import ttk as _ttk, messagebox as _messagebox
+    engine_backend = backend or AKShareBackend(DB_PATH)
+    root = _tk.Tk()
+    root.title("A股 MA 扫描器 · 2/3 行情数据同步")
+    root.geometry("610x540")
+    root.minsize(560,500)
+    root.configure(bg="#f5f6fa")
+    card = _tk.Frame(root,bg="#ffffff",highlightbackground="#e1e5eb",highlightthickness=1)
+    card.pack(fill="both",expand=True,padx=16,pady=16)
+    heading = _tk.Frame(card,bg="#ffffff")
+    heading.pack(fill="x",padx=24,pady=(20,4))
+    _tk.Label(heading,text="2/3  ·  行情更新与完整性检查",
+              font=("Segoe UI",16,"bold"),bg="#ffffff",fg="#223049").pack(anchor="w")
+    _tk.Label(heading,text="完成后自动进入选股界面",
+              font=("Segoe UI",10),bg="#ffffff",fg="#788699").pack(anchor="w",pady=(5,0))
+    stage_var=_tk.StringVar(value="准备开始")
+    task_var=_tk.StringVar(value="正在读取本地数据库")
+    counter_var=_tk.StringVar(value="等待运行")
+    time_var=_tk.StringVar(value="已用时 00:00")
+    pct_var=_tk.StringVar(value="0%")
+    progress=_tk.DoubleVar(value=0)
+    _tk.Label(card,textvariable=stage_var,font=("Segoe UI",13,"bold"),
+              bg="#ffffff",fg="#263a54").pack(anchor="w",padx=24,pady=(23,8))
+    _tk.Label(card,textvariable=task_var,wraplength=530,justify="left",
+              font=("Segoe UI",10),bg="#ffffff",fg="#6c7889").pack(anchor="w",padx=24)
+    _tk.Label(card,textvariable=counter_var,font=("Segoe UI",10,"bold"),
+              bg="#ffffff",fg="#334155").pack(anchor="w",padx=24,pady=(12,8))
+    _ttk.Progressbar(card,variable=progress,maximum=100,mode="determinate").pack(
+        fill="x",padx=24)
+    info=_tk.Frame(card,bg="#ffffff")
+    info.pack(fill="x",padx=24,pady=(8,4))
+    _tk.Label(info,text="总进度",
+              bg="#ffffff",fg="#7a8799",font=("Segoe UI",9)).pack(side="left")
+    _tk.Label(info,textvariable=pct_var,bg="#ffffff",fg="#2776d6",
+              font=("Segoe UI",11,"bold")).pack(side="right")
+    _tk.Frame(card,height=1,bg="#e7ebf1").pack(fill="x",padx=24,pady=(18,12))
+    _tk.Label(card,text="实时任务记录",font=("Segoe UI",10,"bold"),
+              bg="#ffffff",fg="#334155").pack(anchor="w",padx=24)
+    log=_tk.Text(card,height=8,wrap="word",font=("Segoe UI",9),
+                 borderwidth=0,background="#fbfcff",foreground="#66758c")
+    log.pack(fill="both",expand=True,padx=24,pady=(6,10))
+    log.configure(state="disabled")
+    footer=_tk.Frame(card,bg="#ffffff")
+    footer.pack(fill="x",padx=24,pady=(0,16))
+    _tk.Label(footer,textvariable=time_var,fg="#8590a0",bg="#ffffff").pack(side="left")
+    controls=_tk.Frame(footer,bg="#ffffff")
+    controls.pack(side="right")
+    messages=queue.Queue()
+    state={"running":False,"success":None,"start":time.monotonic(),
+           "aborted":False,"cancel_requested":False,"worker":None}
+    stages=[
+        ("检查环境与交易日",0,12),("失败数据补抓",12,20),
+        ("历史行情缓存",20,66),("缺失交易日补齐",66,80),
+        ("最新行情更新",80,94),("换手率修复",94,96),
+        ("行业板块资料",96,98),("数据完整性校验",98,100)]
+    def append(message):
+        log.configure(state="normal")
+        log.insert("end",str(message)+"\n")
+        log.see("end")
+        lines=int(log.index("end-1c").split(".")[0])
+        if lines>140:log.delete("1.0","45.0")
+        log.configure(state="disabled")
+    def abort():
+        if state["running"]:
+            if not state["cancel_requested"]:
+                state["cancel_requested"] = True
+                engine_backend.cancel_update()
+                stage_var.set("正在安全停止更新…")
+                task_var.set("正在结束 BaoStock 请求并提交已完成的数据，不会删除数据库")
+                append("用户请求取消：保存已获取行情，停止后可下次断点续传")
+                exit_button.configure(text="正在停止…", state="disabled")
+            return
+        state["aborted"]=True
+        root.quit()
+    root.protocol("WM_DELETE_WINDOW",abort)
+    exit_button=_ttk.Button(controls,text="退出 / 安全停止",command=abort)
+    exit_button.pack(side="right")
+    retry=_ttk.Button(controls,text="重新抓取",command=lambda:start())
+    retry.pack(side="right",padx=(0,10))
+    def start():
+        if state["running"]:return
+        state["running"]=True
+        state["cancel_requested"]=False
+        exit_button.configure(text="退出 / 安全停止", state="normal")
+        state["start"]=time.monotonic()
+        retry.configure(state="disabled")
+        progress.set(0)
+        pct_var.set("0%")
+        task_var.set("准备重新抓取…")
+        append("开始读取和更新本地历史行情")
+        def work():
+            nonlocal engine_backend
+            try:
+                result = None
+                remote_client = None
+                try:
+                    remote_client = RemoteMarketdataClient(DATA_DIR)
+                except RemoteMarketdataError as exc:
+                    messages.put(("progress", 0.0,
+                                  "远程行情配置无效，改用 AKShare：" + str(exc)))
+                if remote_client is not None and remote_client.enabled:
+                    try:
+                        payload = remote_client.sync(
+                            lambda value, message: messages.put(
+                                ("progress", min(97.0, float(value)), str(message))),
+                            engine_backend._cancel_update_event)
+                        remote_backend = AKShareBackend(remote_client.db_path)
+                        remote_backend.prepare_storage(lambda value, message: None)
+                        remote_backend.init_db()
+                        engine_backend = remote_backend
+                        result = UpdateResult(**payload)
+                    except RemoteMarketdataCancelled as exc:
+                        raise MarketUpdateCancelled(str(exc)) from exc
+                    except (RemoteMarketdataError, OSError, sqlite3.Error) as exc:
+                        cached_result = remote_client.use_offline_cache(str(exc))
+                        if cached_result is not None:
+                            remote_backend = AKShareBackend(remote_client.db_path)
+                            remote_backend.prepare_storage(lambda value, message: None)
+                            remote_backend.init_db()
+                            engine_backend = remote_backend
+                            result = UpdateResult(**cached_result)
+                            messages.put(("progress", 97.0,
+                                          "VPS 不可用，读取本地已验证的 BaoStock 快照"))
+                        else:
+                            messages.put(("progress", 0.0,
+                                          "VPS 行情暂不可用，回退 AKShare：" + str(exc)))
+                if result is None:
+                    result = engine_backend.update_all(
+                        lambda value, message: messages.put(
+                            ("progress", min(99.0, float(value)), str(message))))
+                # TOP5 refresh is exclusive to stage 2, before Qt is launched.
+                # Network errors do not invalidate market data or old TOP5 cache.
+                messages.put(("progress",99.0,"检查近5日行业资金排名"))
+                try:
+                    rank_message=engine_backend.refresh_fund_top5(
+                        force=False,progress=lambda text: messages.put(
+                            ("progress",99.0,str(text))))
+                    messages.put(("progress",99.0,str(rank_message)))
+                except Exception:
+                    messages.put(("progress",99.0,
+                                  "行业资金 TOP5 暂不可用，显示已有缓存"))
+                messages.put(("success",result))
+            except MarketUpdateCancelled as exc:
+                messages.put(("cancelled",str(exc)))
+            except Exception:
+                messages.put(("failure",traceback.format_exc()))
+        worker=threading.Thread(target=work,daemon=True,name="tk-market-update")
+        state["worker"]=worker
+        worker.start()
+    def poll():
+        if state["aborted"]:return
+        elapsed=int(time.monotonic()-state["start"])
+        mins,seconds=divmod(max(0,elapsed),60)
+        time_var.set(f"已用时 {mins:02d}:{seconds:02d}")
+        for _ in range(80):
+            try:event=messages.get_nowait()
+            except queue.Empty:break
+            kind=event[0]
+            if kind=="progress":
+                value,message=event[1:]
+                progress.set(min(100,max(0,value)))
+                pct_var.set(f"{value:.1f}%")
+                active=next((i for i,(_,lo,hi) in enumerate(stages)
+                             if lo<=value<hi),len(stages)-1)
+                stage_var.set(f"阶段 {active+1}/8 · {stages[active][0]}")
+                task_var.set(message)
+                match = re.search(r"(\d+)\s*/\s*(\d+)", message)
+                if match and int(match.group(2)) > 0:
+                    complete, total = map(int, match.groups())
+                    counter_var.set(
+                        f"本阶段已处理 {complete:,}/{total:,} 只"
+                        f"（{100 * complete / total:.1f}%）")
+                else:
+                    counter_var.set(message[:84])
+                append(message)
+            elif kind=="success":
+                state["running"]=False
+                state["success"]=event[1]
+                stage_var.set("完成 · 行情检查通过")
+                pct_var.set("100%")
+                progress.set(100)
+                append("行情更新完成，正在打开选股界面")
+                root.after(160,root.quit)
+                return
+            elif kind=="cancelled":
+                state["running"]=False
+                state["aborted"]=True
+                stage_var.set("已安全停止 · 已保存下载进度")
+                append(event[1])
+                root.after(160,root.quit)
+                return
+            elif kind=="failure":
+                state["running"]=False
+                exit_button.configure(text="退出", state="normal")
+                stage_var.set("更新失败 · 可重试")
+                task_var.set(event[1].splitlines()[-1][:180])
+                counter_var.set("未进入主界面；旧数据仍保留")
+                append("错误详情：\n"+event[1][-2300:])
+                retry.configure(state="normal")
+        root.after(150,poll)
+    root.after(100,poll)
+    if autostart:root.after(190,start)
+    try:
+        root.mainloop()
+    finally:
+        # Tk can already be destroyed by the OS/window manager during a stop.
+        try:
+            if root.winfo_exists():
+                root.destroy()
+        except _tk.TclError:
+            pass
+        worker = state.get("worker")
+        if worker is not None and worker.is_alive():
+            worker.join(timeout=5)
+        if worker is not None and worker.is_alive():
+            state["success"] = None
+            state["aborted"] = True
+    if state["aborted"] or state["success"] is None:
+        return None
+    return engine_backend,state["success"]
+
+
+def run_tk_data_phase(backend=None, *, autostart=True):
+    """Scope and collect Tk objects before entering the PySide6 event loop."""
+    if threading.current_thread() is not threading.main_thread():
+        raise RuntimeError("Tk 数据窗口必须在 Python 主线程运行")
+    try:
+        return _run_tk_data_phase_inner(backend=backend, autostart=autostart)
+    finally:
+        _collect_finished_tk_on_main_thread()
+
+
+# ============================================================
+# 阶段 3/3：真正的 PySide6 4:3 三栏工作台
+# ============================================================
+import argparse
+try:
+    from PySide6.QtCore import Qt, QPointF, QThread, QTimer, Signal
+    from PySide6.QtGui import QColor, QFont, QPainter, QPen
+    from PySide6.QtWidgets import (
+        QApplication, QButtonGroup, QComboBox, QDialog, QFileDialog, QFrame,
+        QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+        QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
+        QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QTableWidget,
+        QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
+    )
+
+except Exception as exc:
+    _dependency_import_error('PySide6 / Qt',exc)
+
+BEIJING = timezone(timedelta(hours=8))
+STRATEGIES = [
+    ("breakout_ma5", "突破 MA5", "均线突破"),
+    ("breakout_ma10", "突破 MA10", "均线突破"),
+    ("breakout_ma20", "突破 MA20", "均线突破"),
+    ("ma5_cross_ma10", "MA5 上穿 MA10", "趋势信号"),
+    ("ma5_turn_up", "MA5 拐头向上", "趋势信号"),
+    ("ma_convergence_up", "均线粘合向上", "趋势信号"),
+    ("volume_turnover", "放量 + 换手率", "量价分析"),
+    ("low_first_board", "低位首板放量（3～5日）", "量价分析"),
+]
+PHASES = [
+    ("环境检查", 0, 12), ("失败补抓", 12, 20),
+    ("历史缓存", 20, 66), ("交易日修复", 66, 80),
+    ("每日行情", 80, 94), ("换手率", 94, 96),
+    ("行业分类", 96, 98), ("完整性校验", 98, 100),
+]
+
+
+def load_engine():
+    return sys.modules[__name__]
+
+
+def export_strategy_xlsx(path, columns, frame):
+    """Export filtered data to an actual XLSX workbook with safe text cells."""
+    import openpyxl
+    if frame is None or frame.empty:
+        raise ValueError("当前没有选股结果可导出")
+    if len(frame)>=1048576 or len(columns)>16384:
+        raise ValueError("Excel 工作表行列数超出限制")
+    view=frame.reindex(columns=columns).copy()
+    for col in ("代码","名称","板块","触发日","首板日期"):
+        if col in view:
+            view[col]=view[col].apply(lambda v: "" if pd.isna(v) else str(v))
+    if "代码" in view:
+        view["代码"]=view["代码"].str.zfill(6)
+    dest=Path(path)
+    stage=dest.with_name(dest.stem+".writing.xlsx")
+    try:
+        with pd.ExcelWriter(stage,engine="openpyxl") as writer:
+            view.to_excel(writer,sheet_name="选股结果",index=False)
+            sheet=writer.sheets["选股结果"]
+            sheet.freeze_panes="A2"
+            sheet.auto_filter.ref=sheet.dimensions
+            from openpyxl.styles import Font, PatternFill
+            for cell in sheet[1]:
+                cell.font=Font(bold=True,color="FFFFFF")
+                cell.fill=PatternFill("solid",fgColor="24436D")
+            for i,col in enumerate(columns,1):
+                letter=openpyxl.utils.get_column_letter(i)
+                sheet.column_dimensions[letter].width=23 if col in ("名称","板块") else 18
+                if col in ("代码","名称","板块","触发日","首板日期"):
+                    for cells in sheet.iter_cols(min_col=i,max_col=i,min_row=2):
+                        for cell in cells:
+                            cell.data_type="s"
+                            cell.number_format="@"
+        os.replace(stage,dest)
+    finally:
+        stage.unlink(missing_ok=True)
+
+
+class ScanWorker(QThread):
+    success = Signal(int, object)
+    failed = Signal(int, str)
+
+    def __init__(self,backend,request_id,strategy,date,previous,filters,cancel_event=None):
+        super().__init__()
+        self.backend=backend
+        self.request_id=request_id
+        self.strategy=strategy
+        self.date=date
+        self.previous=previous
+        self.filters=filters
+        self.cancel_event=cancel_event
+
+    def run(self):
+        try:
+            frame = self.backend.scan_strategy(
+                self.strategy, self.date, False,
+                self.previous, self.filters, cancel_event=self.cancel_event
+            )
+            self.success.emit(self.request_id, frame)
+        except Exception:
+            self.failed.emit(self.request_id, traceback.format_exc())
+
+
+
+class IndustryWorker(QThread):
+    """Refresh only industry sectors; do not restart the entire market pipeline."""
+    progress = Signal(str)
+    succeeded = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, backend, date):
+        super().__init__()
+        self.backend = backend
+        self.date = date
+
+    def run(self):
+        try:
+            stocks = self.backend.get_day_universe(self.date)
+            if stocks.empty:
+                with sqlite_connection(self.backend.db_path) as conn:
+                    df = pd.read_sql_query(
+                        "SELECT code, MAX(name) AS name FROM daily "
+                        "WHERE trade_date=? GROUP BY code", conn, params=(self.date,))
+                stocks = df
+            if stocks.empty:
+                raise RuntimeError("本地无有效股票列表，请先更新行情")
+            warning = self.backend.refresh_industry_cache(
+                stocks, lambda _pct, task: self.progress.emit(task),
+                0, 100, force=True)
+            sectors = self.backend.get_industry_map()
+            message = f"已缓存 {len(sectors)} 只股票、{len(set(sectors.values()))} 个行业"
+            if warning:
+                message += "；" + warning
+            self.succeeded.emit(message)
+        except Exception:
+            self.failed.emit(traceback.format_exc())
+
+class ChartWorker(QThread):
+    success = Signal(int, object)
+    failed = Signal(int, str)
+
+    def __init__(self, backend, token, full_code, date):
+        super().__init__()
+        self.backend, self.token, self.full_code, self.date = backend, token, full_code, date
+
+    def run(self):
+        try:
+            self.success.emit(self.token, self.backend.get_chart_data(self.full_code, self.date))
+        except Exception:
+            self.failed.emit(self.token, traceback.format_exc())
+
+
+class VersionWorker(QThread):
+    """Check on demand; notify the GUI before streaming the asset."""
+    update_found = Signal(str, int)
+    progress = Signal(int, int, float)
+    status = Signal(str)
+    success = Signal(str, object)
+    failed = Signal(str)
+    cancelled = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self.cancel_event = threading.Event()
+
+    def cancel_download(self):
+        self.cancel_event.set()
+
+    def run(self):
+        try:
+            message, staged_path = prepare_manual_update(
+                Path(__file__).resolve(),
+                on_update_found=self.update_found.emit,
+                on_progress=self.progress.emit,
+                on_status=self.status.emit,
+                cancel_event=self.cancel_event,
+            )
+            if self.cancel_event.is_set():
+                if staged_path is not None:
+                    Path(staged_path).unlink(missing_ok=True)
+                self.cancelled.emit()
+            else:
+                self.success.emit(message, staged_path)
+        except UpdateDownloadCancelled:
+            self.cancelled.emit()
+        except Exception as exc:
+            if self.cancel_event.is_set():
+                self.cancelled.emit()
+            else:
+                self.failed.emit(str(exc))
+
+
+class HistoryWorker(QThread):
+    success = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, backend, code, date, filters):
+        super().__init__()
+        self.backend, self.code, self.date, self.filters = backend, code, date, filters
+
+    def run(self):
+        try:
+            self.success.emit(self.backend.get_signal_history(self.code, self.date, self.filters))
+        except Exception:
+            self.failed.emit(traceback.format_exc())
+
+
+class PriceChart(QWidget):
+    """Render price / MA / volume / turnover using local data only."""
+    COLORS = {"close": "#222938", "MA5": "#347df4", "MA10": "#e6a24b",
+              "MA20": "#a487dc", "volume": "#347df4",
+              "放量倍数": "#a487dc", "turnover": "#db8b30"}
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.data = pd.DataFrame()
+        self.series = ["close", "MA5", "MA10", "MA20"]
+        self.signal_date = None
+        self.setMinimumHeight(160)
+        self.setMouseTracking(True)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+    def set_frame(self, data, series=None, signal_date=None):
+        self.data = data.copy() if data is not None else pd.DataFrame()
+        self.series = list(series) if series else ["close", "MA5", "MA10", "MA20"]
+        self.signal_date = signal_date
+        self.update()
+
+    def mouseMoveEvent(self, event):
+        if not self.data.empty:
+            n = len(self.data)
+            idx = max(0, min(n-1, round((event.position().x() - 55)
+                                        / max(1,self.width()-74) * max(0,n-1))))
+            row = self.data.iloc[idx]
+            info = [str(row.get("trade_date", "—"))]
+            for key in self.series:
+                try:
+                    value = float(row[key])
+                    if math.isfinite(value):
+                        info.append(f"{key}: {value:.3f}")
+                except (ValueError, TypeError, KeyError):
+                    pass
+            self.setToolTip("\n".join(info))
+        super().mouseMoveEvent(event)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = self.rect()
+        painter.fillRect(rect, QColor("#ffffff"))
+        left, top, right, bottom = 55, 20, rect.width()-19, rect.height()-34
+        if self.data.empty or right<=left or bottom<=top+15:
+            painter.setPen(QColor("#9ca3b0"))
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "暂无可用的本地走势图")
+            painter.end()
+            return
+        arrays=[(name,pd.to_numeric(self.data[name],errors="coerce"))
+                for name in self.series if name in self.data.columns]
+        valid=[float(v) for _,a in arrays for v in a.dropna() if math.isfinite(float(v))]
+        if not valid:
+            painter.setPen(QColor("#9ca3b0"))
+            painter.drawText(rect,Qt.AlignmentFlag.AlignCenter,"所选指标没有可用数值")
+            painter.end()
+            return
+        low,high=min(valid),max(valid)
+        gap=(high-low) if high>low else max(abs(high)*.02,1)
+        low-=gap*.08
+        high+=gap*.08
+        n=len(self.data)
+        def pt(i,v):
+            return (int(left+(right-left)*i/max(1,n-1)),
+                    int(bottom-(float(v)-low)*(bottom-top)/(high-low)))
+        for i in range(5):
+            y=int(top+(bottom-top)*i/4)
+            painter.setPen(QPen(QColor("#edf0f5"),1))
+            painter.drawLine(left,y,right,y)
+            painter.setPen(QColor("#7a8190"))
+            painter.drawText(2,y+5,f"{high-(high-low)*i/4:.2f}")
+        if self.signal_date and "trade_date" in self.data:
+            for i,date in enumerate(self.data["trade_date"].astype(str)):
+                if date==str(self.signal_date):
+                    x,_=pt(i,low)
+                    painter.setPen(QPen(QColor("#d11a2a"),1))
+                    painter.drawLine(x,top,x,bottom)
+                    painter.drawText(x+2,top+12,"触发")
+        for name,values in arrays:
+            painter.setPen(QPen(QColor(self.COLORS.get(name,"#347df4")),1.8))
+            previous=None
+            for i,v in enumerate(values):
+                if pd.isna(v) or not math.isfinite(float(v)):
+                    previous=None
+                    continue
+                p=pt(i,v)
+                if previous is not None:
+                    painter.drawLine(*previous,*p)
+                previous=p
+        if "trade_date" in self.data:
+            painter.setPen(QColor("#7a8190"))
+            for i in sorted({round((n-1)*k/5) for k in range(6)}):
+                x,_=pt(i,low)
+                painter.drawText(max(2,x-17),rect.height()-8,str(self.data.iloc[i]["trade_date"])[5:])
+        painter.end()
+
+
+def value_text(raw):
+    if raw is None or (not isinstance(raw, str) and pd.isna(raw)):
+        return "—"
+    try:
+        return f"{float(raw):.2f}"
+    except (ValueError, TypeError):
+        return str(raw)
+
+
+def sample_data(strategy):
+    # Used only in explicit --demo mode: all stock names and values are imaginary.
+    examples = [
+        ("sh.600101", "演示科技", "电子", 21.38, 4.83, 2.14, 6.8),
+        ("sz.300271", "演示智联", "计算机", 43.57, 3.31, 1.98, 8.1),
+        ("sh.688117", "演示通讯", "通信", 73.26, 6.12, 3.02, 10.2),
+        ("sz.002681", "演示能源", "电力设备", 17.12, 2.56, 1.76, 4.5),
+        ("sh.600688", "演示汽车", "汽车", 27.81, -1.35, 1.65, 3.2),
+        ("sh.600234", "演示计算", "计算机", 51.08, 4.26, 2.31, 6.2),
+        ("sz.300775", "演示芯片", "电子", 89.62, 7.66, 3.27, 12.1),
+        ("sh.688666", "演示智能", "通信", 63.91, 2.71, 1.80, 5.6),
+    ]
+    rows = []
+    offset = next((i for i, (key, _, _) in enumerate(STRATEGIES) if key == strategy), 0)
+    for i, (code, name, industry, price, pct, vol, turnover) in enumerate(examples):
+        if (i + offset) % 5 == 4:
+            continue
+        rows.append({
+            "_code_full": code, "代码": code.split(".")[-1], "名称": name,
+            "板块": industry, "收盘价": price, "当日涨幅%": pct,
+            "放量倍数": vol, "换手率%": turnover, "触发日": "2026-10-29",
+        })
+        if strategy == "low_first_board":
+            rows[-1].update({
+                "首板日期": "2026-10-26", "距今交易日": 3,
+                "首板涨幅%": 10.0, "首板放量倍数": 2.2,
+                "首板前30日位置%": 18.0, "现价较首板%": 2.1,
+            })
+    return pd.DataFrame(rows)
+
+
+def sample_chart(price, seed=1):
+    dates = pd.date_range("2026-09-10", periods=32, freq="B")
+    vals = [price * (.88 + .0034 * i + .013 * math.sin(i * .64 + seed)
+                     + .008 * math.cos(i * .22 + seed)) for i in range(32)]
+    f = pd.DataFrame({"trade_date": [x.strftime("%Y-%m-%d") for x in dates],
+                      "close": vals})
+    for n in (5, 10, 20):
+        f[f"MA{n}"] = f.close.rolling(n).mean()
+    return f
+
+
+class ChevronComboBox(QComboBox):
+    """Draw a crisp vector chevron; Qt's border-triangle QSS became a dash.
+
+    Keep native popup behavior and accessibility. Only the arrow glyph is
+    custom-painted, avoiding platform-specific native style artifacts.
+    """
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        pen = QPen(QColor("#64748b"))
+        pen.setWidthF(1.6)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        cx = float(self.width() - 16)
+        cy = float(self.height()) / 2.0
+        painter.drawLine(QPointF(cx - 4, cy - 2), QPointF(cx, cy + 2))
+        painter.drawLine(QPointF(cx, cy + 2), QPointF(cx + 4, cy - 2))
+        painter.end()
+
+
+STYLE = """
+QMainWindow, QWidget#appRoot { background: #f6f7fa; color: #222938; }
+QLabel { color: #222938; background: transparent; }
+QFrame#nav { background: #edf1f7; border-right: 1px solid #e4e8f0; }
+QFrame#right { background: white; border-left: 1px solid #e5e9f0; }
+QFrame#card { background: white; border: 1px solid #e6eaf2; border-radius: 12px; }
+QLabel#small { color: #8791a1; font-size: 11px; }
+QLabel#section { font-size: 12px; font-weight: 700; }
+QLabel#brand { font-size: 18px; font-weight: 760; }
+QLabel#symbolName { font-size: 18px; font-weight: 700; }
+QLabel#price { font-size: 28px; font-weight: 750; }
+QPushButton { background: white; border: 1px solid #e2e7ef; border-radius: 8px;
+              padding: 7px 12px; color: #344054; }
+QPushButton:hover { border-color: #82b6f2; background: #f8fbff; }
+QPushButton:disabled { color: #b2bac7; background: #f5f6f8; }
+QPushButton#navButton { text-align: left; background: transparent; border: none;
+                       border-radius: 8px; padding: 11px 12px; }
+QPushButton#navButton:hover { background: #e2eafa; }
+QPushButton#navButton:checked { background: #dceafe; color: #1261be; font-weight: 700; }
+QLabel#fundCard { text-align: left; background: #ffffff; border: 1px solid #e1e7f0;
+                   border-radius: 11px; padding: 11px 8px; color: #354155; }
+QLineEdit, QComboBox { background: white; border: 1px solid #e0e5ee; border-radius: 8px;
+                        padding: 7px 9px; min-height: 18px; color: #293344; }
+QLineEdit:focus, QComboBox:focus { border-color: #4c99e8; }
+QComboBox { padding-right: 28px; }
+QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: top right;
+                       width: 26px; border: 0; background: transparent; }
+QComboBox::down-arrow { image: none; width: 0; height: 0; border: 0; }
+QTableWidget { background: white; border: 1px solid #e4e8f0; border-radius: 10px;
+               gridline-color: #edf0f5; alternate-background-color: #fafbfd;
+               selection-background-color: #e5f1ff; selection-color: #185eae; }
+QHeaderView::section { background: #f4f6f9; color: #738093; border: none;
+                       border-bottom: 1px solid #e3e8ef; padding: 4px 7px; }
+QProgressBar { border: none; background: #edf1f6; border-radius: 5px;
+               text-align: center; min-height: 9px; max-height: 9px; }
+QProgressBar::chunk { background: #2885e9; border-radius: 5px; }
+QCheckBox { spacing: 5px; }
+"""
+
+
+class ScannerWindow(QMainWindow):
+    def __init__(self, demo=False, prepared_backend=None, prepared_result=None):
+        super().__init__()
+        self.demo = demo
+        self.engine = load_engine()
+        self.backend = prepared_backend
+        self.update_result = None
+        self.frame = pd.DataFrame()
+        self.filtered = pd.DataFrame()
+        self.funds = []
+        self.fund_source = ""
+        self.fund_error_details = ""
+        self.current_key = STRATEGIES[5][0]
+        self.workers = []
+        self.scan_token = 0
+        self.chart_token = 0
+        self._restart_requested = False
+        self._scan_cancel_event = None
+        self._industry_worker = None
+        self._industry_warning_text = ''
+        self.selected_stock = None
+        self.sector_filter = None
+        self.current_filters = RangeFilter()
+        self._latest_release_url = None
+        self._version_worker = None
+        self._update_in_progress = False
+        self._download_dialog = None
+        self._update_control_path = None
+        self._update_cleanup_timer = None
+        self.setWindowTitle(f"A股 MA 扫描器 v{APP_VERSION}")
+        self.resize(1120, 840)
+        self.setMinimumSize(980, 735)
+        self.setStyleSheet(STYLE)
+        shell = QWidget()
+        shell.setObjectName("appRoot")
+        self.setCentralWidget(shell)
+        root = QVBoxLayout(shell)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        self.page = QStackedWidget()
+        root.addWidget(self.page)
+        self._make_splash()
+        self._make_workspace()
+        if demo:
+            self._load_demo()
+        elif prepared_backend is not None and prepared_result is not None:
+            self._on_update_ready(prepared_result)
+        else:
+            raise RuntimeError("主界面必须等待 Tkinter 行情抓取成功后才能启动")
+
+    def closeEvent(self, event):
+        # No QThread can be destroyed while it is still running.
+        if self._scan_cancel_event is not None:
+            self._scan_cancel_event.set()
+        if self._version_worker is not None and self._version_worker.isRunning():
+            self._version_worker.cancel_download()
+        if any(worker.isRunning() for worker in self.workers):
+            event.ignore()
+            self.statusBar().showMessage("后台任务尚未结束，完成后自动关闭…")
+            QTimer.singleShot(250, self.close)
+            return
+        super().closeEvent(event)
+
+    def _text(self, value, role=None, parent=None):
+        label = QLabel(value, parent)
+        if role:
+            label.setObjectName(role)
+        return label
+
+    def _make_splash(self):
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(130, 100, 130, 100)
+        lay.addStretch(1)
+        card = QFrame()
+        card.setObjectName("card")
+        cl = QVBoxLayout(card)
+        cl.setContentsMargins(35, 30, 35, 35)
+        cl.setSpacing(15)
+        cl.addWidget(self._text("A股 MA 扫描器", "brand"))
+        cl.addWidget(self._text("正在准备行情数据", "small"))
+        self.loading_phase = self._text("检查数据存储", "section")
+        cl.addWidget(self.loading_phase)
+        self.loading_task = self._text("正在初始化本地数据…", "small")
+        self.loading_task.setWordWrap(True)
+        cl.addWidget(self.loading_task)
+        self.loading_fraction = QProgressBar()
+        self.loading_fraction.setRange(0, 100)
+        self.loading_fraction.setValue(0)
+        self.loading_fraction.setTextVisible(False)
+        cl.addWidget(self.loading_fraction)
+        self.loading_total = self._text("更新进度 0%", "small")
+        cl.addWidget(self.loading_total)
+        self.loading_stages = self._text("○ 环境检查    ○ 历史修复    ○ 每日行情    ○ 完整性校验", "small")
+        self.loading_stages.setWordWrap(True)
+        cl.addWidget(self.loading_stages)
+        self.loading_elapsed = self._text("已用时 00:00", "small")
+        cl.addWidget(self.loading_elapsed)
+        buttons = QHBoxLayout()
+        self.retry = QPushButton("重试")
+        self.retry.clicked.connect(self.start_update)
+        self.retry.hide()
+        demo_button = QPushButton("先预览界面（模拟数据）")
+        demo_button.clicked.connect(self._load_demo)
+        buttons.addWidget(demo_button)
+        buttons.addStretch(1)
+        buttons.addWidget(self.retry)
+        exit_button = QPushButton("退出")
+        exit_button.clicked.connect(self.close)
+        buttons.addWidget(exit_button)
+        cl.addLayout(buttons)
+        lay.addWidget(card)
+        lay.addStretch(1)
+        self.page.addWidget(page)
+        self.loading_started = datetime.now()
+        self._clock = QTimer(self)
+        self._clock.timeout.connect(self._update_clock)
+        self._clock.start(1000)
+
+    def _make_workspace(self):
+        page = QWidget()
+        whole = QVBoxLayout(page)
+        whole.setContentsMargins(0, 0, 0, 0)
+        whole.setSpacing(0)
+
+        header = QFrame()
+        header.setStyleSheet("QFrame{background:white;border-bottom:1px solid #e6eaf1}")
+        line = QHBoxLayout(header)
+        line.setContentsMargins(19, 12, 19, 12)
+        brand = QVBoxLayout()
+        brand.setSpacing(2)
+        brand.addWidget(self._text("A股 MA 扫描器", "brand"))
+        self.header_status = self._text("准备就绪", "small")
+        brand.addWidget(self.header_status)
+        line.addLayout(brand)
+        line.addStretch(1)
+        # Keep the safe restart callback, but remove the redundant header button.
+        self.refresh_market = QPushButton("更新行情", self)
+        self.refresh_market.clicked.connect(self._restart_pipeline)
+        self.refresh_market.hide()
+        self.update_button = QPushButton("检查更新")
+        self.update_button.clicked.connect(self._show_release_info)
+        line.addWidget(self.update_button)
+        whole.addWidget(header)
+
+        split = QSplitter(Qt.Orientation.Horizontal)
+        split.setChildrenCollapsible(False)
+        split.setHandleWidth(1)
+        whole.addWidget(split, 1)
+
+        nav = QFrame()
+        nav.setObjectName("nav")
+        nav_l = QVBoxLayout(nav)
+        nav_l.setContentsMargins(12, 20, 12, 18)
+        nav_l.setSpacing(4)
+        nav_l.addWidget(self._text("扫描策略", "section"))
+        nav_l.addSpacing(9)
+        self.buttons = {}
+        self.strategy_group = QButtonGroup(self)
+        self.strategy_group.setExclusive(True)
+        last_group = None
+        for key, name, group in STRATEGIES:
+            if group != last_group:
+                nav_l.addSpacing(10)
+                nav_l.addWidget(self._text(group, "small"))
+                last_group = group
+            button = QPushButton("  " + name)
+            button.setObjectName("navButton")
+            button.setCheckable(True)
+            button.setChecked(key == self.current_key)
+            button.clicked.connect(lambda checked=False, k=key:self._select_strategy(k))
+            self.strategy_group.addButton(button)
+            self.buttons[key] = button
+            nav_l.addWidget(button)
+        self.volume_options = QFrame()
+        opt = QVBoxLayout(self.volume_options)
+        opt.setContentsMargins(0, 8, 0, 0)
+        self.volume_min = QLineEdit("1.5")
+        self.volume_min.setPlaceholderText("最小放量倍数")
+        self.volume_max = QLineEdit()
+        self.volume_max.setPlaceholderText("最大放量倍数（可留空）")
+        self.turnover_min = QLineEdit("3")
+        self.turnover_min.setPlaceholderText("最小换手率%")
+        self.turnover_max = QLineEdit()
+        self.turnover_max.setPlaceholderText("最大换手率%（可留空）")
+        for label, entry in (
+            ("放量倍数下限", self.volume_min), ("放量倍数上限", self.volume_max),
+            ("换手率下限 (%)", self.turnover_min), ("换手率上限 (%)", self.turnover_max)
+        ):
+            opt.addWidget(self._text(label, "small"))
+            opt.addWidget(entry)
+        apply = QPushButton("重新筛选")
+        apply.clicked.connect(self._rerun_strategy)
+        opt.addWidget(apply)
+        nav_l.addWidget(self.volume_options)
+        self.volume_options.hide()
+        nav_l.addStretch(1)
+        split.addWidget(nav)
+
+        middle = QWidget()
+        mid = QVBoxLayout(middle)
+        mid.setContentsMargins(16, 15, 16, 16)
+        mid.setSpacing(11)
+        head = QHBoxLayout()
+        self.strategy_title = self._text("均线粘合向上", "section")
+        head.addWidget(self.strategy_title)
+        head.addStretch()
+        self.hit_count = self._text("命中 — 只", "small")
+        head.addWidget(self.hit_count)
+        mid.addLayout(head)
+        self.strategy_loading = QProgressBar()
+        self.strategy_loading.setTextVisible(False)
+        self.strategy_loading.setFixedHeight(3)
+        self.strategy_loading.setRange(0, 0)
+        self.strategy_loading.hide()
+        mid.addWidget(self.strategy_loading)
+
+        fund_head = QHBoxLayout()
+        fund_head.addWidget(self._text("近5日 · 行业资金 TOP5", "section"))
+        fund_head.addStretch()
+        self.fund_source_label = self._text("未刷新", "small")
+        self.fund_source_label.hide()
+        mid.addLayout(fund_head)
+        cards = QHBoxLayout()
+        cards.setSpacing(6)
+        self.fund_cards = []
+        for i in range(5):
+            card = QLabel(f"TOP {i + 1:02d}\n等待数据\n—")
+            card.setObjectName("fundCard")
+            card.setMinimumHeight(67)
+            card.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            cards.addWidget(card, 1)
+            self.fund_cards.append(card)
+        mid.addLayout(cards)
+
+        search = QHBoxLayout()
+        self.query = QLineEdit()
+        self.query.setPlaceholderText("搜索股票代码 / 名称")
+        self.query.textChanged.connect(self.apply_filters)
+        search.addWidget(self.query, 3)
+        self.market = ChevronComboBox()
+        self.market.addItems(["全部市场", "主板", "创业板", "科创板"])
+        self.market.currentIndexChanged.connect(self.apply_filters)
+        search.addWidget(self.market, 2)
+        self.industry = ChevronComboBox()
+        self.industry.addItem("全部行业")
+        self.industry.currentIndexChanged.connect(self.apply_filters)
+        search.addWidget(self.industry, 2)
+        mid.addLayout(search)
+        change_row = QHBoxLayout()
+        self.change_min = QLineEdit()
+        self.change_min.setPlaceholderText("涨幅下限 (%)")
+        self.change_max = QLineEdit()
+        self.change_max.setPlaceholderText("涨幅上限 (%)")
+        for label, entry in (("涨幅下限%", self.change_min), ("涨幅上限%", self.change_max)):
+            change_row.addWidget(self._text(label, "small"))
+            change_row.addWidget(entry, 1)
+            entry.editingFinished.connect(self.apply_filters)
+        mid.addLayout(change_row)
+        sector_head = QHBoxLayout()
+        sector_head.addWidget(self._text("板块信号", "section"))
+        sector_head.addStretch(1)
+        self.industry_retry = QPushButton("重新获取分类")
+        self.industry_retry.clicked.connect(self._reload_industry)
+        self.industry_retry.setEnabled(not self.demo)
+        sector_head.addWidget(self.industry_retry)
+        self.sector_reset = QPushButton("全部板块")
+        self.sector_reset.clicked.connect(self._reset_sector_filter)
+        sector_head.addWidget(self.sector_reset)
+        mid.addLayout(sector_head)
+        self.sector_table = QTableWidget(0, 3)
+        self.sector_table.setHorizontalHeaderLabels(["板块", "今日触发", "板块信号"])
+        self.sector_table.verticalHeader().hide()
+        self.sector_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.sector_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.sector_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.sector_table.horizontalHeader().setFixedHeight(25)
+        self.sector_table.verticalHeader().setDefaultSectionSize(22)
+        self.sector_table.verticalHeader().setMinimumSectionSize(22)
+        self.sector_table.setFixedHeight(166)
+        self.sector_table.setShowGrid(False)
+        self.sector_table.itemSelectionChanged.connect(self._on_sector_selected)
+        self.sector_table.cellDoubleClicked.connect(self._open_sector_chart)
+        mid.addWidget(self.sector_table)
+        self.industry_notice = self._text("", "small")
+        self.industry_notice.setWordWrap(True)
+        self.industry_notice.hide()
+        mid.addWidget(self.industry_notice)
+        results = QHBoxLayout()
+        results.addWidget(self._text("选股结果", "section"))
+        results.addStretch(1)
+        self.export_excel = QPushButton("导出 Excel")
+        self.export_excel.clicked.connect(self._export_current_excel)
+        self.export_excel.setEnabled(False)
+        results.addWidget(self.export_excel)
+        clear = QPushButton("重置条件")
+        clear.clicked.connect(self.clear_filters)
+        results.addWidget(clear)
+        mid.addLayout(results)
+        # A zero-hit scan must never look like an uninitialized blank UI.
+        self.scan_notice = self._text("", "small")
+        self.scan_notice.setWordWrap(True)
+        self.scan_notice.hide()
+        mid.addWidget(self.scan_notice)
+
+        self.table = QTableWidget(0, 7)
+        self.table.setHorizontalHeaderLabels(
+            ["代码", "名称", "板块", "收盘价", "当日涨幅%", "放量倍数", "换手率%"]
+        )
+        self.table.verticalHeader().hide()
+        self.table.setShowGrid(False)
+        self.table.setAlternatingRowColors(True)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setSortingEnabled(True)
+        self.table.itemSelectionChanged.connect(self._stock_selected)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._table_context_menu)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        mid.addWidget(self.table, 1)
+        self.result_info = self._text("选择策略后开始扫描", "small")
+        self.result_info.setWordWrap(True)
+        self.result_info.hide()
+        split.addWidget(middle)
+
+        right = QFrame()
+        right.setObjectName("right")
+        rl = QVBoxLayout(right)
+        rl.setContentsMargins(16, 21, 16, 18)
+        rl.setSpacing(8)
+        rl.addWidget(self._text("股票详情", "small"))
+        self.stock_name = self._text("请选择股票", "symbolName")
+        rl.addWidget(self.stock_name)
+        self.stock_code = self._text("点击中间列表查看", "small")
+        rl.addWidget(self.stock_code)
+        rl.addSpacing(8)
+        self.stock_price = self._text("—", "price")
+        rl.addWidget(self.stock_price)
+        self.stock_change = self._text("", "section")
+        rl.addWidget(self.stock_change)
+        rl.addSpacing(12)
+        rl.addWidget(self._text("收盘价 / MA5 / MA10 / MA20", "small"))
+        self.chart = PriceChart()
+        rl.addWidget(self.chart, 1)
+        legend = self._text("● 收盘   ● MA5   ● MA10   ● MA20", "small")
+        legend.setStyleSheet("color:#64748b;font-size:10px")
+        rl.addWidget(legend)
+        rl.addSpacing(12)
+        rl.addWidget(self._text("信号指标", "section"))
+        self.metrics = self._text("放量倍数   —\n\n换手率        —\n\n触发日期    —", "small")
+        rl.addWidget(self.metrics)
+        rl.addStretch(1)
+        chart_button = QPushButton("打开完整走势图")
+        chart_button.clicked.connect(self._full_chart_dialog)
+        rl.addWidget(chart_button)
+        history = QPushButton("查看信号历史")
+        history.clicked.connect(self._history_dialog)
+        rl.addWidget(history)
+        self.chart_status = self._text("本地历史缓存", "small")
+        self.chart_status.setWordWrap(True)
+        self.chart_status.hide()
+        split.addWidget(right)
+        split.setSizes([194, 652, 274])
+        split.setStretchFactor(0, 0)
+        split.setStretchFactor(1, 1)
+        split.setStretchFactor(2, 0)
+        self.page.addWidget(page)
+
+        self.statusBar().hide()
+
+    def _load_demo(self):
+        self.demo = True
+        self.update_result = type("DemoResult", (), {
+            "scan_date": "2026-10-29", "previous_trade_date": "2026-10-28",
+            "completeness": 100., "expected": 5000, "saved": 5000,
+            "warning": "",
+        })()
+        self.header_status.setText("演示模式 · 全部数据为虚构，仅展示交互")
+        self.fund_source_label.setText("演示资金榜单 · 模拟数据")
+        self.funds = [
+            {"name": name, "net_yuan": net * 1e8, "source": "演示"}
+            for name, net in (("电子", 28.6), ("计算机", 22.1),
+                              ("通信", 16.8), ("电力设备", 14.4), ("汽车", 11.2))
+        ]
+        self.refresh_market.setEnabled(False)
+        self._render_funds()
+        self.page.setCurrentIndex(1)
+        self._select_strategy(self.current_key)
+
+    def _update_clock(self):
+        if self.page.currentIndex() != 0:
+            return
+        elapsed = int((datetime.now() - self.loading_started).total_seconds())
+        mm, ss = divmod(max(0, elapsed), 60)
+        self.loading_elapsed.setText(f"已用时 {mm:02d}:{ss:02d}")
+
+    def start_update(self):
+        # 保留 Qt 旧加载页按钮的回调兼容；实际更新始终由 Tkinter 启动阶段执行。
+        return self._restart_pipeline()
+
+    def _restart_pipeline(self):
+        """Exit Qt, release SQLite lock, then restart in main()."""
+        confirm=QMessageBox.question(
+            self,"重新更新行情",
+            "将关闭当前界面并重新更新行情。继续吗？")
+        if confirm!=QMessageBox.StandardButton.Yes:return
+        if self._scan_cancel_event is not None:
+            self._scan_cancel_event.set()
+        self.refresh_market.setEnabled(False)
+        self.statusBar().showMessage("正在等待扫描和资金后台任务安全退出…")
+        self._complete_restart()
+
+    def _complete_restart(self):
+        if any(worker.isRunning() for worker in self.workers):
+            QTimer.singleShot(200, self._complete_restart)
+            return
+        self._restart_requested = True
+        QApplication.instance().quit()
+
+
+    def _on_update_progress(self, percent, task):
+        self.loading_fraction.setValue(min(100, max(0, round(percent))))
+        index = next((i for i, (_, a, b) in enumerate(PHASES) if a <= percent < b), 7)
+        self.loading_phase.setText(f"第 {index + 1} / 8 阶段 · {PHASES[index][0]}")
+        self.loading_task.setText(task)
+        self.loading_total.setText(f"更新进度 {percent:.0f}%")
+        self.loading_stages.setText("   ".join(
+            ("✓ " if i < index else "● " if i == index else "○ ") + title
+            for i, (title, _, _) in enumerate(PHASES)
+        ))
+
+    def _on_update_ready(self, result):
+        self.update_result = result
+        self.header_status.setText(
+            f"行情日期 {result.scan_date}"
+        )
+        self.page.setCurrentIndex(1)
+        self._industry_warning_text = next(
+            (part.strip() for part in result.warning.split("。")
+             if "板块分类" in part), "")
+        self.statusBar().showMessage(
+            result.warning or f"{result.scan_date} 本地日线已就绪"
+        )
+        self._select_strategy(self.current_key)
+        self._load_funds_from_cache()
+
+    def _on_update_failed(self, detail):
+        self.loading_task.setText(detail.splitlines()[-1][:220])
+        self.loading_phase.setText("行情更新失败")
+        self.retry.show()
+        self._show_error("更新行情失败", detail)
+
+    def _remember(self, worker):
+        self.workers.append(worker)
+        worker.finished.connect(lambda: self._forget_worker(worker))
+
+    def _forget_worker(self, worker):
+        if worker in self.workers:
+            self.workers.remove(worker)
+
+    def _select_strategy(self, key):
+        self.current_key = key
+        self.buttons[key].setChecked(True)
+        self.strategy_title.setText(
+            next(name for k, name, _ in STRATEGIES if k == key)
+        )
+        self.volume_options.setVisible(key == "volume_turnover")
+        self._rerun_strategy()
+
+    def _rerun_strategy(self):
+        if self.update_result is None:
+            return
+        if self._scan_cancel_event is not None:
+            self._scan_cancel_event.set()
+        self.scan_token += 1
+        self._scan_cancel_event = threading.Event()
+        self.frame = pd.DataFrame()
+        self.scan_notice.hide()
+        self.strategy_loading.show()
+        self.strategy_loading.setRange(0, 0)
+        self.sector_filter = None
+        self.sector_table.blockSignals(True)
+        self.sector_table.setRowCount(0)
+        self.sector_table.blockSignals(False)
+        self.apply_filters()
+        if self.demo:
+            self.frame = sample_data(self.current_key)
+            self._update_industry_filter()
+            self._populate_sector_table()
+            self.apply_filters()
+            self.strategy_loading.hide()
+            return
+        try:
+            filters = None
+            if self.current_key == "volume_turnover":
+                filters = self.engine.RangeFilter(
+                    float(self.volume_min.text().strip()),
+                    float(self.volume_max.text()) if self.volume_max.text().strip() else None,
+                    float(self.turnover_min.text().strip()),
+                    float(self.turnover_max.text()) if self.turnover_max.text().strip() else None,
+                )
+                self.current_filters = filters
+        except (ValueError, OverflowError) as exc:
+            self.result_info.setText("请输入有效的放量倍数及换手率上下限：" + str(exc))
+            self.strategy_loading.hide()
+            return
+        self.result_info.setText("正在读取本地行情并计算策略…")
+        worker = ScanWorker(self.backend, self.scan_token, self.current_key,
+                            self.update_result.scan_date,
+                            self.update_result.previous_trade_date, filters,
+                            self._scan_cancel_event)
+        worker.success.connect(self._scan_ready)
+        worker.failed.connect(self._scan_failed)
+        self._remember(worker)
+        worker.start()
+    def _scan_ready(self, token, frame):
+        if token != self.scan_token:
+            return
+        self._scan_cancel_event = None
+        self.strategy_loading.hide()
+        self.frame = frame
+        self._update_industry_filter()
+        self._populate_sector_table()
+        self.apply_filters()
+    def _scan_failed(self, token, detail):
+        if token != self.scan_token:
+            return
+        self._scan_cancel_event = None
+        self.strategy_loading.hide()
+        self.result_info.setText("策略执行失败，点击查看错误信息")
+        self.scan_notice.setText("策略计算未成功，不是正常的零命中。请查看错误详情。")
+        self.scan_notice.show()
+        self._show_error("策略执行失败", detail)
+    def _reload_industry(self):
+        if self.demo or self.backend is None or self.update_result is None:
+            return
+        if self._industry_worker is not None and self._industry_worker.isRunning():
+            return
+        self.industry_retry.setEnabled(False)
+        self.industry_notice.setText("正在重新获取行业分类…")
+        self.industry_notice.show()
+        worker = IndustryWorker(self.backend, self.update_result.scan_date)
+        self._industry_worker = worker
+        worker.progress.connect(self._industry_progress)
+        worker.succeeded.connect(self._industry_ready)
+        worker.failed.connect(self._industry_failed)
+        worker.finished.connect(lambda: self.industry_retry.setEnabled(True))
+        self._remember(worker)
+        worker.start()
+
+    def _industry_progress(self, message):
+        self.industry_notice.setText(str(message))
+        self.industry_notice.show()
+
+    def _industry_ready(self, message):
+        self._industry_warning_text = "" if "不完整" not in message and "失败" not in message else message
+        self.industry_notice.setText(message)
+        self.industry_notice.show()
+        self._rerun_strategy()
+
+    def _industry_failed(self, details):
+        self._industry_warning_text = "板块分类刷新失败，可再次点击重试"
+        self.industry_notice.setText(self._industry_warning_text)
+        self.industry_notice.show()
+        self._show_error("重新获取分类失败", details)
+
+    def _all_known_industries(self):
+        names = set()
+        if not self.frame.empty and "板块" in self.frame:
+            names.update(self.frame["板块"].dropna().astype(str))
+        if not self.demo and self.backend is not None:
+            try:
+                names.update(self.backend.get_industry_map().values())
+            except Exception as exc:
+                self._industry_warning_text = "读取本地板块分类失败：" + str(exc)
+        return sorted(name for name in names if name and name != "未分类")
+
+    def _update_industry_filter(self):
+        current = self.industry.currentText()
+        self.industry.blockSignals(True)
+        self.industry.clear()
+        self.industry.addItem("全部行业")
+        self.industry.addItems(self._all_known_industries())
+        self.industry.setCurrentIndex(max(0, self.industry.findText(current)))
+        self.industry.blockSignals(False)
+        if not self.demo:
+            if self._industry_warning_text:
+                self.industry_notice.setText(self._industry_warning_text)
+                self.industry_notice.show()
+            elif self.industry.count() <= 1:
+                self.industry_notice.setText(
+                    "本地暂无板块分类，请点击「重新获取分类」；个股扫描仍可使用。")
+                self.industry_notice.show()
+            else:
+                self.industry_notice.hide()
+
+    def _populate_sector_table(self):
+        self.sector_table.blockSignals(True)
+        self.sector_table.setRowCount(0)
+        names = set(self._all_known_industries())
+        if not self.frame.empty and "板块" in self.frame:
+            names.update(self.frame["板块"].dropna().astype(str))
+        groups = (dict(tuple(self.frame.groupby("板块", dropna=False)))
+                  if not self.frame.empty and "板块" in self.frame else {})
+        output = []
+        for name in names:
+            group = groups.get(name)
+            if group is not None and not group.empty:
+                count = int((group["触发日"].astype(str)
+                            == str(self.update_result.scan_date)).sum())
+                status = (str(group["板块信号"].iloc[0])
+                          if "板块信号" in group else "未检测")
+            else:
+                count = 0
+                # A sector can trigger independently even if no constituent
+                # stock triggered; '未触发' here would be an invented signal.
+                status = "待检查"
+            output.append((name, count, status))
+        output.sort(key=lambda entry: (
+            entry[2] == "今日触发", entry[1], entry[0]), reverse=True)
+        self.sector_table.setRowCount(len(output))
+        for index, (name, count, status) in enumerate(output):
+            for col, value in enumerate((name, count, status)):
+                item = QTableWidgetItem(str(value))
+                if col == 0:
+                    item.setToolTip(name)
+                if col == 1:
+                    item.setData(Qt.ItemDataRole.EditRole, int(count))
+                self.sector_table.setItem(index, col, item)
+        self.sector_table.blockSignals(False)
+        self.sector_table.resizeColumnsToContents()
+
+    def _reset_sector_filter(self):
+        self.sector_filter = None
+        self.sector_table.blockSignals(True)
+        self.sector_table.clearSelection()
+        self.sector_table.blockSignals(False)
+        self.apply_filters()
+
+    def _on_sector_selected(self):
+        chosen = self.sector_table.selectedItems()
+        self.sector_filter = (self.sector_table.item(chosen[0].row(), 0).text()
+                              if chosen else None)
+        self.apply_filters()
+
+    def _open_sector_chart(self, row, column):
+        if self.demo or self.backend is None or self.update_result is None:
+            QMessageBox.information(self, "板块走势", "演示模式没有真实板块历史数据。")
+            return
+        item = self.sector_table.item(row, 0)
+        if item is None:
+            return
+        sector = item.text()
+        try:
+            data = self.backend.get_sector_chart_data(sector, self.update_result.scan_date)
+            if data.empty:
+                QMessageBox.information(self, "板块走势", "本地板块数据不足，无法绘图。")
+                return
+            status = self.backend.get_sector_strategy_status(
+                sector, self.current_key, self.update_result.scan_date,
+                False, self.update_result.previous_trade_date,
+                self.current_filters if self.current_key == "volume_turnover" else None)
+            dlg = QDialog(self)
+            dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+            dlg.setWindowTitle(f"{sector} · {self.strategy_title.text()}")
+            dlg.resize(950, 720)
+            layout = QVBoxLayout(dlg)
+            layout.addWidget(self._text(f"{sector} · {self.strategy_title.text()} · {status}", "brand"))
+            layout.addWidget(self._text("行业成分股后复权价格归一化后的等权指数；板块信号按当前策略计算", "small"))
+            history = []
+            if "trade_date" in data.columns:
+                for date in data["trade_date"].astype(str):
+                    if date == self.update_result.scan_date:
+                        continue
+                    if self.backend._sector_strategy_triggered(
+                            data, self.current_key, date,
+                            self.current_filters if self.current_key == "volume_turnover" else None):
+                        history.append(date)
+            layout.addWidget(self._text(
+                "历史触发：" + "、".join(history[-5:][::-1])
+                if history else "本地走势图范围内无其他历史触发", "small"))
+            if self.current_key.startswith("breakout_ma"):
+                fields = ["close", "MA" + self.current_key.replace("breakout_ma", "")]
+            elif self.current_key in ("ma5_turn_up",):
+                fields = ["close", "MA5"]
+            elif self.current_key == "ma5_cross_ma10":
+                fields = ["close", "MA5", "MA10"]
+            elif self.current_key == "volume_turnover":
+                fields = ["close"]
+            else:
+                fields = ["close", "MA5", "MA10", "MA20"]
+            chart = PriceChart()
+            chart.set_frame(data, series=fields, signal_date=self.update_result.scan_date)
+            layout.addWidget(chart, 3)
+            if self.current_key == "volume_turnover":
+                for field, title in (("放量倍数", "板块放量倍数"), ("turnover", "板块等权换手率%")):
+                    view = PriceChart()
+                    view.set_frame(data, series=[field])
+                    layout.addWidget(self._text(title, "small"))
+                    layout.addWidget(view, 1)
+            dlg.exec()
+        except Exception:
+            self._show_error("读取板块历史失败", traceback.format_exc())
+
+    def clear_filters(self):
+        self.query.clear()
+        self.market.setCurrentIndex(0)
+        self.industry.setCurrentIndex(0)
+        self.change_min.clear()
+        self.change_max.clear()
+        self._reset_sector_filter()
+        self.apply_filters()
+    def apply_filters(self):
+        try:
+            low = float(self.change_min.text()) if self.change_min.text().strip() else None
+            high = float(self.change_max.text()) if self.change_max.text().strip() else None
+            if any(v is not None and not math.isfinite(v) for v in (low, high)):
+                raise ValueError("涨幅上下限必须为有限数字")
+            if low is not None and high is not None and low > high:
+                raise ValueError("涨幅下限不能大于上限")
+        except ValueError as exc:
+            self.result_info.setText("涨幅范围无效：" + str(exc))
+            return
+        if self.frame.empty:
+            self.filtered = pd.DataFrame()
+        else:
+            text = self.query.text().strip().casefold()
+            frame = self.frame
+            if text:
+                frame = frame.loc[
+                    frame["名称"].astype(str).str.casefold().str.contains(text, regex=False)
+                    | frame["代码"].astype(str).str.casefold().str.contains(text, regex=False)
+                ]
+            market = self.market.currentText()
+            codes = frame["代码"].astype(str).str.zfill(6)
+            if market == "创业板":
+                frame = frame.loc[codes.str.startswith(("300", "301"))]
+            elif market == "科创板":
+                frame = frame.loc[codes.str.startswith("688")]
+            elif market == "主板":
+                frame = frame.loc[~codes.str.startswith(("300", "301", "688"))]
+            sector = self.industry.currentText()
+            if sector and sector != "全部行业":
+                frame = frame.loc[frame["板块"].astype(str).eq(sector)]
+            if self.sector_filter:
+                frame = frame.loc[frame["板块"].astype(str).eq(self.sector_filter)]
+            if low is not None or high is not None:
+                change = pd.to_numeric(frame["当日涨幅%"], errors="coerce")
+                if low is not None:
+                    frame = frame.loc[change >= low]
+                if high is not None:
+                    frame = frame.loc[change <= high]
+            self.filtered = frame.copy()
+        self._draw_table()
+        self.hit_count.setText(f"命中 {len(self.filtered)} 只")
+        self.export_excel.setEnabled(not self.filtered.empty)
+        self._show_scan_diagnostics()
+        self.result_info.setText(
+            "模拟数据 · 非真实行情" if self.demo else
+            (f"股票结果 {len(self.filtered)} 只 · {self.update_result.scan_date if self.update_result else '—'}"
+             + (" · 仅由后复权收盘涨幅近似识别首板，非交易所封板记录"
+                if self.current_key == "low_first_board" else ""))
+        )
+
+    def _export_current_excel(self):
+        if self.filtered.empty:
+            QMessageBox.information(self,"导出 Excel","当前没有选股结果")
+            return
+        day=self.update_result.scan_date if self.update_result else datetime.now(CST).strftime("%Y-%m-%d")
+        suggestion=f"MA扫描_{self.current_key}_{day}.xlsx"
+        path,_=QFileDialog.getSaveFileName(
+            self,"导出当前筛选结果",str(BASE_DIR/suggestion),"Excel 文件 (*.xlsx)")
+        if not path:
+            return
+        if not path.lower().endswith(".xlsx"):
+            path+=".xlsx"
+        columns=[self.table.horizontalHeaderItem(i).text() for i in range(self.table.columnCount())]
+        data=self.filtered
+        if "_code_full" in data and data["_code_full"].is_unique:
+            ids=[self.table.item(i,0).data(Qt.ItemDataRole.UserRole)
+                 for i in range(self.table.rowCount()) if self.table.item(i,0)]
+            if len(ids)==len(data):
+                try:
+                    data=data.set_index("_code_full",drop=False).loc[ids].reset_index(drop=True)
+                except KeyError:
+                    data=self.filtered
+        try:
+            export_strategy_xlsx(path,columns,data)
+        except Exception as exc:
+            QMessageBox.critical(self,"导出 Excel 失败",str(exc))
+            return
+        QMessageBox.information(self,"导出 Excel",f"已导出 {len(data)} 只股票：\n{path}")
+
+    def _show_scan_diagnostics(self):
+        """Explain *why* a completed scan rendered zero rows."""
+        if not self.strategy_loading.isHidden():
+            self.scan_notice.hide()
+            return
+        if not self.filtered.empty:
+            self.scan_notice.hide()
+            return
+        total = len(self.frame)
+        date = self.update_result.scan_date if self.update_result else "—"
+        diagnostics = self.frame.attrs.get("scan_diagnostics", {})
+        if total:
+            message = (
+                f"策略已计算出 {total} 只股票，但当前代码、市场、行业、"
+                "板块或涨幅筛选条件使结果变为 0。请点击「重置条件」。"
+            )
+        elif diagnostics.get("stock_count", 0) == 0:
+            message = (
+                f"本地缓存没有足够的有效日线用于 {date} 的策略计算。"
+                "请检查行情是否已成功下载以及数据库所在目录。"
+            )
+        elif diagnostics.get("target_stocks", 0) == 0:
+            cached = diagnostics.get("latest_data_date") or "未知"
+            message = (
+                f"{date} 没有找到任何有效的个股日线；"
+                f"本地缓存最后有数据的日期为 {cached}。请检查行情更新状态。"
+            )
+        elif diagnostics.get("enough_history", 0) == 0:
+            message = (
+                f"{date} 有 {diagnostics['target_stocks']} 只股票记录，"
+                "但有效历史长度不足以计算当前策略。"
+            )
+        else:
+            message=f"本次已完成计算：{date} 当天没有新触发当前策略的股票。"
+        if (self.update_result is not None and
+                self.update_result.expected > 0 and
+                self.update_result.completeness < 99.995):
+            message += (
+                f" 注意：行情完整率仅 {self.update_result.completeness:.2f}%"
+                f"（{self.update_result.saved}/{self.update_result.expected}），"
+                "可能发生漏选。"
+            )
+        self.scan_notice.setText(message)
+        self.scan_notice.show()
+
+    def _draw_table(self):
+        # Like v1.2.6, show metrics particular to the active strategy.
+        common = ["代码", "名称", "板块", "触发日", "收盘价", "当日涨幅%"]
+        if self.current_key == "volume_turnover":
+            columns = common + ["放量倍数", "换手率%"]
+        elif self.current_key == "low_first_board":
+            columns = common + ["首板日期", "距今交易日", "首板涨幅%",
+                                "首板放量倍数", "首板前30日位置%", "现价较首板%"]
+        elif self.current_key == "ma5_turn_up":
+            columns = common + ["MA5", "昨日MA5", "MA5上拐幅度%", "放量倍数", "换手率%"]
+        elif self.current_key == "ma_convergence_up":
+            columns = common + ["MA5", "MA10", "MA20", "昨日粘合度%",
+                                "今日发散度%", "发散增加百分点", "放量倍数", "换手率%"]
+        elif self.current_key.startswith("breakout_ma"):
+            ma = self.current_key.replace("breakout_ma", "")
+            columns = common + [f"MA{ma}", f"突破MA{ma}幅度%", "放量倍数", "换手率%"]
+        else:
+            columns = common + ["MA5", "MA10", "MA5高于MA10%", "放量倍数", "换手率%"]
+        self.table.blockSignals(True)
+        self.table.setSortingEnabled(False)
+        self.table.setColumnCount(len(columns))
+        self.table.setHorizontalHeaderLabels(columns)
+        self.table.setRowCount(0 if self.filtered.empty else len(self.filtered))
+        for row_number, (_, record) in enumerate(self.filtered.iterrows()):
+            for column, key in enumerate(columns):
+                raw = record.get(key)
+                if key in ("代码", "名称", "板块", "触发日", "首板日期"):
+                    value = str(raw) if raw is not None and not pd.isna(raw) else "—"
+                else:
+                    value = value_text(raw)
+                item = QTableWidgetItem(value)
+                item.setData(Qt.ItemDataRole.UserRole, str(record.get("_code_full", "")))
+                if key not in ("代码", "名称", "板块", "触发日"):
+                    try:
+                        if raw is not None and math.isfinite(float(raw)):
+                            item.setData(Qt.ItemDataRole.EditRole, float(raw))
+                    except (ValueError, TypeError):
+                        pass
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                if key == "当日涨幅%" and pd.notna(raw):
+                    item.setForeground(QColor("#db5263" if float(raw) >= 0 else "#139b74"))
+                self.table.setItem(row_number, column, item)
+        self.table.setSortingEnabled(True)
+        self.table.resizeColumnsToContents()
+        self.table.blockSignals(False)
+        if self.table.rowCount():
+            self.table.selectRow(0)
+            self._stock_selected()
+        else:
+            self._clear_stock()
+    def _render_funds(self):
+        """TOP5 五个板块只展示排名及净流入金额，不支持点击筛选。"""
+        for idx, card in enumerate(self.fund_cards):
+            if idx < len(self.funds):
+                record = self.funds[idx]
+                net = float(record["net_yuan"]) / 1e8
+                card.setText(f'TOP {idx + 1:02d}\n{record["name"]}\n{net:+.2f} 亿')
+            else:
+                card.setText(f"TOP {idx + 1:02d}\n暂无数据\n—")
+
+
+    def _load_funds_from_cache(self):
+        try:
+            rows, _ = self.backend.load_fund_top5()
+            self.funds = rows
+            self._check_fund_freshness()
+            self._render_funds()
+        except Exception as exc:
+            self.fund_error_details = str(exc)
+
+
+    def _check_fund_freshness(self):
+        """缓存允许查看，但必须显示真实抓取时间，不暗示等同当日实时排名。"""
+        rows = self.funds
+        self.fund_source = rows[0].get("source", "未知来源") if rows else ""
+        if self.demo:
+            return
+        if rows:
+            stamp = str(rows[0].get("fetched_at", "未知时间"))[:16]
+            self.fund_source_label.setText(f"{self.fund_source} · 抓取 {stamp}")
+        else:
+            self.fund_source_label.setText("暂无资金榜单")
+
+
+    def _stock_selected(self):
+        selected = self.table.selectedItems()
+        if not selected:
+            self._clear_stock()
+            return
+        row = selected[0].row()
+        if row < 0:
+            self._clear_stock()
+            return
+        code_item = self.table.item(row, 0)
+        if code_item is None:
+            self._clear_stock()
+            return
+        full_code = code_item.data(Qt.ItemDataRole.UserRole)
+        matching = self.filtered.loc[self.filtered["_code_full"].astype(str) == full_code]
+        if matching.empty:
+            self._clear_stock()
+            return
+        record = matching.iloc[0]
+        self.selected_stock = record
+        self.stock_name.setText(str(record.get("名称", "")))
+        self.stock_code.setText(f'{record.get("代码", "")} · {record.get("板块", "")}')
+        self.stock_price.setText(value_text(record.get("收盘价")))
+        change = float(record.get("当日涨幅%", 0))
+        self.stock_change.setText(f'{change:+.2f}%')
+        self.stock_change.setStyleSheet(
+            "color:#dd4d5f" if change >= 0 else "color:#149b78"
+        )
+        self.metrics.setText(
+            f'放量倍数     {value_text(record.get("放量倍数"))} 倍\n\n'
+            f'换手率          {value_text(record.get("换手率%"))}%\n\n'
+            f'触发日期     {record.get("触发日", "—")}'
+        )
+        self.chart_token += 1
+        if self.demo:
+            self.chart.set_frame(sample_chart(float(record.get("收盘价", 20)), row + 1))
+            self.chart_status.setText("演示价格曲线，非真实交易数据")
+            return
+        self.chart_status.setText("正在读取本地走势图…")
+        token = self.chart_token
+        worker = ChartWorker(self.backend, token, full_code, self.update_result.scan_date)
+        worker.success.connect(self._chart_ready)
+        worker.failed.connect(self._chart_failed)
+        self._remember(worker)
+        worker.start()
+
+    def _clear_stock(self):
+        self.selected_stock = None
+        self.chart_token += 1
+        self.stock_name.setText("请选择股票")
+        self.stock_code.setText("点击列表行查看")
+        self.stock_price.setText("—")
+        self.stock_change.setText("")
+        self.metrics.setText("放量倍数   —\n\n换手率        —\n\n触发日期     —")
+        self.chart.set_frame(pd.DataFrame())
+        self.chart_status.setText("请选择列表中的股票")
+    def _chart_ready(self, token, frame):
+        if token == self.chart_token:
+            self.chart.set_frame(frame)
+            self.chart_status.setText("历史日线 · 来源：本地 SQLite")
+
+    def _chart_failed(self, token, detail):
+        if token == self.chart_token:
+            self.chart_status.setText("走势图读取失败")
+            self._show_error("走势图读取失败", detail)
+    def _table_context_menu(self, position):
+        item = self.table.itemAt(position)
+        if item is None:
+            return
+        self.table.selectRow(item.row())
+        menu = QMenu(self)
+        chart_action = menu.addAction("走势图")
+        history_action = menu.addAction("信号历史")
+        chosen = menu.exec(self.table.viewport().mapToGlobal(position))
+        if chosen == chart_action:
+            self._full_chart_dialog()
+        elif chosen == history_action:
+            self._history_dialog()
+
+    def _full_chart_dialog(self):
+        record = getattr(self, "selected_stock", None)
+        if record is None:
+            return
+        dialog = QDialog(self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dialog.setWindowTitle(f'{record.get("名称")} · 最近30日行情与成交指标')
+        dialog.resize(960, 760)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(self._text(
+            f'{record.get("代码")} {record.get("名称")} · 触发日 {record.get("触发日", "—")}', "brand"))
+        tabs = QTabWidget()
+        price = PriceChart()
+        price.set_frame(self.chart.data, signal_date=str(record.get("触发日", "")))
+        tabs.addTab(price, "价格与均线")
+        metrics = QWidget()
+        ml = QVBoxLayout(metrics)
+        for field, label in (("volume", "成交量（股）"),
+                             ("放量倍数", "放量倍数（与前5个交易日比）"),
+                             ("turnover", "换手率%")):
+            ml.addWidget(self._text(label, "section"))
+            chart = PriceChart()
+            chart.set_frame(self.chart.data, series=[field],
+                            signal_date=str(record.get("触发日", "")))
+            ml.addWidget(chart, 1)
+        tabs.addTab(metrics, "成交量 · 放量 · 换手率")
+        layout.addWidget(tabs, 1)
+        dialog.exec()
+    def _history_dialog(self):
+        record = getattr(self, "selected_stock", None)
+        if record is None:
+            return
+        if self.demo:
+            QMessageBox.information(self, "信号历史", "演示模式不提供真实信号历史。")
+            return
+        dialog = QDialog(self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        window_closed = [False]
+        dialog.finished.connect(lambda *_: window_closed.__setitem__(0, True))
+        dialog.destroyed.connect(lambda *_: window_closed.__setitem__(0, True))
+        dialog.setWindowTitle(f'{record.get("代码")} {record.get("名称")} · 信号历史')
+        dialog.resize(1100, 650)
+        layout = QVBoxLayout(dialog)
+        notice = self._text("正在后台回算本地历史信号…", "small")
+        layout.addWidget(notice)
+        table = QTableWidget(0, 8)
+        table.setHorizontalHeaderLabels(["触发日", "策略", "连续日数", "收盘价",
+                                        "放量倍数", "换手率%", "参数", "来源"])
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setSortingEnabled(True)
+        layout.addWidget(table, 1)
+        code = str(record["_code_full"])
+        name = str(record.get("名称", ""))
+
+        def display(history):
+            if window_closed[0] or not dialog.isVisible():
+                return
+            notice.setText(f"历史共 {len(history)} 条信号 · 双击记录查看触发日走势图")
+            table.setSortingEnabled(False)
+            table.setRowCount(len(history))
+            for index, rec in enumerate(history.to_dict("records")):
+                try:
+                    payload = json.loads(rec.get("payload") or "{}")
+                    if not isinstance(payload, dict):
+                        payload = {}
+                except (ValueError, TypeError):
+                    payload = {}
+                filter_key = str(rec.get("filter_key", "固定规则"))
+                if filter_key != "固定规则":
+                    try:
+                        lo, hi, tlo, thi = json.loads(filter_key)
+                        filter_key = (f"放量 {lo:g}～{hi if hi is not None else '不限'}；"
+                                      f"换手率 {tlo:g}～{thi if thi is not None else '不限'}%")
+                    except (TypeError, ValueError):
+                        pass
+                labels = {k: label for k, label, _ in STRATEGIES}
+                row = (rec.get("signal_date"), labels.get(rec.get("strategy"), rec.get("strategy")),
+                       rec.get("streak"), payload.get("收盘价"),
+                       payload.get("放量倍数"), payload.get("换手率%"),
+                       filter_key, rec.get("source"))
+                for col, value in enumerate(row):
+                    item = QTableWidgetItem(value_text(value) if col in (3, 4, 5) else str(value))
+                    item.setData(Qt.ItemDataRole.UserRole, str(rec.get("signal_date", "")))
+                    table.setItem(index, col, item)
+            table.setSortingEnabled(True)
+            table.resizeColumnsToContents()
+
+        def fail(details):
+            if not window_closed[0] and dialog.isVisible():
+                notice.setText("历史记录回算失败")
+                self._show_error("历史读取失败", details)
+
+        def view_record(row, column):
+            item = table.item(row, 0)
+            if item is None:
+                return
+            date = str(item.data(Qt.ItemDataRole.UserRole) or item.text())
+            try:
+                frame = self.backend.get_chart_data(code, date)
+                if frame.empty:
+                    return
+                plot = QDialog(dialog)
+                plot.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+                plot.setWindowTitle(f"{name} · {date} 触发日")
+                plot.resize(900, 620)
+                view = QVBoxLayout(plot)
+                chart = PriceChart()
+                chart.set_frame(frame, signal_date=date)
+                view.addWidget(chart)
+                plot.exec()
+            except Exception:
+                self._show_error("历史走势图失败", traceback.format_exc())
+
+        table.cellDoubleClicked.connect(view_record)
+        worker = HistoryWorker(self.backend, code, self.update_result.scan_date,
+                               self.current_filters)
+        worker.success.connect(display)
+        worker.failed.connect(fail)
+        self._remember(worker)
+        dialog.show()
+        worker.start()
+
+    def _show_release_info(self):
+        """One calm, cancellable PySide6 window, only on an explicit click."""
+        if getattr(self, "_update_in_progress", False):
+            return
+        if self._version_worker is not None and self._version_worker.isRunning():
+            return
+        self._update_in_progress = True
+        self.update_button.setEnabled(False)
+        worker = VersionWorker()
+        self._version_worker = worker
+        dialog = QDialog(self)
+        dialog.setWindowTitle("软件更新")
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        dialog.setFixedWidth(370)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(26, 26, 26, 20)
+        layout.setSpacing(15)
+        status = QLabel("正在检查更新")
+        status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(status)
+        bar = QProgressBar()
+        bar.setTextVisible(False)
+        bar.setRange(0, 0)
+        bar.setFixedHeight(5)
+        layout.addWidget(bar)
+        percent = QLabel("")
+        percent.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(percent)
+        action = QPushButton("取消")
+        layout.addWidget(action)
+        self._download_dialog = dialog
+        self._download_ui = (bar, percent, status)
+        done = {"closed": False}
+
+        def request_cancel():
+            if not done["closed"]:
+                worker.cancel_download()
+                action.setEnabled(False)
+                status.setText("正在取消")
+
+        def finish(text, *, keep_open=True):
+            if done["closed"]:
+                return
+            done["closed"] = True
+            self._update_in_progress = False
+            self.update_button.setEnabled(True)
+            status.setText(text)
+            bar.setRange(0, 1000)
+            if text == "已是最新版本":
+                bar.setValue(1000)
+            percent.setText("")
+            action.setEnabled(True)
+            action.setText("关闭")
+            try:
+                action.clicked.disconnect(request_cancel)
+            except (RuntimeError, TypeError):
+                pass
+            action.clicked.connect(dialog.accept)
+            self.statusBar().showMessage(text)
+            if not keep_open:
+                dialog.accept()
+
+        action.clicked.connect(request_cancel)
+        dialog.rejected.connect(request_cancel)
+        dialog.finished.connect(lambda _result: setattr(self, "_download_dialog", None))
+
+        def on_found(version, size):
+            status.setText("正在下载更新")
+            bar.setRange(0, 1000)
+            bar.setValue(0)
+            percent.setText("0%")
+
+        def on_progress(received, size, speed):
+            if done["closed"]:
+                return
+            status.setText("正在下载更新")
+            bar.setValue(min(1000, round(1000 * received / size)) if size else 0)
+            percent.setText(f"{100 * received / size:.1f}%" if size else "")
+
+        def on_status(message):
+            if done["closed"]:
+                return
+            if "验证" in message:
+                status.setText("正在验证")
+                percent.setText("")
+                bar.setRange(0, 0)
+            else:
+                status.setText("正在下载更新")
+
+        def on_ready(message, staged):
+            if staged is None:
+                finish("已是最新版本" if "最新" in message else message)
+                return
+            status.setText("正在验证")
+            finish("正在安装更新", keep_open=False)
+            try:
+                self._install_staged_update(Path(staged))
+            except Exception:
+                Path(staged).unlink(missing_ok=True)
+                QMessageBox.warning(self, "软件更新", "暂时无法更新")
+
+        def on_failure(message):
+            # Deliberately do not render a traceback, URL, secret or log.
+            finish("暂时无法更新")
+
+        def on_cancelled():
+            finish("已取消更新")
+
+        worker.update_found.connect(on_found)
+        worker.progress.connect(on_progress)
+        worker.status.connect(on_status)
+        worker.success.connect(on_ready)
+        worker.failed.connect(on_failure)
+        worker.cancelled.connect(on_cancelled)
+        self._remember(worker)
+        dialog.show()
+        worker.start()
+
+    def _check_update_cleanup(self):
+        """Close the old GUI only after the new app has visibly started."""
+        path = self._update_control_path
+        if path is None:
+            return
+        try:
+            status = path.read_text(encoding="utf-8").strip() if path.exists() else ""
+        except OSError:
+            status = ""
+        if status == "close-old":
+            self._update_cleanup_timer.stop()
+            # This closeEvent already handles cancellation of scanner workers.
+            self.close()
+        elif status == "failed":
+            self._update_cleanup_timer.stop()
+            self._update_control_path = None
+            QMessageBox.warning(self, "软件更新", "新版文件已保留，但更新未完成。")
+
+    def _install_staged_update(self, staged: Path):
+        control, _helper_process = _launch_verified_update_helper(staged)
+        # Keep the current Qt GUI and its SQLite locks alive until the
+        # downloaded app's real Qt preview sends its visible-window ACK.
+        self._update_control_path = control
+        self._update_cleanup_timer = QTimer(self)
+        self._update_cleanup_timer.timeout.connect(self._check_update_cleanup)
+        self._update_cleanup_timer.start(180)
+
+    def _show_error(self, title, details):
+        if not self.demo:
+            try:
+                DATA_DIR.mkdir(parents=True, exist_ok=True)
+                with (DATA_DIR / "scanner_error.log").open("a", encoding="utf-8") as log:
+                    log.write(f"\n[{datetime.now().isoformat(timespec='seconds')}] {title}\n{details}\n")
+            except OSError:
+                pass
+        dialog = QDialog(self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dialog.setWindowTitle(title)
+        dialog.resize(710, 410)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("错误详情"))
+        txt = QPlainTextEdit()
+        txt.setReadOnly(True)
+        txt.setPlainText(details)
+        layout.addWidget(txt, 1)
+        close = QPushButton("关闭")
+        close.clicked.connect(dialog.accept)
+        layout.addWidget(close)
+        dialog.exec()
+
+
+def _launch_verified_update_helper(staged: Path):
+    """Spawn the tested updater helper for GUI and pre-market startup alike.
+
+    The helper writes the canonical new file, launches the real new Qt preview
+    and requests old-process exit only after a visible-window handshake.
+    """
+    old = Path(__file__).resolve()
+    staged = Path(staged).resolve()
+    if staged.parent != old.parent or not staged.is_file():
+        raise RuntimeError("下载文件不在当前程序目录")
+    program = staged.read_bytes()
+    match = re.search(
+        rb'(?m)^APP_VERSION\s*=\s*["\x27](\d+\.\d+\.\d+)["\x27]\s*$',
+        program)
+    if not match:
+        raise RuntimeError("无法确认新程序的版本号")
+    version = match.group(1).decode("ascii")
+    current = _release_version(APP_VERSION)
+    wanted = _release_version(version)
+    if wanted is None or current is None or wanted < current:
+        raise RuntimeError("拒绝降级或无效版本更新")
+    if (len(program) > MAX_UPDATE_BYTES or not program or
+            b"--update-ack" not in program):
+        raise RuntimeError("更新文件超出大小上限或缺少启动确认接口")
+    compile(program, str(staged), "exec")
+    digest = hashlib.sha256(program).hexdigest()
+    final = old.with_name(f"AShareMAScanner_v{version}.pyw")
+    # An existing filename with different content must never be clobbered.
+    if final != old and (final.exists() or final.is_symlink()):
+        if (not final.is_file() or final.is_symlink() or
+                final.stat().st_size != len(program) or
+                hashlib.sha256(final.read_bytes()).hexdigest() != digest):
+            raise RuntimeError("目标版本文件已存在且内容不一致")
+    backup = old.with_name(old.name + ".old-update.bak")
+    if final == old and (backup.exists() or backup.is_symlink()):
+        raise RuntimeError("发现旧版备份，拒绝覆盖")
+    helper_fd, helper_name = tempfile.mkstemp(prefix="ashare-updater-", suffix=".py")
+    os.close(helper_fd)
+    helper = Path(helper_name)
+    ack_fd, ack_name = tempfile.mkstemp(prefix="ashare-update-ack-")
+    os.close(ack_fd)
+    ack = Path(ack_name)
+    ack.unlink()
+    control_fd, control_name = tempfile.mkstemp(prefix="ashare-update-control-")
+    os.close(control_fd)
+    control = Path(control_name)
+    control.unlink()
+    try:
+        helper.write_text(UPDATE_HELPER, encoding="utf-8")
+        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        helper_process = subprocess.Popen(
+            [sys.executable, str(helper), str(os.getpid()),
+             str(old), str(staged), str(final), str(backup), str(ack),
+             str(control), APP_VERSION, version, digest, str(len(program))],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, creationflags=flags,
+            cwd=str(old.parent))
+    except Exception:
+        helper.unlink(missing_ok=True)
+        raise
+    return control, helper_process
+
+
+def _startup_auto_update(prechecked):
+    """Check/install before any BaoStock login, SQLite access or scan window.
+
+    The new version must be fully verified, saved and visibly bootstrapped
+    before this old process exits. In an outage the normal launch proceeds.
+    """
+    events = queue.Queue()
+    cancel = threading.Event()
+    state = {"handoff": False, "control": None, "helper": None,
+             "helper_started": 0.0, "done": False}
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        # A headless CI environment has no ordinary desktop startup.
+        return False
+    root.title("A股 MA 扫描器 · 检查更新")
+    root.geometry("400x168")
+    root.resizable(False, False)
+    root.configure(bg="#f5f6fa")
+    notice = tk.StringVar(master=root, value="正在检查服务器上的最新版本…")
+    ttk.Label(root, text="软件更新", font=("Segoe UI", 13, "bold"),
+              background="#f5f6fa").pack(anchor="w", padx=24, pady=(18, 10))
+    ttk.Label(root, textvariable=notice, background="#f5f6fa",
+              font=("Segoe UI", 10)).pack(anchor="w", padx=24)
+    bar = ttk.Progressbar(root, mode="indeterminate", length=340)
+    bar.pack(fill="x", padx=24, pady=(14, 8))
+    bar.start(16)
+    action = ttk.Button(root, text="取消检查")
+    action.pack(anchor="e", padx=24)
+
+    def cancel_check():
+        if state["helper"] is not None:
+            # Do not interrupt the already-running verified install handshake.
+            return
+        cancel.set()
+        notice.set("正在取消更新检查…")
+        action.state(["disabled"])
+
+    action.configure(command=cancel_check)
+    root.protocol("WM_DELETE_WINDOW", cancel_check)
+
+    def worker():
+        try:
+            message, staged = prepare_manual_update(
+                Path(__file__).resolve(),
+                on_update_found=lambda version, size: events.put(
+                    ("found", (version, size))),
+                on_progress=lambda received, size, speed: events.put(
+                    ("progress", (received, size))),
+                on_status=lambda message: events.put(("status", message)),
+                cancel_event=cancel, newer_only=True, prechecked=prechecked)
+            events.put(("ready", (message, staged)))
+        except UpdateDownloadCancelled:
+            events.put(("cancelled", None))
+        except Exception:
+            # Do not expose internal server paths, tracebacks or credentials.
+            events.put(("unavailable", None))
+
+    thread = threading.Thread(target=worker, name="startup-update", daemon=True)
+
+    def finish(message="", delay=350):
+        if state["done"]:
+            return
+        state["done"] = True
+        if message:
+            notice.set(message)
+        bar.stop()
+        action.state(["disabled"])
+        root.after(delay, root.destroy)
+
+    def poll():
+        if state["done"]:
+            return
+        while True:
+            try:
+                kind, value = events.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "found":
+                notice.set("发现新版，正在下载更新…")
+                bar.stop()
+                bar.configure(mode="determinate", maximum=1000, value=0)
+            elif kind == "progress":
+                received, size = value
+                if size:
+                    bar.configure(value=min(1000, round(1000 * received / size)))
+            elif kind == "status":
+                notice.set("正在验证更新文件…" if "验证" in value
+                           else "正在下载更新…")
+            elif kind == "ready":
+                message, staged = value
+                if staged is None:
+                    finish(delay=100)
+                    break
+                if cancel.is_set():
+                    Path(staged).unlink(missing_ok=True)
+                    finish("已取消，继续启动旧版")
+                    break
+                try:
+                    control, process = _launch_verified_update_helper(Path(staged))
+                except Exception:
+                    Path(staged).unlink(missing_ok=True)
+                    finish("更新未完成，继续启动现有版本", 900)
+                    break
+                state["control"], state["helper"] = control, process
+                state["helper_started"] = time.monotonic()
+                action.state(["disabled"])
+                notice.set("新版已下载，正在验证启动…")
+                bar.configure(mode="indeterminate")
+                bar.start(16)
+            elif kind == "cancelled":
+                finish("已取消，继续正常启动", 450)
+                break
+            elif kind == "unavailable":
+                finish("更新服务暂不可用，继续正常启动", 1000)
+                break
+
+        if state["done"]:
+            return
+        control = state["control"]
+        process = state["helper"]
+        if control is not None:
+            try:
+                flag = control.read_text(encoding="utf-8").strip() if control.exists() else ""
+            except OSError:
+                flag = ""
+            if flag == "close-old":
+                # The verified new Qt preview is visible. Exit this old process
+                # so the helper can delete its old file and start the new GUI.
+                state["handoff"] = True
+                state["done"] = True
+                root.destroy()
+                return
+            if flag == "failed" or process.poll() is not None:
+                finish("新版未能完成切换，继续使用旧版", 1200)
+                return
+            if time.monotonic() - state["helper_started"] > 75:
+                # Never proceed into market updates while an unknown updater
+                # helper may still request shutdown asynchronously.
+                process.kill()
+                try:
+                    control.write_text("failed", encoding="utf-8")
+                except OSError:
+                    pass
+                finish("更新启动超时，继续使用旧版", 1200)
+                return
+        root.after(120, poll)
+
+    root.after(120, poll)
+    thread.start()
+    try:
+        root.mainloop()
+    finally:
+        try:
+            if root.winfo_exists():
+                root.destroy()
+        except tk.TclError:
+            # Tk already destroyed its interpreter on the normal path.
+            pass
+    return state["handoff"]
+
+
+def _run_update_preview(ack_name, control_name, target_name):
+    """Show actual Qt success UI while old GUI still owns market SQLite.
+
+    No stock fetch, database writer or background polling is started here.
+    """
+    ack, control, target = map(Path, (ack_name, control_name, target_name))
+    if (not ack.name.startswith("ashare-update-ack-")
+            or not control.name.startswith("ashare-update-control-")
+            or target.name != f"AShareMAScanner_v{APP_VERSION}.pyw"):
+        raise RuntimeError("非法更新确认参数")
+    if not (Path(__file__).is_file() and
+            target.parent.resolve() == Path(__file__).resolve().parent):
+        raise RuntimeError("新版程序不在原目录")
+    os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR", "1")
+    app = QApplication(sys.argv[:1])
+    app.setFont(QFont("Helvetica Neue" if sys.platform == "darwin" else "Segoe UI", 10))
+    dialog = QDialog()
+    dialog.setWindowTitle("软件更新")
+    dialog.setFixedSize(360, 150)
+    layout = QVBoxLayout(dialog)
+    layout.setContentsMargins(24, 22, 24, 22)
+    text_label = QLabel("已更新完成")
+    text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    layout.addWidget(text_label)
+    detail_label = QLabel("正在切换到新版本…")
+    detail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    layout.addWidget(detail_label)
+    dialog.show()
+
+    def report_visible():
+        if dialog.isVisible() and Path(__file__).is_file():
+            ack.write_text("ready", encoding="utf-8")
+        else:
+            detail_label.setText("新版窗口启动失败")
+
+    QTimer.singleShot(350, report_visible)
+    status_timer = QTimer(dialog)
+    status_timer.setInterval(170)
+
+    def check_cleanup():
+        try:
+            state = control.read_text(encoding="utf-8").strip() if control.exists() else ""
+        except OSError:
+            return
+        if state == "done":
+            status_timer.stop()
+            if not target.is_file():
+                detail_label.setText("无法找到新版文件")
+                return
+            flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+            try:
+                subprocess.Popen(
+                    [sys.executable, str(target)],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, creationflags=flags,
+                    cwd=str(target.parent))
+            except OSError:
+                detail_label.setText("新版已保存，请手动启动")
+                return
+            QTimer.singleShot(800, dialog.accept)
+        elif state == "failed":
+            status_timer.stop()
+            text_label.setText("新版已保存")
+            detail_label.setText("旧版清理失败，请手动核查")
+        # "close-old" means old is finishing, do not restart yet.
+
+    status_timer.timeout.connect(check_cleanup)
+    status_timer.start()
+    result = app.exec()
+    ack.unlink(missing_ok=True)
+    control.unlink(missing_ok=True)
+    return result
+
+
+def main():
+    parser=argparse.ArgumentParser()
+    parser.add_argument("--demo",action="store_true",
+                        help="直接进入 PySide6 虚构数据界面，不访问行情")
+    parser.add_argument("--screenshot",default="",
+                        help="CI 渲染 4:3 主窗口并保存 PNG 后退出")
+    parser.add_argument("--update-ack",default="",help=argparse.SUPPRESS)
+    parser.add_argument("--update-preview-ack",default="",help=argparse.SUPPRESS)
+    parser.add_argument("--update-preview-control",default="",help=argparse.SUPPRESS)
+    parser.add_argument("--update-preview-target",default="",help=argparse.SUPPRESS)
+    parser.add_argument("--updated-from",default="",help=argparse.SUPPRESS)
+    parser.add_argument("--skip-startup-update",action="store_true",
+                        help=argparse.SUPPRESS)
+    args=parser.parse_args()
+    if args.update_preview_ack:
+        return _run_update_preview(
+            args.update_preview_ack, args.update_preview_control,
+            args.update_preview_target)
+    if args.update_ack:
+        ack = Path(args.update_ack)
+        if not ack.name.startswith("ashare-update-ack-"):
+            raise RuntimeError("非法更新确认路径")
+    if (not args.demo and not args.screenshot and not args.skip_startup_update
+            and not args.update_ack and not args.update_preview_ack):
+        try:
+            if _startup_auto_update(_STARTUP_VPS_PROBE):
+                return 0
+        finally:
+            _collect_finished_tk_on_main_thread()
+    if args.demo or args.screenshot:
+        backend=None
+        result=None
+    else:
+        phase=run_tk_data_phase()
+        if phase is None:
+            return 1
+        backend,result=phase
+    # 阶段2 的 Tk root 已销毁，Qt 独占 GUI 事件循环。
+    os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR","1")
+    app=QApplication(sys.argv[:1])
+    app.setFont(QFont("Helvetica Neue" if sys.platform == "darwin" else "Segoe UI",10))
+    win=ScannerWindow(
+        demo=args.demo or bool(args.screenshot),
+        prepared_backend=backend,prepared_result=result)
+    win.show()
+    if args.update_ack:
+        def confirm_visible_window():
+            # An early import success is not sufficient to remove the old file.
+            if win.isVisible() and QApplication.instance() is not None:
+                ack.write_text("ready", encoding="utf-8")
+        QTimer.singleShot(500, confirm_visible_window)
+    if args.screenshot:
+        def save_and_quit():
+            win.grab().save(args.screenshot)
+            app.quit()
+        QTimer.singleShot(900,save_and_quit)
+    code = app.exec()
+    if win._restart_requested:
+        # The next Tkinter stage must not race the old process's database lock.
+        for worker in list(win.workers):
+            if worker.isRunning():
+                worker.wait(10000)
+        if backend is not None and backend._instance_lock_file is not None:
+            backend._instance_lock_file.close()
+            backend._instance_lock_file = None
+        win.close()
+        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        subprocess.Popen([sys.executable, str(Path(__file__).resolve())],
+                         stdin=subprocess.DEVNULL, creationflags=flags,
+                         cwd=str(Path(__file__).resolve().parent))
+    return code
+
+
+if __name__=="__main__":
+    raise SystemExit(main())
