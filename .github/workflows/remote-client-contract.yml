@@ -1,0 +1,28 @@
+name: BaoStock Remote Client Contract
+
+on:
+  push:
+    branches:
+      - dev/vps-baostock-client
+    paths:
+      - 'A股MA扫描器_v1.3.8_dev_BaoStockRemote.pyw'
+      - 'client/**'
+      - '.github/workflows/remote-client-contract.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile standalone client
+        run: python -m py_compile 'A股MA扫描器_v1.3.8_dev_BaoStockRemote.pyw'
+      - name: Test remote-data security and integration contract
+        run: python -m unittest discover -s client/tests -v
