@@ -1,4 +1,5 @@
 import hashlib
+import contextlib
 import json
 import sqlite3
 import tempfile
@@ -19,7 +20,7 @@ from remote_marketdata import (RemoteMarketdataClient, RemoteMarketdataError,
 def fixture(root, market_date, expected=2):
     path = root / "marketdata.sqlite3"
     if path.exists(): path.unlink()
-    with sqlite3.connect(path) as db:
+    with contextlib.closing(sqlite3.connect(path)) as db, db:
         db.executescript("""
         CREATE TABLE daily (code TEXT NOT NULL, trade_date TEXT NOT NULL,name TEXT,
           close REAL,volume REAL,trade_status INTEGER,is_st INTEGER,turnover REAL,
@@ -91,7 +92,7 @@ class RemoteClientTests(unittest.TestCase):
         self.assertEqual(result['scan_date'],'2026-11-06')
         self.assertEqual(result['completeness'],100.)
         self.assertEqual(StubHandler.downloads,1)
-        with sqlite3.connect(self.client.db_path) as db:
+        with contextlib.closing(sqlite3.connect(self.client.db_path)) as db, db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM daily').fetchone()[0],4)
         self.assertFalse((self.data/'a_share_akshare_hfq.db').exists())
 
@@ -108,14 +109,14 @@ class RemoteClientTests(unittest.TestCase):
 
     def test_merge_preserves_local_only_tables_and_earlier_rows(self):
         self.run_sync()
-        with sqlite3.connect(self.client.db_path) as db:
+        with contextlib.closing(sqlite3.connect(self.client.db_path)) as db, db:
             db.execute('CREATE TABLE signal_history (id INTEGER PRIMARY KEY, payload TEXT)')
             db.execute('INSERT INTO signal_history(payload) VALUES (?)',('KEEP',))
         newer,blob=fixture(self.base,'2026-11-09')
         StubHandler.manifest=newer;StubHandler.blob=blob
         result=self.run_sync()
         self.assertEqual(result['scan_date'],'2026-11-09')
-        with sqlite3.connect(self.client.db_path) as db:
+        with contextlib.closing(sqlite3.connect(self.client.db_path)) as db, db:
             self.assertEqual(db.execute('SELECT payload FROM signal_history').fetchone()[0],'KEEP')
             self.assertEqual(db.execute("SELECT COUNT(*) FROM daily WHERE trade_date='2026-11-06'").fetchone()[0],2)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM daily WHERE trade_date='2026-11-09'").fetchone()[0],2)
