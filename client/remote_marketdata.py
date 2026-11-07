@@ -1,8 +1,8 @@
 """Verified BaoStock snapshot synchronizer for AShareMAScanner stage 2.
 
 The module is also inlined into the development .pyw for single-file delivery.
-No server URL is assumed: configure data/marketdata_client.json or
-ASHARE_MARKETDATA_URL.  Existing AKShare storage is never modified.
+Default VPS HTTPS URL is built in. Override via data/marketdata_client.json
+or ASHARE_MARKETDATA_URL. Existing AKShare storage is never modified.
 """
 import contextlib
 import hashlib
@@ -25,6 +25,9 @@ class RemoteMarketdataError(RuntimeError):
 
 class RemoteMarketdataCancelled(RemoteMarketdataError):
     """The user stopped the stage-2 import."""
+
+
+DEFAULT_MARKETDATA_URL = "https://23.95.88.6:8443/marketdata/latest.json"
 
 
 class RemoteMarketdataClient:
@@ -52,7 +55,9 @@ class RemoteMarketdataClient:
                     raise ValueError("配置必须是 JSON 对象")
             except (OSError, ValueError) as exc:
                 raise RemoteMarketdataError(f"远程数据配置无效：{exc}") from exc
-        raw_url = os.environ.get("ASHARE_MARKETDATA_URL", "").strip() or str(cfg.get("manifest_url", "")).strip()
+        raw_url = (os.environ.get("ASHARE_MARKETDATA_URL", "").strip()
+                   or str(cfg.get("manifest_url", "")).strip()
+                   or DEFAULT_MARKETDATA_URL)
         if raw_url and not raw_url.endswith(".json"):
             raw_url = raw_url.rstrip("/") + "/latest.json"
         self.manifest_url = raw_url
