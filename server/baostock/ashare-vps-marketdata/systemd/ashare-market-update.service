@@ -1,0 +1,24 @@
+[Unit]
+Description=AShareMAScanner BaoStock daily market-data update
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=asharedata
+Group=asharedata
+WorkingDirectory=/opt/ashare-marketdata
+EnvironmentFile=/etc/ashare-marketdata.env
+ExecStart=/opt/ashare-marketdata/.venv/bin/python -m ashare_server.cli update
+TimeoutStartSec=6h
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/ashare-marketdata
+
+[Install]
+WantedBy=multi-user.target

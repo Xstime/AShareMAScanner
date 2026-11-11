@@ -1,0 +1,13 @@
+[Unit]
+Description=Run AShareMAScanner market-data update every day at 18:00 China time
+
+[Timer]
+# China Standard Time is UTC+8 year-round: 18:00 Asia/Shanghai == 10:00 UTC.
+# The VPS system timezone is not changed.
+OnCalendar=*-*-* 10:00:00 UTC
+Persistent=true
+AccuracySec=1s
+Unit=ashare-market-update.service
+
+[Install]
+WantedBy=timers.target

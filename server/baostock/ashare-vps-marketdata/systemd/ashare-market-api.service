@@ -1,0 +1,22 @@
+[Unit]
+Description=AShareMAScanner read-only market-data download API
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=asharedata
+Group=asharedata
+WorkingDirectory=/opt/ashare-marketdata
+EnvironmentFile=/etc/ashare-marketdata.env
+ExecStart=/opt/ashare-marketdata/.venv/bin/python -m ashare_server.cli serve
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/var/lib/ashare-marketdata
+
+[Install]
+WantedBy=multi-user.target
