@@ -278,6 +278,21 @@ class UpdaterTests(unittest.TestCase):
             self.assertEqual(provider.history_calls[-2][1:], ("2026-11-09", "2026-11-09"))
             self.assertEqual(provider.history_calls[-1][1:], ("2026-11-09", "2026-11-09"))
 
+    def test_explicit_market_date_is_used_for_both_readiness_checks(self):
+        with tempfile.TemporaryDirectory() as temp:
+            updater = MarketUpdater(self._settings(Path(temp)), FakeProvider())
+            result = updater.run(as_of="2026-11-06")
+            self.assertTrue(result["published"])
+            self.assertEqual(result["market_date"], "2026-11-06")
+            self.assertEqual(json.loads(updater.config.manifest_path.read_text())["market_date"], "2026-11-06")
+
+    def test_explicit_nontrading_date_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            updater = MarketUpdater(self._settings(Path(temp)), FakeProvider())
+            with self.assertRaisesRegex(Exception, "不是可用交易日"):
+                updater.run(as_of="2026-11-07")
+            self.assertFalse(updater.config.manifest_path.exists())
+
     def test_stale_index_never_replaces_existing_manifest(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

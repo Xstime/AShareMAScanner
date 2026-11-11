@@ -295,7 +295,14 @@ class MarketUpdater:
         except Exception:
             LOG.exception("行业分类刷新失败；保留旧缓存，不阻断行情快照")
 
-    def run(self) -> dict:
+    def run(self, as_of: str | None = None) -> dict:
+        if as_of is not None:
+            try:
+                requested = datetime.strptime(as_of, "%Y-%m-%d").date()
+                if requested.strftime("%Y-%m-%d") != as_of or requested > datetime.now(CST).date():
+                    raise ValueError
+            except (TypeError, ValueError) as exc:
+                raise ValueError("指定日期必须为不晚于今天的 YYYY-MM-DD 日期") from exc
         self.config.data_dir.mkdir(parents=True, exist_ok=True)
         self.config.log_path.mkdir(parents=True, exist_ok=True)
         with self.config.lock_path.open("w") as lock:
@@ -313,7 +320,10 @@ class MarketUpdater:
             try:
                 self.provider.login()
                 today = datetime.now(CST).strftime("%Y-%m-%d")
-                market_date, trade_dates = self._latest_market_date(today)
+                query_date = as_of or today
+                market_date, trade_dates = self._latest_market_date(query_date)
+                if as_of and market_date != as_of:
+                    raise MarketDataUnavailable(f"指定日期 {as_of} 不是可用交易日，拒绝发布")
                 LOG.info("最新可用交易日：%s；日历中近期交易日 %d 个", market_date, len(trade_dates))
                 latest_universe = self.provider.query_all_stocks(market_date)
                 if latest_universe.empty:
@@ -355,7 +365,7 @@ class MarketUpdater:
                 LOG.info("历史缓存覆盖率 %.3f%%（%d/%d）", history_coverage * 100,
                          history_ready, len(active_codes))
 
-                confirmed_date, _ = self._latest_market_date(datetime.now(CST).strftime("%Y-%m-%d"))
+                confirmed_date, _ = self._latest_market_date(as_of or datetime.now(CST).strftime("%Y-%m-%d"))
                 if confirmed_date != market_date:
                     raise MarketDataUnavailable("采集期间行情日期变化，保留上一快照并等待下次更新")
 

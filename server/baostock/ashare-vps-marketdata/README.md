@@ -23,3 +23,5 @@
 在本目录运行 `python -m unittest discover -s tests -v`。测试使用模拟数据，不访问 BaoStock。
 
 兼容性集成测试使用 v1.5.0 原始客户端同步代码，并在本地 HTTP 服务上检查首次导入、同日快照变化重新下载、未变化时复用缓存及保留客户端自有表。先将 v1.5.0 .pyw 源文件放在本地，再执行 `ASHARE_CLIENT_150_FILE=/path/to/v1.5.0.pyw python -m unittest discover -s tests -v`。未设置路径时该集成测试会跳过。测试使用模拟行情，未覆盖线上 VPS、真实客户端旧数据库与全部策略。
+
+手动回填指定交易日可在隔离环境使用 `python -m ashare_server.cli update --as-of 2026-11-11`。指定日期必须为已到来的有效交易日，且当日日线和完整率满足发布要求。该选项仅影响本次执行；默认定时更新不使用它。切勿把指定历史日期的快照直接覆盖比它更新的线上快照。

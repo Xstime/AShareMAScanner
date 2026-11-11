@@ -93,9 +93,12 @@ def main(argv=None) -> int:
     configure_logging()
     parser = argparse.ArgumentParser(description="AShareMAScanner BaoStock VPS market-data service")
     parser.add_argument("command", choices=("update", "probe", "status", "serve"))
+    parser.add_argument("--as-of", help="仅 update 使用：指定不晚于今天的交易日，格式 YYYY-MM-DD")
     args = parser.parse_args(argv)
+    if args.as_of and args.command != "update":
+        parser.error("--as-of 仅适用于 update")
     if args.command == "update":
-        result = MarketUpdater().run()
+        result = MarketUpdater().run(as_of=args.as_of)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0 if result.get("published") else 2
     if args.command == "probe":
