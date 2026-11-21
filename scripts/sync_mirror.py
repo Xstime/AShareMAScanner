@@ -11,7 +11,7 @@ import urllib.parse
 import urllib.request
 
 REPO = "Xstime/AShareMAScanner"
-BASE = "https://23.95.88.6:8443/ashare"
+BASE = "https://[2607:9d00:2000:3fa::b389:941d]:8443/ashare"
 AUD = BASE + "/publish"
 GH = f"https://api.github.com/repos/{REPO}/releases/latest"
 

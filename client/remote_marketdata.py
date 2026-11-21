@@ -27,7 +27,7 @@ class RemoteMarketdataCancelled(RemoteMarketdataError):
     """The user stopped the stage-2 import."""
 
 
-DEFAULT_MARKETDATA_URL = "https://23.95.88.6:8443/marketdata/latest.json"
+DEFAULT_MARKETDATA_URL = "https://[2607:9d00:2000:3fa::b389:941d]:8443/marketdata/latest.json"
 
 
 class RemoteMarketdataClient:

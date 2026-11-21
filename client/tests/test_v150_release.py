@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "client"))
 from remote_marketdata import RemoteMarketdataClient, DEFAULT_MARKETDATA_URL
 RELEASE = ROOT / "A股MA扫描器_v1.5.0.pyw"
-URL = "https://23.95.88.6:8443/marketdata/latest.json"
+URL = "https://[2607:9d00:2000:3fa::b389:941d]:8443/marketdata/latest.json"
 
 class V150ReleaseTests(unittest.TestCase):
     def test_default_works_without_config(self):

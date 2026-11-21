@@ -357,10 +357,16 @@ def _bootstrap_dependencies():
 
 
 
+# Deployed, pinned HTTPS release mirror (public CA and IP SAN validation).
+MIRROR_BASE = "https://[2607:9d00:2000:3fa::b389:941d]:8443/ashare"
+MIRROR_LATEST = MIRROR_BASE + "/latest.json"
+MIRROR_HOST = "2607:9d00:2000:3fa::b389:941d"
+MIRROR_PORT = 8443
+
 # Query the pinned VPS on EVERY ordinary launch, before Tk/PySide6 dependency
 # bootstrap or any market/SQLite access. Full release validation is later.
 def _probe_startup_vps():
-    url = "https://23.95.88.6:8443/ashare/latest.json"
+    url = MIRROR_LATEST
     try:
         request = urllib.request.Request(
             url, headers={"User-Agent": "AShareMAScanner-startup/1.3.5",
@@ -619,11 +625,6 @@ if __name__ == "__main__":
 """
 
 
-# Deployed, pinned HTTPS release mirror (public CA and IP SAN validation).
-MIRROR_BASE = "https://23.95.88.6:8443/ashare"
-MIRROR_LATEST = MIRROR_BASE + "/latest.json"
-MIRROR_HOST = "23.95.88.6"
-MIRROR_PORT = 8443
 REPO_FULL_NAME = "Xstime/AShareMAScanner"
 
 
@@ -4563,7 +4564,7 @@ class RemoteMarketdataCancelled(RemoteMarketdataError):
     """The user stopped the stage-2 import."""
 
 
-DEFAULT_MARKETDATA_URL = "https://23.95.88.6:8443/marketdata/latest.json"
+DEFAULT_MARKETDATA_URL = "https://[2607:9d00:2000:3fa::b389:941d]:8443/marketdata/latest.json"
 
 
 class RemoteMarketdataClient:
