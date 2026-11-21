@@ -12,6 +12,9 @@ import urllib.request
 
 REPO = "Xstime/AShareMAScanner"
 BASE = "https://[2607:9d00:2000:3fa::b389:941d]:8443/ashare"
+# GitHub-hosted runners cannot reach the IPv6 mirror directly. Use the
+# IPv4 notification endpoint, while checking the canonical IPv6 asset URLs.
+NOTIFY_BASE = "https://198.143.122.37:8443/ashare"
 AUD = BASE + "/publish"
 GH = f"https://api.github.com/repos/{REPO}/releases/latest"
 
@@ -99,7 +102,7 @@ def main():
     tag, upstream = check_release(release)
     print("Verified latest GitHub Release: " + tag, flush=True)
     token = fresh_oidc_token()
-    code, receipt = fetch_json(AUD, {"Authorization": "Bearer " + token,
+    code, receipt = fetch_json(NOTIFY_BASE + "/publish", {"Authorization": "Bearer " + token,
         "Content-Type": "application/json", "User-Agent": "AShareMAScanner-CI/1"},
         method="POST", data=json.dumps({"tag": tag}).encode(), timeout=30)
     del token
@@ -110,7 +113,7 @@ def main():
     deadline = time.monotonic() + 240
     while time.monotonic() < deadline:
         try:
-            _, manifest = fetch_json(BASE + "/latest.json")
+            _, manifest = fetch_json(NOTIFY_BASE + "/latest.json")
             if synchronized(manifest, tag, request_id, upstream):
                 print(f"Mirror sync confirmed tag={tag} sync_request_id={request_id}",
                       flush=True)
