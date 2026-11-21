@@ -437,6 +437,13 @@ try:
 except Exception as exc:
     _dependency_import_error("akshare", exc)
 
+
+def _akshare_call(current_name, legacy_name, **kwargs):
+    provider = getattr(ak, current_name, None)
+    if provider is None:
+        provider = getattr(ak, legacy_name)
+    return provider(**kwargs)
+
 try:
     import tkinter as tk
     from tkinter import ttk, messagebox
@@ -1423,10 +1430,10 @@ class AKShareQuotes:
         # Tencent and Sina index dates avoid an unnecessary full EastMoney
         # request when its push2 endpoint has been IP rate-limited.
         for name, load in (
-            ("腾讯", lambda: ak.stock_zh_index_daily_tx(
+            ("腾讯", lambda: _akshare_call("index_zh_daily_tx", "stock_zh_index_daily_tx",
                 symbol="sh000001", start_date=first, end_date=last)),
-            ("新浪", lambda: ak.stock_zh_index_daily(symbol="sh000001")),
-            ("东财", lambda: ak.index_zh_a_hist(
+            ("新浪", lambda: _akshare_call("index_zh_daily_sina", "stock_zh_index_daily", symbol="sh000001")),
+            ("东财", lambda: _akshare_call("index_zh_hist_em", "index_zh_a_hist",
                 symbol="000001", period="daily", start_date=first, end_date=last)),
         ):
             if name == "东财" and time.monotonic() < self._em_banned_until:
@@ -1449,7 +1456,7 @@ class AKShareQuotes:
         if self._sina_calendar is None:
             try:
                 self._pace()
-                self._sina_calendar = self._dates(ak.tool_trade_date_hist_sina(), ["trade_date"])
+                self._sina_calendar = self._dates(_akshare_call("calendar_trade_date_hist_sina", "tool_trade_date_hist_sina"), ["trade_date"])
             except Exception:
                 self._sina_calendar = []
         known = set(self.index_dates())
@@ -1491,7 +1498,7 @@ class AKShareQuotes:
         problems = []
         for provider, fetch in (
             ("东财", lambda: ak.stock_zh_a_spot_em()),
-            ("新浪", lambda: ak.stock_zh_a_spot()),
+            ("新浪", lambda: _akshare_call("stock_zh_a_spot_sina", "stock_zh_a_spot")),
             ("交易所", lambda: ak.stock_info_a_code_name()),
         ):
             if provider == "东财" and time.monotonic() < self._em_banned_until:
@@ -1571,11 +1578,11 @@ class AKShareQuotes:
         market, symbol = str(code).split(".",1)
         self._pace()
         if source == "eastmoney":
-            raw = ak.stock_zh_a_hist(
+            raw = _akshare_call("stock_zh_a_hist_em", "stock_zh_a_hist",
                 symbol=symbol, period="daily",start_date=self._ymd(first),
                 end_date=self._ymd(last),adjust="hfq")
         elif source == "sina":
-            raw = ak.stock_zh_a_daily(
+            raw = _akshare_call("stock_zh_a_hist_sina", "stock_zh_a_daily",
                 symbol=market+symbol,start_date=self._ymd(first),
                 end_date=self._ymd(last),adjust="hfq")
         else:
@@ -2701,7 +2708,10 @@ import sys
 import akshare as ak
 if len(sys.argv)!=2 or sys.argv[1]!='ths_rank':
     raise ValueError('only ths_rank is supported')
-data=ak.stock_fund_flow_industry(symbol='5日排行')
+fetch = getattr(ak, 'stock_fund_flow_industry_ths', None)
+if fetch is None:
+    fetch = ak.stock_fund_flow_industry
+data = fetch(symbol='5日排行')
 fields=['行业','净额']
 if data is None or data.empty or any(x not in data.columns for x in fields):
     raise RuntimeError('同花顺五日行业资金排名为空或缺少字段')

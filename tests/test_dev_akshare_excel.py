@@ -129,7 +129,7 @@ class AdapterAudit(unittest.TestCase):
         symbols=[f"{600000+i:06d}" for i in range(1001)]
         with mock.patch.object(m.ak,"stock_zh_a_spot_em",
                                side_effect=AssertionError("EM should not be requested")), \
-             mock.patch.object(m.ak,"stock_zh_a_spot",
+             mock.patch.object(m.ak,"stock_zh_a_spot",create=True,
                                return_value=pd.DataFrame({"symbol":symbols,
                                                           "name":["模拟"]*1001})):
             frame=self.quotes.stocks("2026-11-04")
@@ -138,9 +138,9 @@ class AdapterAudit(unittest.TestCase):
     def test_index_tries_tencent_before_banned_eastmoney(self):
         from datetime import datetime, timedelta
         day=(datetime.now(m.CST)-timedelta(days=1)).strftime("%Y-%m-%d")
-        with mock.patch.object(m.ak,"stock_zh_index_daily_tx",
+        with mock.patch.object(m.ak,"stock_zh_index_daily_tx",create=True,
                                return_value=pd.DataFrame({"date":[day]})) as tx, \
-             mock.patch.object(m.ak,"index_zh_a_hist",
+             mock.patch.object(m.ak,"index_zh_a_hist",create=True,
                                side_effect=AssertionError("EM should not run")) as em:
             days=self.quotes.index_dates()
         self.assertEqual(days[-1],day)

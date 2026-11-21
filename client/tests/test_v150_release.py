@@ -7,6 +7,7 @@ import tempfile
 import unittest
 import urllib.parse
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "client"))
@@ -58,3 +59,22 @@ class V150ReleaseTests(unittest.TestCase):
         self.assertTrue(trusted(base + "/latest.json", "mirror", redirect=True))
         self.assertFalse(trusted("https://198.143.122.37:8443/ashare/latest.json", "mirror"))
         self.assertFalse(trusted(base.replace(":8443", ":443") + "/latest.json", "mirror"))
+
+    def test_v151_supports_old_and_new_akshare_names(self):
+        release = ROOT / "A股MA扫描器_v1.5.1.pyw"
+        tree = ast.parse(release.read_text(encoding="utf-8"))
+        adapter = next(node for node in tree.body
+                       if isinstance(node, ast.FunctionDef) and node.name == "_akshare_call")
+        namespace = {}
+        exec(compile(ast.Module(body=[adapter], type_ignores=[]), str(release), "exec"), namespace)
+        run = namespace["_akshare_call"]
+        for name in ("index_zh_daily_tx", "stock_zh_index_daily_tx"):
+            with self.subTest(name=name):
+                client = SimpleNamespace()
+                provider = unittest.mock.Mock(return_value="dates")
+                setattr(client, name, provider)
+                namespace["ak"] = client
+                result = run("index_zh_daily_tx", "stock_zh_index_daily_tx",
+                             symbol="sh000001", start_date="20260101")
+                self.assertEqual(result, "dates")
+                provider.assert_called_once_with(symbol="sh000001", start_date="20260101")
