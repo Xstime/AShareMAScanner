@@ -12,6 +12,7 @@ import re
 import shutil
 import sqlite3
 import tempfile
+import time
 import urllib.parse
 import urllib.request
 import zipfile
@@ -185,7 +186,7 @@ class RemoteMarketdataClient:
         return self._to_result(cached,
                                f"VPS 暂不可用（{reason}）；使用已验证的 BaoStock 缓存 {cached['market_date']}，请注意行情时效。")
 
-    def _download_snapshot(self, manifest, dest, cb, cancel_event):
+    def _download_snapshot(self, manifest, dest, cb, cancel_event, on_download_progress=None):
         # Deliberately derive the snapshot URL from the validated manifest origin.
         # An untrusted snapshot_url in JSON cannot redirect to a different host.
         snapshot_url = urllib.parse.urljoin(self.manifest_url, "snapshot.zip")
@@ -199,9 +200,14 @@ class RemoteMarketdataClient:
         try:
             with urllib.request.urlopen(request, timeout=45) as resp, dest.open("wb") as stream:
                 self._validate_final_url(resp)
+                last_update = time.monotonic()
+                last_received = 0
+                speed = 0.0
+                if on_download_progress is not None:
+                    on_download_progress(manifest["market_date"], 0, expected, speed)
                 while True:
                     self._check_cancel(cancel_event)
-                    part = resp.read(1024 * 1024)
+                    part = resp.read1(64 * 1024)
                     if not part:
                         break
                     received += len(part)
@@ -209,8 +215,18 @@ class RemoteMarketdataClient:
                         raise RemoteMarketdataError("下载文件超过清单指定大小")
                     h.update(part)
                     stream.write(part)
-                    cb(10 + 45 * received / expected,
-                       f"从 VPS 下载行情快照 {received / 1048576:.1f}/{expected / 1048576:.1f} MiB")
+                    now = time.monotonic()
+                    elapsed = now - last_update
+                    if received == expected or elapsed >= 0.25:
+                        if on_download_progress is not None:
+                            if elapsed >= 0.25 or last_received == 0:
+                                speed = (received - last_received) / max(elapsed, 0.001)
+                            on_download_progress(manifest["market_date"], received, expected, speed)
+                        else:
+                            cb(10 + 45 * received / expected,
+                               f"从 VPS 下载行情快照 {received / 1048576:.1f}/{expected / 1048576:.1f} MiB")
+                        last_update = now
+                        last_received = received
         except (OSError, ValueError) as exc:
             raise RemoteMarketdataError(f"下载行情快照失败：{exc}") from exc
         if received != expected or h.hexdigest() != manifest["snapshot_sha256"].lower():
@@ -318,7 +334,7 @@ class RemoteMarketdataClient:
         self._check_cancel(cancel_event)
         os.replace(staged_db, target)
 
-    def sync(self, cb, cancel_event=None):
+    def sync(self, cb, cancel_event=None, *, on_download_progress=None):
         if not self.enabled:
             raise RemoteMarketdataError("未配置远程市场数据地址")
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -336,7 +352,7 @@ class RemoteMarketdataClient:
             stage = Path(temp)
             archive = stage / "snapshot.zip"
             incoming = stage / self.SNAPSHOT_MEMBER
-            self._download_snapshot(manifest, archive, cb, cancel_event)
+            self._download_snapshot(manifest, archive, cb, cancel_event, on_download_progress)
             cb(58, "校验 ZIP 并提取 SQLite 快照")
             self._extract(archive, incoming, cancel_event)
             cb(67, "验证 SQLite 数据库结构、行情日期及数据完整率")

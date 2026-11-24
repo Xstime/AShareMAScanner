@@ -9,7 +9,7 @@ import zipfile
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -99,6 +99,27 @@ class RemoteClientTests(unittest.TestCase):
     def test_unchanged_manifest_does_not_download_twice(self):
         self.run_sync();self.run_sync()
         self.assertEqual(StubHandler.downloads,1)
+
+    def test_download_progress_reports_snapshot_date_bytes_and_current_rate(self):
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.geturl.return_value = self.url.replace("latest.json", "snapshot.zip")
+        first_chunk = self.blob[:512]
+        response.read1.side_effect = [first_chunk, self.blob[512:], b""]
+        download = []
+        dest = self.base / "downloaded.zip"
+        with patch("remote_marketdata.urllib.request.urlopen", return_value=response), \
+                patch("remote_marketdata.time.monotonic", side_effect=[10.0, 10.5, 11.5]):
+            self.client._download_snapshot(
+                self.manifest, dest, self.fail, None, lambda *values: download.append(values)
+            )
+        size = len(self.blob)
+        self.assertEqual(download, [
+            ("2026-11-06", 0, size, 0.0),
+            ("2026-11-06", len(first_chunk), size, 2 * len(first_chunk)),
+            ("2026-11-06", size, size, size - len(first_chunk)),
+        ])
+        self.assertEqual(dest.read_bytes(), self.blob)
 
     def test_invalid_hash_never_replaces_existing_cache(self):
         self.run_sync();original=self.client.db_path.read_bytes()

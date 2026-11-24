@@ -30,7 +30,7 @@ class V150ReleaseTests(unittest.TestCase):
             with patch.dict(os.environ, {"ASHARE_MARKETDATA_URL":"https://example.com/another/latest.json"}):
                 self.assertEqual(RemoteMarketdataClient(root).manifest_url,"https://example.com/another/latest.json")
     def test_release_embeds_url_and_preserves_separate_databases(self):
-        for version in ("1.5.0", "1.5.1"):
+        for version in ("1.5.0", "1.5.1", "1.5.2"):
             with self.subTest(version=version):
                 release = ROOT / f"A股MA扫描器_v{version}.pyw"
                 src = release.read_text(encoding="utf-8")
@@ -43,8 +43,8 @@ class V150ReleaseTests(unittest.TestCase):
                 self.assertIn('remote_client.sync(',src)
                 self.assertIn('engine_backend.update_all(',src)
                 self.assertIn('def export_strategy_xlsx(',src)
-    def test_v151_trusts_only_the_expected_ipv6_mirror(self):
-        path = ROOT / "A股MA扫描器_v1.5.1.pyw"
+    def test_v152_trusts_only_the_expected_ipv6_mirror(self):
+        path = ROOT / "A股MA扫描器_v1.5.2.pyw"
         tree = ast.parse(path.read_text(encoding="utf-8"))
         constants = {"MIRROR_BASE", "MIRROR_LATEST", "MIRROR_HOST", "MIRROR_PORT"}
         nodes = [node for node in tree.body if
@@ -60,8 +60,8 @@ class V150ReleaseTests(unittest.TestCase):
         self.assertFalse(trusted("https://198.143.122.37:8443/ashare/latest.json", "mirror"))
         self.assertFalse(trusted(base.replace(":8443", ":443") + "/latest.json", "mirror"))
 
-    def test_v151_supports_old_and_new_akshare_names(self):
-        release = ROOT / "A股MA扫描器_v1.5.1.pyw"
+    def test_v152_supports_old_and_new_akshare_names(self):
+        release = ROOT / "A股MA扫描器_v1.5.2.pyw"
         tree = ast.parse(release.read_text(encoding="utf-8"))
         adapter = next(node for node in tree.body
                        if isinstance(node, ast.FunctionDef) and node.name == "_akshare_call")

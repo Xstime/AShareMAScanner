@@ -1,6 +1,10 @@
-# AShareMAScanner v1.5.1 · A 股 MA 扫描器
+# AShareMAScanner v1.5.2 · A 股 MA 扫描器
 
-**当前正式版：v1.5.1**。默认通过 HTTPS 从 VPS 同步 BaoStock 日线数据库，校验后存入独立缓存；服务器不可用时使用已验证缓存或回退 AKShare。保留 Tkinter → PySide6 三阶段界面、八种策略、Excel 导出及同花顺近 5 日资金 TOP5。
+**当前正式版：v1.5.2**。默认通过 HTTPS 从 VPS 同步 BaoStock 日线数据库，校验后存入独立缓存；服务器不可用时使用已验证缓存或回退 AKShare。保留 Tkinter → PySide6 三阶段界面、八种策略、Excel 导出及同花顺近 5 日资金 TOP5。
+
+## v1.5.2 更新
+
+- 每日行情下载进度按 ZIP 的实际接收字节计算，显示行情日期、下载量、文件大小、当前下载速度和百分比。详见 [v1.5.2 更新说明](RELEASE_NOTES_v1.5.2.md)。
 
 ## v1.5.1 更新
 
@@ -109,11 +113,11 @@ v1.3.2 新增固定 HTTPS 镜像作为首选更新源；不提供可配置代理
 
 ## 安装和数据
 
-[GitHub Releases](https://github.com/Xstime/AShareMAScanner/releases) 下载 `AShareMAScanner_v1.5.1.pyw` 或 `AShareMAScanner_v1.5.1.zip`。直接运行 `python A股MA扫描器_v1.5.1.pyw`（需要 Python 3.10+、Tkinter；依赖库可按提示安装）。`python A股MA扫描器_v1.3.7.pyw --demo` 可离线查看界面。
+[GitHub Releases](https://github.com/Xstime/AShareMAScanner/releases) 下载 `AShareMAScanner_v1.5.2.pyw` 或 `AShareMAScanner_v1.5.2.zip`。直接运行 `python A股MA扫描器_v1.5.2.pyw`（需要 Python 3.10+、Tkinter；依赖库可按提示安装）。`python A股MA扫描器_v1.5.2.pyw --demo` 可离线查看界面。
 
 当前版本的行情数据库在程序文件同级 **`data/a_share_akshare_hfq.db`**，采用 SQLite/WAL，独立于之前的 `data/a_share_baostock_hfq.db`。不要删除或移动 `data/`，旧数据库不会被清除，但新数据库需首次下载行情建立缓存；仍保留三阶段 GUI、断点续传式补抓、8 阶段更新进度和同花顺行业 TOP5。
 
-旧版 `A股MA扫描器_v1.3.0.pyw`、`A股MA扫描器_v1.3.1.pyw`、`A股MA扫描器_v1.3.2.pyw`、`A股MA扫描器_v1.3.3.pyw`、`A股MA扫描器_v1.3.4.pyw`、`A股MA扫描器_v1.3.5.pyw` 保留在仓库以供回归验证。发行使用独立的 `A股MA扫描器_v1.5.1.pyw` 源文件，避免覆盖旧版本源文件。
+旧版 `A股MA扫描器_v1.3.0.pyw`、`A股MA扫描器_v1.3.1.pyw`、`A股MA扫描器_v1.3.2.pyw`、`A股MA扫描器_v1.3.3.pyw`、`A股MA扫描器_v1.3.4.pyw`、`A股MA扫描器_v1.3.5.pyw` 保留在仓库以供回归验证。发行使用独立的 `A股MA扫描器_v1.5.2.pyw` 源文件，避免覆盖旧版本源文件。
 
 更多内容见 [v1.5.0 更新说明](RELEASE_NOTES_v1.5.0.md) 和对应的 Linux/Windows/macOS 自动化测试记录。
 
